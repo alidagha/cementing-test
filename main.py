@@ -106,15 +106,22 @@ _PHASE_ICONS = {"ok": "✅", "warning": "⚠️", "empty": "⚪"}
 _phase_status = compute_phase_status(st.session_state)
 
 def _format_phase(key):
-    label = _PHASE_LABELS[key]
+    # The browser stores the formatted radio string, not just its Python key.
+    # Keep it constant: changing a status icon here clears the selection in
+    # Streamlit 1.64 and the next edit can route to Phase I before being saved.
+    return _PHASE_LABELS[key]
+
+def _phase_caption(key):
     if key == "phase10":
-        return label
+        return ""
     level = _phase_status.get(key, {}).get("level", "empty")
-    return f"{_PHASE_ICONS.get(level, '⚪')} {label}"
+    description = {"ok": "Complete", "warning": "Needs review", "empty": "Not started"}
+    return f"{_PHASE_ICONS.get(level, '⚪')} {description.get(level, 'Not started')}"
 
 with _navigation_slot:
     st.title("Navigation")
     app_mode_key = st.radio("Select Phase", _PHASE_ORDER, format_func=_format_phase,
+                            captions=[_phase_caption(key) for key in _PHASE_ORDER],
                             key="_app_mode_key")
 app_mode = _PHASE_LABELS[app_mode_key]
 
@@ -143,7 +150,8 @@ elif app_mode == "Phase X: Procedure & Export":
 # Widget values are mirrored to the project during render(). When that changes
 # a phase's completion icon, refresh the sidebar in the same user interaction
 # instead of leaving its label one edit behind. Navigation is already mounted,
-# so this rerun cannot silently return the operator to Phase I.
+# and its formatted options remain constant, so this rerun preserves the
+# browser's selected phase while refreshing the separate status captions.
 if compute_phase_status(st.session_state) != _phase_status:
     st.rerun()
 
