@@ -1,0 +1,413 @@
+# phase_2_3_well_data.py
+import streamlit as st
+import pandas as pd
+import math
+import materials_db
+from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth
+from project_state import fingerprint
+from input_guard import repair_invalid_inputs
+from editor_state import persistent_data_editor
+from engineering_tools import parse_effective_numeric, parse_fractional_size
+
+HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
+MUD_TYPES = ["WBM", "OBM"]
+
+def _seed(widget_key, shadow_key):
+    """
+    Seed a widget-only key from its shadow, only if the widget key is
+    currently absent (first render, or just restored after navigation).
+    FIX: mud_type/mud_density/plastic_viscosity/yield_point/geo_md/geo_tvd/
+    bhst/geo_gradient used to be bound directly via key= with no separate
+    shadow, so Streamlit's "delete a widget's session_state entry when the
+    widget isn't rendered this run" behavior silently reset every one of
+    them to its hardcoded default whenever the user left this phase and came
+    back — confirmed with streamlit.testing.v1.AppTest before this fix, same
+    root cause as the Phase I fix. The hardware table has its own canonical
+    session_state entry and a separate, transient editor widget key.
+    """
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = st.session_state[shadow_key]
+
+def get_well_data() -> dict:
+    """
+    Clean Helper/Getter function for Phase X export and external consumers.
+    Eliminates redundant state duplication while maintaining full backwards compatibility.
+    """
+    return {
+        "mud_type": st.session_state.get("mud_type", "WBM"),
+        "mud_density": st.session_state.get("mud_density", "80.0"),
+        "effective_mud_density": st.session_state.get("effective_mud_density", 80.0),
+        "plastic_viscosity": st.session_state.get("plastic_viscosity", "45"),
+        "effective_pv": st.session_state.get("effective_pv", 45.0),
+        "yield_point": st.session_state.get("yield_point", "15"),
+        "effective_yp": st.session_state.get("effective_yp", 15.0),
+        "geo_md": st.session_state.get("geo_md", 3000.0),
+        "geo_tvd": st.session_state.get("geo_tvd", 3000.0),
+        "bhst": st.session_state.get("bhst", 200),
+        "geo_gradient": st.session_state.get("geo_gradient", 1.25),
+        "bhsp": st.session_state.get("bhsp", "")
+    }
+
+def render():
+    st.header("Phase II & III: Well Data")
+    st.markdown("Configure tubular hardware, drilling fluid properties, and geothermal temperature profile.")
+    
+    # 1. Canonical State Initialization (shadow keys — survive navigation)
+    defaults = {
+        "mud_type": "WBM",
+        "mud_density": "80.0",
+        "plastic_viscosity": "45",
+        "yield_point": "15",
+        "geo_md": 3000.0,
+        "geo_tvd": 3000.0,
+        "bhst": 200,
+        "geo_gradient": 1.25,
+        "bhsp": ""
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+    bounded = [(st.session_state, field, label, minimum, None, integer)
+               for field, label, minimum, integer in (
+                   ("geo_md", "MD (m)", 0.0, False),
+                   ("geo_tvd", "TVD (m)", 0.0, False),
+                   ("bhst", "BHST (°F)", 0, True),
+                   ("geo_gradient", "Temperature gradient", 0.0, False))]
+    placement = st.session_state.get("placement_config", {})
+    if (placement.get("job_type") == st.session_state.get("job_type")
+            and placement.get("target_row") == "__manual__"):
+        bounded.append((placement, "manual_depth_m", "Measured target depth (m MD)", 0.0, None, False))
+    if repair_invalid_inputs(bounded, f"phase2_{st.session_state.get('last_loaded_hash', 'new')}"):
+        return
+        
+    # 2. Hardware Table Initialization
+    # FIX (requested, round 2): the previous fix (below-still-applies) stopped
+    # the table from refilling itself when the operator cleared it *during* a
+    # session. But the very first time a truly new session starts (server
+    # process just launched — key not in st.session_state at all yet), this
+    # block still ran and seeded the same hardcoded "Previous Casing / 9 5/8 /
+    # L-80 / ..." example row every single time. Since a full close-and-restart
+    # of the browser/terminal always produces exactly that same fresh session,
+    # this literal row reappeared and looked identical to "old data surviving
+    # a restart" even though nothing was ever actually persisted to disk (no
+    # file I/O exists anywhere in this app — verified). It was simply a
+    # built-in starter/example row, recreated identically every fresh launch.
+    # Removed: a brand-new session (or a fresh "Start New / Clear All Data")
+    # now starts with a genuinely empty table. Loading a saved project is
+    # unaffected — this initializer only runs when the key is fully absent,
+    # and the project-load path in main.py restores hardware_table directly
+    # from the JSON before this ever gets a chance to run.
+    if "hardware_table" not in st.session_state or not isinstance(st.session_state["hardware_table"], pd.DataFrame):
+        st.session_state["hardware_table"] = pd.DataFrame(columns=HARDWARE_COLUMNS)
+    
+    # Ensure float typing for numeric columns
+    for col in ["ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"]:
+        st.session_state["hardware_table"][col] = pd.to_numeric(
+            st.session_state["hardware_table"][col], errors="coerce"
+        ).fillna(0.0).astype(float)
+
+    # --- SECTION 1: TUBULAR AND CASING HARDWARE ---
+    st.subheader("1. Tubular and Casing Hardware")
+    st.caption("**Guide:** Double-click any cell to edit. For **Open Hole Size**, Weight is automatically zeroed and ID serves as Bit Size.")
+    
+    # Hold unfinished grid rows separately: an MD entered before Description
+    # is a real operator edit, but must not become a hardware/export row yet.
+    hardware_draft = st.session_state.get("hardware_editor_draft")
+    editor_data = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
+                   else st.session_state["hardware_table"])
+    hardware_revision_key = "_editor_hardware_revision"
+    edited_df = persistent_data_editor(
+        editor_data,
+        column_config={
+            "Description": st.column_config.SelectboxColumn(
+                "Description",
+                options=materials_db.HARDWARE_DESCRIPTIONS,
+                default="Casing",
+                required=True,
+                width="medium"
+            ),
+            "MD (m)": st.column_config.TextColumn(
+                "MD (m)",
+                help="Single depth (e.g. 3927.0) or interval (e.g. 1200.0-2816.0)",
+                default="0.0",
+                required=True
+            ),
+            "Size (in)": st.column_config.TextColumn(
+                "Size (in)",
+                help="e.g. 20, 13 3/8, 9 5/8, 7, 5",
+                default="",
+                required=False
+            ),
+            "ID (in)": st.column_config.NumberColumn(
+                "ID (in)",
+                help="Inner Diameter with 3 decimal places (e.g. 8.535)",
+                format="%.3f",
+                step=0.001,
+                default=0.000,
+                required=False
+            ),
+            "Joint (m)": st.column_config.NumberColumn(
+                "Joint (m)",
+                help="Joint / single-pipe length in meters (e.g. 12.2). 0 for Open Hole.",
+                format="%.1f",
+                step=0.1,
+                default=0.0,
+                required=False
+            ),
+            "Weight (ppf)": st.column_config.NumberColumn(
+                "Weight (ppf)",
+                help="Linear weight in lb/ft (0 for Open Hole)",
+                format="%.1f",
+                step=0.5,
+                default=0.0,
+                required=False
+            ),
+            "Grade": st.column_config.SelectboxColumn(
+                "Grade",
+                options=["-", "J-55", "K-55", "N-80", "L-80", "C-90", "T-95", "P-110", "Q-125", "HSM-1"],
+                default="-",
+                required=False
+            ),
+            "Collapse (psi)": st.column_config.NumberColumn(
+                "Collapse (psi)",
+                help="Collapse rating in psi (0 / blank for Open Hole)",
+                format="%.0f",
+                step=10.0,
+                default=0.0,
+                required=False
+            ),
+            "Burst (psi)": st.column_config.NumberColumn(
+                "Burst (psi)",
+                help="Burst rating in psi (0 / blank for Open Hole)",
+                format="%.0f",
+                step=10.0,
+                default=0.0,
+                required=False
+            )
+        },
+        num_rows="dynamic",
+        key=f"_editor_hardware_{st.session_state.get(hardware_revision_key, 0)}",
+        width='stretch'
+    )
+    
+    pending_rows = edited_df.copy(deep=True)
+    cleaned_rows = []
+    dimension_warnings = []
+    corrected_hardware = False
+    incomplete_hardware = False
+    
+    for idx, row in edited_df.iterrows():
+        desc = str(row.get("Description") or "").strip()
+        if not desc or desc in ["None", "nan"]:
+            incomplete_hardware = True
+            continue
+
+        def hardware_number(field):
+            raw = row.get(field)
+            numeric = pd.to_numeric(raw, errors="coerce")
+            if pd.isna(numeric) or not math.isfinite(float(numeric)):
+                if raw is not None and str(raw).strip() not in ("", "nan", "None"):
+                    dimension_warnings.append(f"Row {idx+1} ({desc}): {field} is not a finite number; correct the cell.")
+                return 0.0
+            return float(numeric)
+
+        id_val = hardware_number("ID (in)")
+        joint_val = hardware_number("Joint (m)")
+        wt_val = hardware_number("Weight (ppf)")
+        grade_clean = str(row.get("Grade") or "-").strip()
+        collapse_val = hardware_number("Collapse (psi)")
+        burst_val = hardware_number("Burst (psi)")
+        size_str = str(row.get("Size (in)") or "").strip()
+        
+        # Guardrail: Check ID vs OD
+        if desc != "Open Hole Size" and size_str:
+            od_val = parse_fractional_size(size_str)
+            if od_val > 0.0 and id_val >= od_val:
+                dimension_warnings.append(f"Row {idx+1} ({desc}): ID ({id_val}\") is equal to or larger than Size ({size_str}\").")
+        
+        # Open hole specific rules
+        if desc == "Open Hole Size":
+            if (joint_val != 0.0 or wt_val != 0.0 or grade_clean != "-"
+                    or collapse_val != 0.0 or burst_val != 0.0):
+                corrected_hardware = True
+                for column in ("Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"):
+                    pending_rows.at[idx, column] = 0.0
+                pending_rows.at[idx, "Grade"] = "-"
+            wt_val = 0.0
+            grade_clean = "-"
+            joint_val = 0.0
+            collapse_val = 0.0
+            burst_val = 0.0
+            
+        cleaned_rows.append({
+            "Description": desc,
+            "MD (m)": str(row.get("MD (m)") or "0.0"),
+            "Size (in)": size_str,
+            "ID (in)": id_val,
+            "Joint (m)": joint_val,
+            "Weight (ppf)": wt_val,
+            "Grade": grade_clean,
+            "Collapse (psi)": collapse_val,
+            "Burst (psi)": burst_val
+        })
+        
+    st.session_state["hardware_table"] = pd.DataFrame(cleaned_rows, columns=HARDWARE_COLUMNS)
+    if incomplete_hardware:
+        st.session_state["hardware_editor_draft"] = pending_rows
+    else:
+        st.session_state.pop("hardware_editor_draft", None)
+    if corrected_hardware:
+        # Reflect enforced Open Hole zeroes in the editor itself. Ordinary
+        # edits retain the same widget identity and remain visible immediately.
+        st.session_state[hardware_revision_key] = st.session_state.get(hardware_revision_key, 0) + 1
+        st.rerun()
+
+    for warn in dimension_warnings:
+        st.warning(f"⚠ **Tubular Geometry Alert:** {warn}")
+
+    st.subheader("Cement Placement Reference")
+    job_type = st.session_state.get("job_type", "")
+    placement = st.session_state.setdefault("placement_config", {})
+    if placement.get("job_type") != job_type:
+        placement.clear()
+        placement["job_type"] = job_type
+    load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
+    choice_key = f"_placement_target_{fingerprint(job_type)[:10]}_{load_sig}"
+    targets = hardware_choices(st.session_state["hardware_table"], target_descriptions(job_type))
+    options = ["", *targets, "__manual__"]
+    selected = placement.get("target_row", "")
+    selected = selected if selected in options else ""
+    placement["target_row"] = st.selectbox(
+        "Target shoe / treatment depth source",
+        options,
+        index=options.index(selected),
+        format_func=lambda token: ("Select a hardware row or enter a measured depth" if not token
+                                   else "Enter measured depth manually" if token == "__manual__"
+                                   else targets[token]["label"]),
+        key=choice_key,
+        help="Choose the actual target row for this job. Changing its MD invalidates the previous selection."
+    )
+    if placement["target_row"] == "__manual__":
+        placement["manual_depth_m"] = st.number_input(
+            "Measured target depth (m MD)", min_value=0.0, step=1.0,
+            value=float(placement.get("manual_depth_m") or 0.0),
+            key=f"_placement_manual_depth_{load_sig}",
+            help="0 means not entered; only a measured job-specific depth is printed."
+        )
+    if "TIE BACK" in job_type.upper():
+        hosts = hardware_choices(st.session_state["hardware_table"], HOST_DESCRIPTIONS)
+        host_options = ["", *hosts]
+        host = placement.get("host_row", "")
+        host = host if host in host_options else ""
+        placement["host_row"] = st.selectbox(
+            "Tie-back host (the existing casing / liner)", host_options,
+            index=host_options.index(host),
+            format_func=lambda token: hosts[token]["label"] if token else "Select the actual host",
+            key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}"
+        )
+    placement["volume_basis"] = st.text_input(
+        "Slurry volume basis / excess (if specified)",
+        value=str(placement.get("volume_basis") or ""),
+        key=f"_placement_volume_basis_{load_sig}",
+        help="Enter the approved job-specific basis. Leave blank to show that it was not supplied."
+    )
+    if placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
+        st.warning("Enter the actual target depth before citing it in the executive summary.")
+
+    st.markdown("---")
+    
+    # --- SECTION 2: DRILLING FLUID DATA ---
+    st.subheader("2. Drilling Fluid Data")
+    
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        _seed("_w_mud_type", "mud_type")
+        if st.session_state["_w_mud_type"] not in MUD_TYPES:
+            st.session_state["_w_mud_type"] = MUD_TYPES[0]
+        st.selectbox("Mud Type", MUD_TYPES, key="_w_mud_type")
+        st.session_state["mud_type"] = st.session_state["_w_mud_type"]
+        
+    with col_m2:
+        _seed("_w_mud_density", "mud_density")
+        st.text_input(
+            "Mud Weight (pcf)", 
+            key="_w_mud_density",
+            help="Single density (e.g. 82.0) or range (e.g. 80-82)"
+        )
+        st.session_state["mud_density"] = st.session_state["_w_mud_density"]
+        # FIX (requested, Level 1 #4): range-style text inputs like this one
+        # are correct and intentional (they mirror how real well reports
+        # write density — see the design-decisions note this app follows),
+        # but nothing on screen ever showed which single number the range
+        # actually resolves to for every downstream calculation. This
+        # caption doesn't change behavior at all, just makes the existing
+        # parse_effective_numeric() result visible at its own source.
+        _eff_md = parse_effective_numeric(st.session_state["mud_density"], default=80.0)
+        st.caption(f"↳ Used in calculations as: **{_eff_md:.1f} pcf**" + (" (mean of range)" if any(c in st.session_state["mud_density"] for c in "-/") else ""))
+        
+    with col_m3:
+        _seed("_w_plastic_viscosity", "plastic_viscosity")
+        st.text_input(
+            "Plastic Viscosity (cp)", 
+            key="_w_plastic_viscosity",
+            help="e.g. 45 or 45-50"
+        )
+        st.session_state["plastic_viscosity"] = st.session_state["_w_plastic_viscosity"]
+        _eff_pv = parse_effective_numeric(st.session_state["plastic_viscosity"], default=45.0)
+        st.caption(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
+        
+    with col_m4:
+        _seed("_w_yield_point", "yield_point")
+        st.text_input(
+            "Yield Point (lb/100ft²)", 
+            key="_w_yield_point",
+            help="e.g. 15 or 10-20"
+        )
+        st.session_state["yield_point"] = st.session_state["_w_yield_point"]
+        _eff_yp = parse_effective_numeric(st.session_state["yield_point"], default=15.0)
+        st.caption(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
+
+    # Clean bridge for mathematical models downstream
+    st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=80.0)
+    st.session_state["effective_pv"] = parse_effective_numeric(st.session_state["plastic_viscosity"], default=45.0)
+    st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=15.0)
+
+    st.markdown("---")
+    
+    # --- SECTION 3: GEOTHERMAL TEMPERATURE PROFILE ---
+    st.subheader("3. Geothermal Temperature Profile")
+    st.caption("NOTE 1: The Calculated Temperature is based on True Vertical Depth.")
+    
+    col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
+    with col_g1:
+        _seed("_w_geo_md", "geo_md")
+        st.number_input("MD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md")
+        st.session_state["geo_md"] = st.session_state["_w_geo_md"]
+    with col_g2:
+        _seed("_w_geo_tvd", "geo_tvd")
+        st.number_input("TVD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd")
+        st.session_state["geo_tvd"] = st.session_state["_w_geo_tvd"]
+    with col_g3:
+        _seed("_w_bhst", "bhst")
+        st.number_input("BHST (degF)", min_value=0, step=1, key="_w_bhst")
+        st.session_state["bhst"] = st.session_state["_w_bhst"]
+    with col_g4:
+        _seed("_w_geo_gradient", "geo_gradient")
+        st.number_input("Gradient (degF/100ft)", min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient")
+        st.session_state["geo_gradient"] = st.session_state["_w_geo_gradient"]
+    with col_g5:
+        _seed("_w_bhsp", "bhsp")
+        st.text_input(
+            "BHSP (psi)", key="_w_bhsp",
+            help="Bottom Hole Static/Shut-in Pressure. Free text — supports compound values as shown in real reports (e.g. '7300+1000')."
+        )
+        st.session_state["bhsp"] = st.session_state["_w_bhsp"]
+
+    # Geothermal & Well Path Guardrails
+    if st.session_state["geo_tvd"] > st.session_state["geo_md"]:
+        st.error(f"✕ **Physical Inconsistency:** TVD ({st.session_state['geo_tvd']:.1f} m) cannot exceed MD ({st.session_state['geo_md']:.1f} m).")
+        
+    if st.session_state["bhst"] < 80:
+        st.warning("⚠ **Thermal Alert:** BHST appears unusually low for deep well operations.")
+
+    st.session_state["well_data"] = get_well_data()
