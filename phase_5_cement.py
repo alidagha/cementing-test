@@ -517,6 +517,7 @@ def render():
             
             edited_df = persistent_data_editor(
                 current_df,
+                persist_to=("cement_additives_dfs", slurry),
                 column_config={
                     "Material Type": st.column_config.SelectboxColumn(
                         "Material Type",

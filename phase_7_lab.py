@@ -374,6 +374,7 @@ def render():
             
             edited_lab_df = persistent_data_editor(
                 current_lab_df,
+                persist_to=("lab_grid_dfs", slurry),
                 column_config={
                     "Material": st.column_config.TextColumn("Material", required=True),
                     "Concentration": st.column_config.TextColumn("Concentration (% or gal/sk)", required=True),

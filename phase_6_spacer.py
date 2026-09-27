@@ -231,6 +231,7 @@ def render():
                 
                 edited_df = persistent_data_editor(
                     current_sp_df,
+                    persist_to=("spacer_dfs", spacer_name),
                     column_config={
                         "Chemical": st.column_config.SelectboxColumn(
                             "Chemical",

@@ -118,6 +118,7 @@ def render():
     hardware_revision_key = "_editor_hardware_revision"
     edited_df = persistent_data_editor(
         editor_data,
+        persist_to=("hardware_editor_draft", None),
         column_config={
             "Description": st.column_config.SelectboxColumn(
                 "Description",
