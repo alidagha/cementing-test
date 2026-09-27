@@ -18,6 +18,17 @@ def lab_review_signature(qc, grid):
                                if key not in ("reviewed", "review_signature")},
                         "grid": grid})
 
+
+def lab_temperature_valid(bhct, bhst):
+    """Reject nonfinite temperatures and a circulating value above static."""
+    try:
+        if isinstance(bhct, bool) or isinstance(bhst, bool):
+            return False
+        circulating, static = float(bhct), float(bhst)
+        return math.isfinite(circulating) and math.isfinite(static) and circulating <= static
+    except (TypeError, ValueError, OverflowError):
+        return False
+
 # ==============================================================================
 # 1. CORE NUMERIC, STRING & HYDRAULIC UTILITIES
 # ==============================================================================
@@ -733,10 +744,38 @@ def compute_phase_status(ss) -> dict:
             if mode is None and _positive_number(params.get("top_depth")):
                 continue
             missing_tops.append(slurry)
+        invalid_calculations = []
+        if not missing and not missing_tops:
+            from phase_5_cement import build_components
+            for slurry in active_slurries:
+                fluid = ss.get("fluid_data", {}).get(slurry, {})
+                try:
+                    if not _positive_number(fluid.get("volume")):
+                        raise ValueError("Phase IV volume is missing")
+                    density = fluid.get("effective_density")
+                    if density is None:
+                        density = parse_effective_numeric(fluid.get("density"), default=0.0)
+                    density = float(density)
+                    if not math.isfinite(density) or not 75.0 <= density <= 180.0:
+                        raise ValueError("Phase IV slurry density is invalid")
+                    powders, liquids, salt = build_components(adds[slurry])
+                    result = calculate_slurry_from_components(
+                        slurry_weight_pcf=density,
+                        slurry_volume_bbl=fluid["volume"],
+                        cmt_sg=ss.get("cement_params", {}).get(slurry, {}).get("cmt_sg", 3.20),
+                        water_density_pcf=62.4, salt_pct=salt,
+                        powders=powders, liquids=liquids,
+                    )
+                    if result["field_sacks"] <= 0 or result["water_vol_per_sack"] < 0:
+                        raise ValueError("Mass balance has no valid cement or mix water")
+                except (TypeError, ValueError, OverflowError, ZeroDivisionError, KeyError):
+                    invalid_calculations.append(slurry)
         if missing:
             status["phase5"] = {"level": "warning", "message": f"Additive rows incomplete for: {', '.join(missing)}."}
         elif missing_tops:
             status["phase5"] = {"level": "warning", "message": f"Top of cement not entered for: {', '.join(missing_tops)}."}
+        elif invalid_calculations:
+            status["phase5"] = {"level": "warning", "message": f"Review Phase IV fluid data or Phase V mass balance for: {', '.join(invalid_calculations)}."}
         else:
             status["phase5"] = {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated and placed."}
 
@@ -787,6 +826,10 @@ def compute_phase_status(ss) -> dict:
                 continue
             if any(not all(filled(row.get(field)) for field in ("Material", "Concentration", "Unit", "Mass"))
                    for _, row in grid.iterrows()):
+                missing.append(slurry)
+                continue
+            bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst", 200))
+            if not lab_temperature_valid(qc[slurry].get("bhct"), bhst):
                 missing.append(slurry)
                 continue
             if (not qc[slurry].get("reviewed", False)
