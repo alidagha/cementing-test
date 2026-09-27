@@ -377,22 +377,32 @@ def generate_executive_summary(
         
     primary = "Main" if "Main" in active_slurries else (active_slurries[0] if active_slurries else "Main")
     primary_vol, primary_den = get_slurry_display_values(fluid_data, primary)
+    # The placement sentence describes the primary slurry, but the rig will
+    # pump every active slurry. List every volume when there is more than one.
+    if len(active_slurries) > 1:
+        volumes = "; ".join(
+            f"{slurry}: {get_slurry_display_values(fluid_data, slurry)[0]}"
+            for slurry in active_slurries
+        )
+        volume_statement = f"Planned slurry volumes: {volumes}"
+    else:
+        volume_statement = f"Planned slurry volume: {primary_vol}"
     if "PLUG" in job_upper:
         top, _ = slurry_top(primary)
         p3 = (f"Cement plug target depth is {shoe_str}. {design_str} for cement placement inside casing / open hole; "
               f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top}. "
-              f"Planned slurry volume: {primary_vol}; basis: {basis}.")
+              f"{volume_statement}; basis: {basis}.")
     elif "SQUEEZE" in job_upper:
         p3 = (f"{job_type} treatment depth is {shoe_str}. {design_str} for this zone; "
               f"{primary_den} {primary.lower()} cement slurry is planned at {shoe_str}. "
-              f"Planned slurry volume: {primary_vol}; basis: {basis}.")
+              f"{volume_statement}; basis: {basis}.")
     elif "TIE BACK" in job_upper:
         top, _ = slurry_top(primary)
         host = parse_tieback_host_label(hw_df, job_type=job_type, placement_config=placement_config)
         host = host or "[HOST NOT SELECTED IN PHASE II/III]"
         p3 = (f"{job_type} target depth is {shoe_str}. {design_str} for this tie back; "
               f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top} "
-              f"inside {host}. Planned slurry volume: {primary_vol}; basis: {basis}.")
+              f"inside {host}. {volume_statement}; basis: {basis}.")
     else:
         kind = "Liner" if "LNR" in job_upper else "Casing"
         placement_parts = []
@@ -1314,9 +1324,13 @@ def render():
     # actual point of action — catches it either way, without repeating the
     # full expander a second time.
     _status_pre_build = compute_phase_status(st.session_state)
-    _unresolved = [v["message"] for v in _status_pre_build.values() if v["level"] != "ok"]
+    _unresolved = [v["message"] for k, v in _status_pre_build.items()
+                   if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
     if _unresolved:
         st.warning("⚠️ **Before building:** " + " | ".join(_unresolved))
+        # Do not leave a previously compiled document downloadable when the
+        # operator has made a required phase incomplete.
+        invalidate_document(st.session_state)
 
     # 4. Document Generation & In-Memory Streaming
     st.subheader("4. Document Generation (.docx)")
@@ -1347,7 +1361,8 @@ def render():
             invalidate_document(st.session_state)
         col_gen, col_down = st.columns([1.5, 2.5])
         with col_gen:
-            if st.button("Build Word Document", type="primary", disabled=master_context is None):
+            if st.button("Build Word Document", type="primary",
+                         disabled=master_context is None or bool(_unresolved)):
                 invalidate_document(st.session_state)
                 try:
                     with st.spinner("Compiling full engineering dossier..."):
