@@ -233,10 +233,11 @@ def render():
                     current_sp_df,
                     persist_to=("spacer_dfs", spacer_name),
                     column_config={
+                        # Permit amount-first entry to persist a draft row.
+                        # The phase status still requires a selected chemical.
                         "Chemical": st.column_config.SelectboxColumn(
                             "Chemical",
-                            options=materials_db.SPACER_CHEMICALS,
-                            required=True
+                            options=materials_db.SPACER_CHEMICALS
                         ),
                         "User Input (% or gal)": st.column_config.NumberColumn(
                             "Input",
