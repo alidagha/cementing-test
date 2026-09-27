@@ -10,6 +10,14 @@ from numbers import Real
 from decimal import Decimal, ROUND_HALF_UP
 import materials_db
 
+
+def lab_review_signature(qc, grid):
+    """Identify precisely the QC readings and lab rows confirmed by an operator."""
+    from project_state import fingerprint
+    return fingerprint({"qc": {key: value for key, value in qc.items()
+                               if key not in ("reviewed", "review_signature")},
+                        "grid": grid})
+
 # ==============================================================================
 # 1. CORE NUMERIC, STRING & HYDRAULIC UTILITIES
 # ==============================================================================
@@ -597,6 +605,13 @@ def compute_phase_status(ss) -> dict:
     def filled(value):
         return str(value).strip().lower() not in ("", "none", "nan", "<na>")
 
+    def _positive_number(value):
+        try:
+            number = float(value)
+            return math.isfinite(number) and number > 0
+        except (TypeError, ValueError, OverflowError):
+            return False
+
     # Phase I: Document Control
     well_name = str(ss.get("well_name", "")).strip()
     client = str(ss.get("client", "")).strip()
@@ -623,16 +638,40 @@ def compute_phase_status(ss) -> dict:
         status["phase2_3"] = {"level": "warning", "message": "MD/TVD is invalid; review Phase II & III."}
     elif hw_rows == 0:
         status["phase2_3"] = {"level": "empty", "message": "Tubular/Casing Hardware table is empty."}
+    elif geo_md <= 0 or geo_tvd <= 0:
+        status["phase2_3"] = {"level": "warning", "message": "Enter positive MD and TVD in Phase II & III."}
     elif geo_tvd > geo_md:
         status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
+    elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
+             or not _positive_number(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
+             for _, row in hw.iterrows()):
+        status["phase2_3"] = {"level": "warning", "message": "Complete hardware description, depth, size and ID."}
     else:
         status["phase2_3"] = {"level": "ok", "message": f"{hw_rows} hardware row(s)."}
 
     # Phase IV: Fluids Sequence
-    status["phase4"] = (
-        {"level": "ok", "message": f"{len(active)} fluid(s) active."} if len(active) > 1
-        else {"level": "empty", "message": "No fluids selected beyond Displacement Fluid."}
-    )
+    if len(active) <= 1:
+        status["phase4"] = {"level": "empty", "message": "No fluids selected beyond Displacement Fluid."}
+    else:
+        config = ss.get("fluids_config", {}).get("params", {})
+        fluid_data = ss.get("fluid_data", {})
+        incomplete = []
+        for fluid in active:
+            source = config.get(fluid, fluid_data.get(fluid, {}))
+            if not isinstance(source, dict) or not _positive_number(source.get("volume")):
+                incomplete.append(fluid)
+                continue
+            density = (ss.get("mud_density") or ss.get("well_data", {}).get("mud_density")
+                       if fluid == "Displacement Fluid" else source.get("density"))
+            try:
+                require_positive_density(density)
+                require_positive_pump_rate(source.get("pump_rate"))
+            except (TypeError, ValueError, OverflowError):
+                incomplete.append(fluid)
+        status["phase4"] = (
+            {"level": "warning", "message": f"Review volume, density and pump rate for: {', '.join(incomplete)}."} if incomplete
+            else {"level": "ok", "message": f"{len(active)} fluid(s) configured."}
+        )
 
     # Phase V: Cement Program
     if not active_slurries:
@@ -671,10 +710,24 @@ def compute_phase_status(ss) -> dict:
             return True
 
         missing = [s for s in active_slurries if not rows_complete(adds.get(s))]
-        status["phase5"] = (
-            {"level": "warning", "message": f"Additive rows incomplete for: {', '.join(missing)}."} if missing
-            else {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated."}
-        )
+        missing_tops = []
+        for slurry in active_slurries:
+            params = ss.get("cement_params", {}).get(slurry, {})
+            mode = params.get("top_mode")
+            if mode == "Surface":
+                continue
+            if mode == "Depth (m MD)" and _positive_number(params.get("top_depth")):
+                continue
+            # Older projects can contain an approved depth without top_mode.
+            if mode is None and _positive_number(params.get("top_depth")):
+                continue
+            missing_tops.append(slurry)
+        if missing:
+            status["phase5"] = {"level": "warning", "message": f"Additive rows incomplete for: {', '.join(missing)}."}
+        elif missing_tops:
+            status["phase5"] = {"level": "warning", "message": f"Top of cement not entered for: {', '.join(missing_tops)}."}
+        else:
+            status["phase5"] = {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated and placed."}
 
     # Phase VI: Pre-flush & Spacer
     has_preflush = "Pre Flush" in active
@@ -723,6 +776,14 @@ def compute_phase_status(ss) -> dict:
                 continue
             if any(not all(filled(row.get(field)) for field in ("Material", "Concentration", "Unit", "Mass"))
                    for _, row in grid.iterrows()):
+                missing.append(slurry)
+                continue
+            if (not qc[slurry].get("reviewed", False)
+                    or qc[slurry].get("review_signature") != lab_review_signature(qc[slurry], grid)):
+                missing.append(slurry)
+                continue
+            from project_state import lab_source_signature
+            if ss.get("lab_source_signatures", {}).get(slurry) != lab_source_signature(ss, slurry):
                 missing.append(slurry)
         status["phase7"] = (
             {"level": "warning", "message": f"Lab QC or formulation rows incomplete for: {', '.join(missing)}."} if missing

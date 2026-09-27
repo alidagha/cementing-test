@@ -1,0 +1,8 @@
+# Place this file beside main.py when deploying to Streamlit Community Cloud.
+# Run the application: streamlit run main.py
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+docxtpl==0.20.2
+python-docx==1.2.0
+Jinja2==3.1.6

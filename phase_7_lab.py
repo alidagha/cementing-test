@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import materials_db
 from project_state import lab_source_signature
+from engineering_tools import lab_review_signature
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from engineering_tools import (
@@ -355,6 +356,7 @@ def render():
                         st.error(f"{slurry}: {exc}. Correct the formulation in Phase V before syncing.")
                         continue
                     signatures[slurry] = current_p5_sig
+                    qc["reviewed"] = False
                     revision_key = f"_lab_grid_revision_{slurry}"
                     st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
                     st.rerun()
@@ -363,6 +365,7 @@ def render():
                 if st.button("Keep reviewed lab entries", key=f"_keep_lab_{slurry}_{load_sig}",
                              help="Confirm that the existing quantities and QC results apply to the current formulation; keep all manual entries."):
                     signatures[slurry] = current_p5_sig
+                    qc["reviewed"] = False
                     st.rerun()
 
             current_lab_df = st.session_state["lab_grid_dfs"].get(slurry, pd.DataFrame(columns=LAB_GRID_COLUMNS))
@@ -475,6 +478,22 @@ def render():
                 # value (e.g. "3:3", "03.30") without blocking anything.
                 if not re.match(r"^\d{1,2}:[0-5]\d$", qc["thickening_time"].strip()):
                     st.caption("⚠️ Format should be HH:MM (e.g. 03:30). This value is printed in the report exactly as typed.")
+
+            review_matches = (qc.get("reviewed", False)
+                              and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
+                              and signatures.get(slurry) == current_p5_sig)
+            if review_matches:
+                st.success("Lab readings and formulation reviewed for this slurry.")
+            elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
+                           disabled=drifted,
+                           help="Confirm the values above are measured and checked for the current well and formulation."):
+                qc["reviewed"] = True
+                qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
+                st.rerun()
+            elif drifted:
+                st.caption("Sync or keep reviewed lab entries before confirming their measured results.")
+            else:
+                st.warning("Lab QC has not been confirmed for this slurry; defaults are not measured results.")
 
             # Pull Lab Test Basic Data fields that don't have their own Phase VII
             # widget: BHSP comes from Phase III (shared well property, same as

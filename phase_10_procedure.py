@@ -10,7 +10,14 @@ from placement import target_depth, host_label, top_label
 from datetime import datetime
 import materials_db
 from engineering_tools import round_half_up, clean_number, normalize_additive_mix, resolve_physical_state, compute_phase_status
-from docxtpl import DocxTemplate
+try:
+    from docxtpl import DocxTemplate
+except ModuleNotFoundError as exc:
+    if exc.name != "docxtpl":
+        raise
+    # A deployment without the root requirements.txt must still let the
+    # operator open Phase X and read the missing-dependency instruction.
+    DocxTemplate = None
 from project_state import (fingerprint, prepare_calculations, sync_report_text,
                            accept_report_text, restore_previous_text, invalidate_document)
 
@@ -1314,6 +1321,10 @@ def render():
     # 4. Document Generation & In-Memory Streaming
     st.subheader("4. Document Generation (.docx)")
     st.caption("Injects all project phases, tables, executive summary, and notes into `master_template.docx` via DocxTemplate engine.")
+    if DocxTemplate is None:
+        invalidate_document(st.session_state)
+        st.error("Word export requires docxtpl. Deploy requirements.txt beside main.py, then reboot the Streamlit app.")
+        return
 
     template_path = str(TEMPLATE_PATH)
     template_exists = os.path.exists(template_path)
