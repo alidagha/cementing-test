@@ -11,10 +11,10 @@ HYDRAULIC_EXECUTION_ORDER = [
     "Pre Flush",
     "Spacer",
     "Spacer Ahead",
-    "Main",
     "Lead",
     "Lead #1",
     "Lead #2",
+    "Main",
     "Tail",
     "Spacer Behind",
     "Displacement Fluid"
