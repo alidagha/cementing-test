@@ -9,8 +9,8 @@ from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from engineering_tools import (
     clean_number,
+    require_positive_density,
     require_nonnegative_number,
-    parse_effective_numeric,
     calculate_slurry_from_components,
     resolve_additive_density,
     resolve_physical_state,
@@ -292,9 +292,10 @@ def render():
             p_cement = st.session_state.get("cement_params", {}).get(slurry, {}).get("base_cement", "Cement G Delijan")
             try:
                 p_cmt_sg = clean_number(st.session_state.get("cement_params", {}).get(slurry, {}).get("cmt_sg", 3.20)) or 3.20
-                slurry_vol = clean_number(fluid_data.get(slurry, {}).get("volume", 50.0)) or 50.0
-                slurry_den_str = str(fluid_data.get(slurry, {}).get("density", "118.0"))
-                slurry_den = clean_number(fluid_data.get(slurry, {}).get("effective_density")) or parse_effective_numeric(slurry_den_str, 118.0)
+                slurry_vol = clean_number(fluid_data.get(slurry, {}).get("volume"))
+                if slurry_vol <= 0:
+                    raise ValueError("Phase IV slurry volume must be positive")
+                slurry_den = require_positive_density(fluid_data.get(slurry, {}).get("density"))
             except ValueError as exc:
                 st.error(f"{slurry}: invalid Phase IV/V input ({exc}). Correct it before syncing lab quantities.")
                 continue

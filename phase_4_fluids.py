@@ -48,6 +48,28 @@ def build_fluid_record(
         "cumul_time_str": str(cumul_time_str)
     }
 
+
+def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
+    """Commit the last edit before a phase switch skips this phase's render.
+
+    Streamlit runs widget callbacks before rerouting. Without this callback a
+    text field blurred by a navigation click is removed before render() can
+    copy its new value from the widget into the project's fluid parameters.
+    """
+    value = st.session_state[widget_key]
+    config = st.session_state.get("fluids_config", {})
+    if fluid not in config.get("active", []):
+        return
+    config.setdefault("params", {}).setdefault(fluid, {})[field] = value
+
+    # This is the already-rendered record used by the following phase. Phase
+    # IV recalculates durations and cumulative time when it renders again.
+    record = st.session_state.get("fluid_data", {}).get(fluid)
+    if isinstance(record, dict):
+        record[field] = value
+        if field == "density":
+            record["effective_density"] = parse_effective_numeric(value, default=0.0)
+
 def render():
     st.header("Phase IV: Fluids Sequence")
     st.markdown("Configure fluid train parameters. **Displacement Fluid density is dynamically referenced from Phase II.**")
@@ -180,7 +202,9 @@ def render():
             f"Material Name - {fluid}",
             value=str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))),
             help="Descriptive fluid name shown in the 'Name' column (e.g. 'Cement Slurry', 'Salt Saturated Water', 'Mud').",
-            key=f"matname_{fluid}"
+            key=f"matname_{fluid}",
+            on_change=_commit_fluid_widget,
+            args=(fluid, "material_name", f"matname_{fluid}")
         )
 
         col1, col2, col3, col4, col5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
@@ -192,7 +216,9 @@ def render():
                 min_value=0.0,
                 step=1.0,
                 value=float(p.get("volume", 0.0)),
-                key=f"vol_{fluid}"
+                key=f"vol_{fluid}",
+                on_change=_commit_fluid_widget,
+                args=(fluid, "volume", f"vol_{fluid}")
             )
             
         # Density Input
@@ -210,7 +236,9 @@ def render():
                     f"Density (pcf) - {fluid}",
                     value=disp_density_text,
                     help="Enter density in pcf (e.g. 118.0 or range 115-118)",
-                    key=f"den_{fluid}"
+                    key=f"den_{fluid}",
+                    on_change=_commit_fluid_widget,
+                    args=(fluid, "density", f"den_{fluid}")
                 )
                 try:
                     require_positive_density(p["density"])
@@ -251,7 +279,9 @@ def render():
                 f"Rate (bpm) - {fluid}",
                 value=str(p.get("pump_rate", "4.0")),
                 help="Single value (e.g. 4.0) or range (e.g. 3-5). Calculations use minimum value.",
-                key=f"rate_{fluid}"
+                key=f"rate_{fluid}",
+                on_change=_commit_fluid_widget,
+                args=(fluid, "pump_rate", f"rate_{fluid}")
             )
 
         try:

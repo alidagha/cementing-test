@@ -752,11 +752,8 @@ def compute_phase_status(ss) -> dict:
                 try:
                     if not _positive_number(fluid.get("volume")):
                         raise ValueError("Phase IV volume is missing")
-                    density = fluid.get("effective_density")
-                    if density is None:
-                        density = parse_effective_numeric(fluid.get("density"), default=0.0)
-                    density = float(density)
-                    if not math.isfinite(density) or not 75.0 <= density <= 180.0:
+                    density = require_positive_density(fluid.get("density"))
+                    if not 75.0 <= density <= 180.0:
                         raise ValueError("Phase IV slurry density is invalid")
                     powders, liquids, salt = build_components(adds[slurry])
                     result = calculate_slurry_from_components(

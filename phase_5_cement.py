@@ -5,8 +5,8 @@ import materials_db
 from engineering_tools import (
     round_half_up,
     clean_number,
+    require_positive_density,
     require_nonnegative_number,
-    parse_effective_numeric,
     calculate_slurry_from_components,
     resolve_additive_density,
     resolve_physical_state,
@@ -253,8 +253,10 @@ def refresh_cement_calculations(state):
         try:
             p = dict(p)  # Commit only after the calculation and tables succeed.
             info = state.get("fluid_data", {}).get(slurry, {})
-            volume = clean_number(info.get("volume", 0.0))
-            density = clean_number(info.get("effective_density")) or parse_effective_numeric(str(info.get("density", "118.0")), 118.0)
+            volume = clean_number(info.get("volume"))
+            if volume <= 0:
+                raise ValueError("Phase IV slurry volume must be positive")
+            density = require_positive_density(info.get("density"))
             if not 75.0 <= density <= 180.0:
                 issues.append(f"{slurry}: slurry density {density:.1f} pcf is outside 75–180 pcf; correct Phase IV before export.")
                 continue
@@ -345,13 +347,19 @@ def render():
             
             # Fluid data from Phase IV
             f_info = fluid_data.get(slurry, {})
+            fluid_issue = None
             try:
-                vol = clean_number(f_info.get("volume", 0.0))
-                density_str = str(f_info.get("density", "118.0"))
-                effective_density = clean_number(f_info.get("effective_density")) or parse_effective_numeric(density_str, default=118.0)
+                vol = clean_number(f_info.get("volume"))
+                if vol <= 0:
+                    raise ValueError("Phase IV slurry volume must be positive")
+                effective_density = require_positive_density(f_info.get("density"))
             except ValueError as exc:
+                fluid_issue = exc
+                vol = 0.0
+                effective_density = 0.0
                 st.error(f"{slurry}: invalid Phase IV fluid value ({exc}). Review Phase IV before calculating.")
-                continue
+                # Keep the formulation editor available while Phase IV is
+                # incomplete. Only the calculation depends on its fluid data.
 
             # FIX (confirmed via direct numerical test of calculate_slurry_from_
             # components): the mass-balance formula's denominator is
@@ -659,6 +667,8 @@ def render():
             # -------------------------------------------------------------
             if edited_df["User Input"].isna().any():
                 st.info(f"Complete the concentration for each new {slurry} additive row to calculate the slurry.")
+                continue
+            if fluid_issue is not None:
                 continue
             try:
                 powders_for_calc, liquids_for_calc, salt_pct_for_calc = build_components(edited_df)
