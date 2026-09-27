@@ -652,6 +652,22 @@ def compute_phase_status(ss) -> dict:
                     return False
                 if not math.isfinite(concentration) or concentration < 0:
                     return False
+                # The same density resolution as Phase V's mass-balance engine
+                # must succeed before the sidebar can show a completed slurry.
+                # In particular, a custom material requires its measured value.
+                name = str(row.get("Name") or "").strip()
+                display_name = name if name and name != "Other (Custom)" else material
+                if material.casefold() == "cement":
+                    return False
+                if not is_salt_additive(material, display_name):
+                    state = resolve_physical_state(material, row.get("Physical State"))
+                    try:
+                        resolve_additive_density(
+                            display_name, state, row.get("Density"),
+                            require_measured=name.casefold() == "other (custom)"
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        return False
             return True
 
         missing = [s for s in active_slurries if not rows_complete(adds.get(s))]
@@ -664,7 +680,7 @@ def compute_phase_status(ss) -> dict:
     has_preflush = "Pre Flush" in active
     spacer_types = [f for f in active if f in ("Spacer", "Spacer Ahead", "Spacer Behind")]
     if not has_preflush and not spacer_types:
-        status["phase6"] = {"level": "ok", "message": "Not applicable (no Pre Flush/Spacer selected)."}
+        status["phase6"] = {"level": "empty", "message": "Not applicable (no Pre Flush/Spacer selected)."}
     else:
         problems = []
         if has_preflush and not ss.get("preflush_calc"):

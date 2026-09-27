@@ -1207,15 +1207,19 @@ def render():
     # warned the operator beforehand. This reuses the exact same
     # compute_phase_status() the sidebar markers use (see main.py), so the
     # two can never disagree about what "ready" means; shown collapsed by
-    # default so it doesn't get in the way once a project genuinely is
-    # complete (every phase "ok").
+    # default once required phases are complete. An unselected optional
+    # Pre-flush/Spacer phase is neutral, not an export-readiness problem.
     _status = compute_phase_status(st.session_state)
     _phase_names = {
         "phase1": "I: Document Control", "phase2_3": "II & III: Well Data",
         "phase4": "IV: Fluids Sequence", "phase5": "V: Cement Program",
         "phase6": "VI: Pre-flush & Spacer", "phase7": "VII: Lab Report",
     }
-    _not_ok = [(k, v) for k, v in _status.items() if v["level"] != "ok"]
+    _selected_fluids = st.session_state.get("fluids_config", {}).get("active", [])
+    _phase6_optional = not any(name in _selected_fluids
+                               for name in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind"))
+    _not_ok = [(k, v) for k, v in _status.items()
+               if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
     _icon = "✅" if not _not_ok else ("⚠️" if any(v["level"] == "warning" for _, v in _not_ok) else "⚪")
     with st.expander(f"{_icon} Export readiness checklist", expanded=bool(_not_ok)):
         for key, name in _phase_names.items():
