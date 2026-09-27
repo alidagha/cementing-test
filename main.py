@@ -118,6 +118,17 @@ def _phase_caption(key):
     description = {"ok": "Complete", "warning": "Needs review", "empty": "Not started"}
     return f"{_PHASE_ICONS.get(level, '⚪')} {description.get(level, 'Not started')}"
 
+def _reset_navigation_after_project_replace(state):
+    """Reset the radio before mounting it after Start New or project load.
+
+    Both paths replace widget state after navigation is already mounted. The
+    next run renders Phase I, but the browser can keep an old phase checked.
+    """
+    if state.pop("_reset_navigation_to_phase1", False):
+        state["_app_mode_key"] = "phase1"
+
+_reset_navigation_after_project_replace(st.session_state)
+
 with _navigation_slot:
     st.title("Navigation")
     app_mode_key = st.radio("Select Phase", _PHASE_ORDER, format_func=_format_phase,
@@ -367,6 +378,7 @@ else:
             next_revision = uploader_revision + 1
             _clear_all_session_data(preserved_keys={uploader_key})
             st.session_state["_uploader_revision"] = next_revision
+            st.session_state["_reset_navigation_to_phase1"] = True
             st.session_state["_confirm_clear_pending"] = False
             st.rerun()
     with col_confirm_no:

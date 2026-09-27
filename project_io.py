@@ -150,6 +150,10 @@ def replace_project_state(state, project, signature, preserved_keys=()):
         for key, value in project.items():
             state[key] = value
         state["last_loaded_hash"] = signature
+        # The navigation radio was already mounted during this run. Its old
+        # browser selection can remain checked after session replacement even
+        # though the next run renders Phase I from the cleared widget state.
+        state["_reset_navigation_to_phase1"] = True
     except Exception:
         for key in list(state):
             if key not in preserved:
