@@ -376,8 +376,11 @@ def render():
                 current_lab_df,
                 persist_to=("lab_grid_dfs", slurry),
                 column_config={
-                    "Material": st.column_config.TextColumn("Material", required=True),
-                    "Concentration": st.column_config.TextColumn("Concentration (% or gal/sk)", required=True),
+                    # Allow an unfinished row to reach session state as soon as
+                    # its first cell is edited. Completeness is checked by the
+                    # phase status and export guard when the user is done.
+                    "Material": st.column_config.TextColumn("Material"),
+                    "Concentration": st.column_config.TextColumn("Concentration (% or gal/sk)"),
                     "Unit": st.column_config.SelectboxColumn("Unit", options=["BWOW", "% BWOW", "BWOB", "% BWOC", "gal/sk", "VBWOC"], default="% BWOC"),
                     "Mass": st.column_config.TextColumn("Mass (grams)", default=""),
                     "Lot No": st.column_config.TextColumn("Lot No", default="")
