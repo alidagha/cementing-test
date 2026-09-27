@@ -647,7 +647,18 @@ def compute_phase_status(ss) -> dict:
              for _, row in hw.iterrows()):
         status["phase2_3"] = {"level": "warning", "message": "Complete hardware description, depth, size and ID."}
     else:
-        status["phase2_3"] = {"level": "ok", "message": f"{hw_rows} hardware row(s)."}
+        # Use the same resolved placement source as the procedure generator.
+        # A valid hardware row alone does not identify the target shoe, and a
+        # former selection must cease to count after that row or job changes.
+        from placement import target_depth, host_label
+        job_type = ss.get("job_type", "")
+        placement = ss.get("placement_config", {})
+        if target_depth(hw, job_type, placement) is None:
+            status["phase2_3"] = {"level": "warning", "message": "Select the target shoe or enter a measured treatment depth in Phase II & III."}
+        elif "TIE BACK" in str(job_type).upper() and host_label(hw, job_type, placement) is None:
+            status["phase2_3"] = {"level": "warning", "message": "Select the existing casing or liner host for tie-back."}
+        else:
+            status["phase2_3"] = {"level": "ok", "message": f"{hw_rows} hardware row(s); placement target selected."}
 
     # Phase IV: Fluids Sequence
     if len(active) <= 1:
