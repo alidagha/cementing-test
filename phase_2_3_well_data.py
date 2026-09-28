@@ -240,9 +240,12 @@ def render():
             collapse_val = 0.0
             burst_val = 0.0
             
+        raw_depth = row.get("MD (m)")
         cleaned_rows.append({
             "Description": desc,
-            "MD (m)": str(row.get("MD (m)") or "0.0"),
+            # A blank depth in an older, unfinished row is still blank. It
+            # must not turn into an invented zero when this phase first opens.
+            "MD (m)": "" if raw_depth is None or pd.isna(raw_depth) else str(raw_depth),
             "Size (in)": size_str,
             "ID (in)": id_val,
             "Joint (m)": joint_val,

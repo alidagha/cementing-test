@@ -94,6 +94,20 @@ def render():
     cfg = st.session_state["fluids_config"]
     if "params" not in cfg:
         cfg["params"] = {}
+    # Earlier project files kept the fluid train in fluid_data and did not
+    # always include a params entry for every active fluid. Restore only the
+    # missing fields before bounded widgets or defaults can overwrite them.
+    legacy_fluids = st.session_state.get("fluid_data", {})
+    if isinstance(legacy_fluids, dict):
+        for fluid in cfg.get("active", []):
+            legacy = legacy_fluids.get(fluid)
+            if not isinstance(legacy, dict):
+                continue
+            params = cfg["params"].setdefault(fluid, {})
+            if isinstance(params, dict):
+                for field in ("volume", "density", "pump_rate", "material_name"):
+                    if field not in params and field in legacy:
+                        params[field] = legacy[field]
     bounded = []
     for fluid in cfg.get("active", []):
         params = cfg["params"].get(fluid, {})
@@ -172,6 +186,7 @@ def render():
         return
 
     cumulative_time_min = 0.0
+    cumulative_time_valid = True
     fluid_data_payload = {}
 
     # Iterates strictly in sorted hydraulic execution order
@@ -192,7 +207,6 @@ def render():
                 }
             )
             disp_density_text = str(p.get("density", "80.0"))
-            disp_effective_density = parse_effective_numeric(disp_density_text, default=80.0)
 
         # Material Name — the Fluids Sequence table's "Name" column (e.g. "Cement
         # Slurry", "Salt Saturated Water", "Mud"), distinct from the "Type" column
@@ -241,15 +255,18 @@ def render():
                     args=(fluid, "density", f"den_{fluid}")
                 )
                 try:
-                    require_positive_density(p["density"])
+                    disp_effective_density = require_positive_density(p["density"])
                 except ValueError as exc:
                     st.error(f"{fluid}: {exc}. Correct the density before exporting the report.")
-                disp_effective_density = parse_effective_numeric(p["density"], default=80.0)
-                # FIX (requested, Level 1 #4): same transparency caption as
-                # Phase II's range fields — shows the single number this
-                # text actually resolves to for every downstream calculation,
-                # without changing the free-text range-input behavior itself.
-                st.caption(f"↳ Used in calculations as: **{disp_effective_density:.1f} pcf**" + (" (mean of range)" if any(c in p["density"] for c in "-/") else ""))
+                    # Keep the invalid input visible without presenting a
+                    # fabricated 80 pcf value as an actual calculation.
+                    disp_effective_density = 0.0
+                else:
+                    # FIX (requested, Level 1 #4): same transparency caption as
+                    # Phase II's range fields — shows the single number this
+                    # text actually resolves to for every downstream calculation,
+                    # without changing the free-text range-input behavior itself.
+                    st.caption(f"↳ Used in calculations as: **{disp_effective_density:.1f} pcf**" + (" (mean of range)" if any(c in p["density"] for c in "-/") else ""))
 
                 # FIX (found by testing): the Mass Balance formula (Phase V)
                 # has a denominator that approaches zero as slurry weight
@@ -266,7 +283,7 @@ def render():
                 # density (e.g. 200 pcf) could pass silently here yet trigger
                 # a warning one phase later, which read as contradictory/
                 # confusing rather than as two independent checks.
-                if fluid in {"Main", "Lead", "Lead #1", "Lead #2", "Tail"} and not (75.0 <= disp_effective_density <= 180.0):
+                if disp_effective_density > 0 and fluid in {"Main", "Lead", "Lead #1", "Lead #2", "Tail"} and not (75.0 <= disp_effective_density <= 180.0):
                     st.warning(
                         f"⚠ **Plausibility Check:** {fluid} density is {disp_effective_density:.1f} pcf — outside the "
                         "typical range for a cement slurry (~75-180 pcf). Please verify this isn't a typo; an implausible "
@@ -293,9 +310,10 @@ def render():
             min_rate = 0.0
             duration_min = 0.0
             duration_str = "INVALID RATE"
+            cumulative_time_valid = False
         cumulative_time_min += duration_min
 
-        cumul_str = format_to_hr_mm(cumulative_time_min)
+        cumul_str = format_to_hr_mm(cumulative_time_min) if cumulative_time_valid else "INVALID RATE"
 
         with col4:
             st.info(f"Duration:\n\n**{duration_str}** (hr:mm)")
@@ -320,7 +338,7 @@ def render():
 
     st.session_state["fluid_data"] = fluid_data_payload
     st.session_state["total_pump_time_min"] = cumulative_time_min
-    st.session_state["total_pump_time_hhmm"] = format_to_hr_mm(cumulative_time_min)
+    st.session_state["total_pump_time_hhmm"] = format_to_hr_mm(cumulative_time_min) if cumulative_time_valid else "INVALID RATE"
 
     # FIX (requested): mirror the same cleanup for Spacer, which previously
     # had none at all — spacer_dfs[name] and spacer_initialized_names kept
