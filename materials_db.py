@@ -65,9 +65,13 @@ FLUID_TYPES = [
 
 DEFAULT_MATERIAL_NAMES = {
     "Pre Flush": "Salt Saturated Water",
-    "Spacer": "Salt Saturated Water",
-    "Spacer Ahead": "Salt Saturated Water",
-    "Spacer Behind": "Salt Saturated Water",
+    # BUG-20: the three spacer stages used to inherit the PRE-FLUSH name
+    # "Salt Saturated Water" - a spacer is a weighted, viscous isolating
+    # fluid, not a salt wash, and the exported fluids train table showed
+    # the wrong description. Spacers get their own descriptive default.
+    "Spacer": "Weighted Spacer",
+    "Spacer Ahead": "Weighted Spacer",
+    "Spacer Behind": "Weighted Spacer",
     "Main": "Cement Slurry",
     "Lead": "Cement Slurry",
     "Lead #1": "Cement Slurry",

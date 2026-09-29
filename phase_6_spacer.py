@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import materials_db
 from input_guard import repair_invalid_inputs
-from engineering_tools import round_half_up, clean_number
+from engineering_tools import round_half_up, clean_number, safe_float
 from editor_state import persistent_data_editor
 
 REQUIRED_SPACER_COLS = ["Chemical", "User Input (% or gal)", "Weighting Agent Type"]
@@ -12,9 +12,80 @@ def _go_to_fluid_configuration():
     """Select the target phase before the sidebar navigation radio is mounted."""
     st.session_state["_app_mode_key"] = "phase4"
 
+
+def _commit_preflush_param(field: str, widget_key: str) -> None:
+    """BUG-01 (same protection as Phase IV's _commit_fluid_widget): commit the
+    last widget edit into preflush_config before a phase-switch rerun can
+    garbage-collect this widget."""
+    st.session_state.setdefault("preflush_config", {})[field] = st.session_state[widget_key]
+
 def get_spacer_key(name: str, prefix: str) -> str:
     sanitized = "".join(c if c.isalnum() else "_" for c in str(name)).lower()
     return f"{prefix}_{sanitized}"
+
+def compute_preflush_payload(preflush_config: dict, pf_info: dict) -> dict:
+    """F1 (P0-01, owner-approved 2026-09-29): PURE recomputation of the Phase X
+    preflush report payload from the source of truth (preflush_config + the
+    Phase IV fluid row), with exactly the semantics render() below applies
+    when it builds its transient preflush_calc byproduct.
+
+    Why this exists: preflush_calc is a Phase-VI render byproduct and goes
+    STALE when Phase IV volume/density edits are followed by direct sidebar
+    navigation to Phase X — live-proven: the Word report printed 80 bbl while
+    the fluid truth was 25 bbl, with the readiness checklist still saying
+    'ok' (engineering_tools.compute_phase_status only checks that
+    preflush_calc is non-empty, never that it agrees with fluid_data).
+    Phase X now calls this at Word-build time, so the report can never publish
+    an outdated snapshot. render() keeps writing preflush_calc as before — it
+    remains the 'Phase VI was configured' readiness marker.
+
+    Numeric reads use safe_float: garbage must surface through Phase X's
+    unreadable-volume gate, not as a raw ValueError here (mirrors render()'s
+    float() reads for every well-formed session).
+    """
+    config = preflush_config or {}
+    info = pf_info or {}
+    kind = str(config.get("type", "Combined (Water + NaCl + Wash)"))
+    # Same type canonicalization render() applies before its branches.
+    if kind in ("Chemical Wash", "Water + Chemical Wash"):
+        kind = "Water + Chemical Wash"
+    elif kind in ("Combined / Custom", "Combined (Water + NaCl + Wash)"):
+        kind = "Combined (Water + NaCl + Wash)"
+
+    pf_vol = safe_float(info.get("volume", 0.0))
+    pf_density_str = str(info.get("density", "80.0"))
+    pf_eff_density = safe_float(info.get("effective_density", 80.0), 80.0)
+
+    water_amt = round_half_up(pf_vol, 1)
+    nacl_amt = 0.0
+    wash_amt = 0.0
+    nacl_mult = 0.0
+    wash_mult = 0.0
+    if kind == "Water + Chemical Wash":
+        wash_mult = safe_float(config.get("wash_multiplier", 3.0))
+        wash_amt = round_half_up(pf_vol * wash_mult, 1)
+    elif kind == "Brine (Water + NaCl)":
+        nacl_mult = safe_float(config.get("nacl_multiplier", 126.0))
+        nacl_amt = round_half_up(pf_vol * nacl_mult, 1)
+    elif kind == "Fresh Water Only":
+        pass
+    else:  # Combined (Water + NaCl + Wash) — render()'s else branch
+        nacl_mult = safe_float(config.get("nacl_multiplier", 126.0))
+        wash_mult = safe_float(config.get("wash_multiplier", 3.0))
+        nacl_amt = round_half_up(pf_vol * nacl_mult, 1)
+        wash_amt = round_half_up(pf_vol * wash_mult, 1)
+
+    return {
+        "type": kind,
+        "volume_bbl": pf_vol,
+        "density_pcf": pf_density_str,
+        "effective_density": pf_eff_density,
+        "nacl_lbs": nacl_amt,
+        "wash_gal": wash_amt,
+        "water_bbl": water_amt,
+        "nacl_multiplier": nacl_mult,
+        "wash_multiplier": wash_mult,
+    }
 
 def render():
     st.header("Phase VI: Pre-flush & Spacer")
@@ -98,7 +169,9 @@ def render():
             "Pre-flush Fluid Type",
             options=pf_types,
             index=type_idx,
-            key=f"_pf_type_select_{load_sig}"
+            key=f"_pf_type_select_{load_sig}",
+            on_change=_commit_preflush_param,
+            args=("type", f"_pf_type_select_{load_sig}")
         )
         pf_cfg["type"] = selected_type
 
@@ -130,7 +203,9 @@ def render():
                     min_value=0.0,
                     step=0.5,
                     value=float(pf_cfg.get("wash_multiplier", 3.0)),
-                    key=f"_pf_wash_m_{load_sig}"
+                    key=f"_pf_wash_m_{load_sig}",
+                    on_change=_commit_preflush_param,
+                    args=("wash_multiplier", f"_pf_wash_m_{load_sig}")
                 )
                 pf_cfg["wash_multiplier"] = wash_mult
             with col3:
@@ -148,7 +223,9 @@ def render():
                     min_value=0.0,
                     step=1.0,
                     value=float(pf_cfg.get("nacl_multiplier", 126.0)),
-                    key=f"_pf_nacl_m_{load_sig}"
+                    key=f"_pf_nacl_m_{load_sig}",
+                    on_change=_commit_preflush_param,
+                    args=("nacl_multiplier", f"_pf_nacl_m_{load_sig}")
                 )
                 pf_cfg["nacl_multiplier"] = nacl_mult
             with col3:
@@ -166,7 +243,9 @@ def render():
                     min_value=0.0,
                     step=1.0,
                     value=float(pf_cfg.get("nacl_multiplier", 126.0)),
-                    key=f"_pf_nacl_m_{load_sig}"
+                    key=f"_pf_nacl_m_{load_sig}",
+                    on_change=_commit_preflush_param,
+                    args=("nacl_multiplier", f"_pf_nacl_m_{load_sig}")
                 )
                 pf_cfg["nacl_multiplier"] = nacl_mult
                 nacl_amt = round_half_up(pf_vol * nacl_mult, 1)
@@ -177,7 +256,9 @@ def render():
                     min_value=0.0,
                     step=0.5,
                     value=float(pf_cfg.get("wash_multiplier", 3.0)),
-                    key=f"_pf_wash_m_{load_sig}"
+                    key=f"_pf_wash_m_{load_sig}",
+                    on_change=_commit_preflush_param,
+                    args=("wash_multiplier", f"_pf_wash_m_{load_sig}")
                 )
                 pf_cfg["wash_multiplier"] = wash_mult
                 wash_amt = round_half_up(pf_vol * wash_mult, 1)

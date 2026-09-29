@@ -7,7 +7,8 @@ import math
 import numpy as np
 import pandas as pd
 import materials_db
-from engineering_tools import require_positive_density, require_positive_pump_rate, format_to_hr_mm, round_half_up
+from engineering_tools import (require_positive_density, require_positive_pump_rate,
+                               format_to_hr_mm, round_half_up, safe_float)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -23,13 +24,23 @@ def _canonical(value):
         return [_canonical(v) for v in value]
     if isinstance(value, (date, datetime)):
         return value.isoformat()
-    if isinstance(value, float) and not math.isfinite(value):
-        return {"nonfinite": str(value)}
     if value is pd.NA:
         return {"missing": True}
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return {"nonfinite": str(value)}
+        return value
+    if isinstance(value, int):
+        # BUG-16: fingerprint(150) and fingerprint(150.0) must be identical —
+        # widget sources legitimately deliver the same quantity as int or
+        # float, and a signature flip on int/float alone produced false
+        # drift. Floats outside exact-int representation stay distinct.
+        return float(value) if abs(value) <= 2 ** 53 else str(value)
     if hasattr(value, "item"):
         return _canonical(value.item())
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str):
         return value
     return str(value)
 
@@ -97,13 +108,38 @@ def purge_inactive_slurries(state, active):
         stems += ["_" + p for p in stems]
         stems += [f"_editor_additives_{token}_", f"_editor_lab_tbl_{token}_", f"_sync_btn_{token}_"]
         stems += [f"_qc_{p}_in_{token}_" for p in ("bhct", "fl", "fw", "comp", "tt", "tt_endpoint")]
+        # BUG-15: the phase V/VI editors additionally keep a revision counter
+        # and editor_state keeps a "_editor_source_" mirror of every editor
+        # key; none of these matched the stems above and survived the purge.
+        stems += [f"_editor_additives_slurry_{token}_revision",
+                  f"_editor_source__editor_additives_{token}_",
+                  f"_editor_source__editor_lab_tbl_{token}_"]
         for key in list(state):
-            if str(key).startswith(tuple(stems)):
-                state.pop(key, None)
+            k = str(key)
+            for stem in stems:
+                if k.startswith(stem):
+                    remainder = k[len(stem):]
+                    # BUG-24: slugified tokens collide as literal prefixes —
+                    # "Lead #1" becomes "lead__1", so the stem "..._lead_"
+                    # also prefix-matches "..._lead__1_...". A remainder that
+                    # continues with "_" is a DIFFERENT slurry's key and must
+                    # survive. (Exact revision keys leave an empty remainder.)
+                    if remainder.startswith("_"):
+                        continue
+                    state.pop(key, None)
+                    break
 
 
 def refresh_fluids(state):
-    """Same phase-IV calculation, fed by its canonical inputs rather than caches."""
+    """Same phase-IV calculation, fed by its canonical inputs rather than caches.
+
+    F-02 (system audit 2026-09-29, owner-approved): every ValueError raised
+    here is prefixed 'Phase IV:' so that when prepare_calculations wraps it,
+    the Phase X issue still carries the phase token and _phase_for_issue can
+    resolve the deep-link rescue button. Before this, messages like
+    '{name}: active fluid volume must be positive ...' surfaced as
+    'Review the current calculation inputs before export (...)': the operator
+    was told WHAT was wrong but never WHERE to go (audit L8-03)."""
     cfg = state.get("fluids_config", {})
     active = cfg.get("active", [])
     if not active:
@@ -115,23 +151,32 @@ def refresh_fluids(state):
         # Old projects may have fluid_data but no params entry; preserve those inputs.
         source = cfg.get("params", {}).get(name, old.get(name, {}))
         if not isinstance(source, dict):
-            raise ValueError(f"{name}: review the Phase IV fluid inputs before export")
+            raise ValueError(f"Phase IV: {name}: review the fluid inputs before export")
         if source.get("volume") in (None, ""):
-            raise ValueError(f"{name}: enter the fluid volume in Phase IV before export")
-        volume = float(source["volume"])
+            raise ValueError(f"Phase IV: {name}: enter the fluid volume before export")
+        # F-02: a textual volume (malformed JSON stranded in fluid_data) used
+        # to escape here as a RAW float() ValueError — an uncontrolled
+        # message with no phase token, killing the deep-link rescue path.
+        # Give it the same controlled, prefixed treatment as every other
+        # gate in this function (offender named, repair location stated).
+        volume = safe_float(source["volume"], None)
+        if volume is None:
+            raise ValueError(f"Phase IV: {name}: unreadable fluid volume "
+                             f"({source['volume']!r}) — open Phase IV to repair it")
         density = source.get("density")
         if name == "Displacement Fluid":
             density = state.get("mud_density") or state.get("well_data", {}).get("mud_density")
         if density is None or not str(density).strip():
-            raise ValueError(f"{name}: enter the fluid density in Phase IV before export")
+            raise ValueError(f"Phase IV: {name}: enter the fluid density before export")
         density = str(density)
         effective = require_positive_density(density)
         if source.get("pump_rate") is None or not str(source["pump_rate"]).strip():
-            raise ValueError(f"{name}: enter the pump rate in Phase IV before export")
+            raise ValueError(f"Phase IV: {name}: enter the pump rate before export")
         rate = str(source["pump_rate"])
         minimum = require_positive_pump_rate(rate)
         if not math.isfinite(volume) or volume <= 0:
-            raise ValueError(f"{name}: active fluid volume must be positive; enter a volume or deselect the fluid")
+            raise ValueError(f"Phase IV: {name}: active fluid volume must be positive; "
+                             "enter a volume or deselect the fluid")
         duration = volume / minimum
         cumulative += duration
         result[name] = {

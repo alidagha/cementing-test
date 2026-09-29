@@ -9,7 +9,9 @@ from pathlib import Path
 from placement import target_depth, host_label, top_label
 from datetime import datetime
 import materials_db
-from engineering_tools import round_half_up, clean_number, normalize_additive_mix, resolve_physical_state, compute_phase_status
+from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
+                               resolve_physical_state, compute_phase_status, safe_float,
+                               parse_effective_numeric)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -22,6 +24,17 @@ from project_state import (fingerprint, prepare_calculations, sync_report_text,
                            accept_report_text, restore_previous_text, invalidate_document)
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
+
+SLURRY_ARCHETYPES = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+
+def active_slurry_names(active_fluids):
+    """Slurry members of the active fluid train (case/space-insensitive
+    archetype match). Extracted so the F3 unreadable-volume gate at the top
+    of build_master_context and the slurry payload section below share ONE
+    matcher instead of two divergent copies."""
+    return [f for f in active_fluids
+            if any(f.replace(" ", "").lower() == s.replace(" ", "").lower()
+                   for s in SLURRY_ARCHETYPES)]
 
 class NoteCounter:
     """
@@ -191,6 +204,36 @@ def parse_shoe_depth_from_hardware(hw_df, default_md=None, job_type="", placemen
     """Resolve a selected job-specific target; never infer it from row order or geo-MD."""
     return target_depth(hw_df, job_type, placement_config or {})
 
+
+def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config):
+    """BUG-04: populate the four placement keys the Word template's per-slurry
+    placement block reads via s.get('top'/'bottom'/'excess_oh'/'excess_csg',
+    '....'). bottom comes from the placement config's selected target row,
+    top from the Phase V slurry top (with the above-target sanity check), and
+    the two excess cells share the placement volume basis (dedicated per-side
+    excess fields remain future work once Phase II/III captures them).
+
+    Owner critique round (2026-09-28): the Volume Basis input documents itself
+    as optional ("Leave blank to show that it was not supplied"), so a blank
+    basis renders the honest 'N/A' marker in the two excess cells and must NOT
+    block Word export. top/bottom keep the '....' fallback, which stays
+    export-blocking through the build_master_context guard because a report
+    without a real target depth would be misleading, not merely incomplete."""
+    bottom_depth = target_depth(hw_df, job_type, placement_config or {})
+    _bottom = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
+    _top_text, _top_val = top_label(slurry_params)
+    if bottom_depth is not None and _top_val is not None and _top_val >= bottom_depth:
+        _top_text = "...."
+    payload["top"] = (_top_text
+                      if slurry_params.get("top_mode") in ("Depth (m MD)", "Surface")
+                      else "....")
+    payload["bottom"] = _bottom
+    basis = (str(placement_config.get("volume_basis") or "").strip()
+             if placement_config.get("job_type") == job_type else "")
+    payload["excess_oh"] = basis or "N/A"
+    payload["excess_csg"] = basis or "N/A"
+    return payload
+
 def separate_lab_tables(lab_grid_df: pd.DataFrame):
     """
     Separates Phase VII lab grid into:
@@ -294,7 +337,16 @@ def get_slurry_display_values(fluid_data: dict, slurry_name: str) -> tuple:
     info = fluid_data.get(slurry_name)
     vol = info.get("volume") if info else None
     den = info.get("density") if info else None
-    vol_str = f"{float(vol):.1f} bbl" if vol not in (None, "") and float(vol) > 0 else ".... bbl [VOLUME NOT SET IN PHASE IV]"
+    # F3 (P1-03): this display helper runs EARLY in build_master_context (via
+    # synchronize_report_texts) for every fluid in the train — a malformed
+    # volume (hostile project JSON) used to raise a raw float() ValueError
+    # here, before the dedicated unreadable-volume gate further down ever got
+    # a chance to speak. Junk now degrades to the honest ".... [NOT SET]"
+    # marker (same convention as everywhere else); the real verdict comes
+    # from the unreadable-volume gate, which blocks the export with a message
+    # naming the offending fluid.
+    vol_num = safe_float(vol, None)
+    vol_str = f"{vol_num:.1f} bbl" if vol_num is not None and vol_num > 0 else ".... bbl [VOLUME NOT SET IN PHASE IV]"
     den_str = f"{den} pcf" if den not in (None, "") else ".... pcf [DENSITY NOT SET IN PHASE IV]"
     return vol_str, den_str
 
@@ -341,7 +393,9 @@ def generate_executive_summary(
             return ".... m [TOP NOT SET IN PHASE V]", None
         text, value = top_label(params)
         if shoe_depth is not None and value is not None and value >= shoe_depth:
-            return ".... m [TOP MUST BE ABOVE TARGET DEPTH]", None
+            # BUG-30: name the offending limit inside the token so the
+            # operator sees the constraint without opening Phase II/III.
+            return f".... m [TOP MUST BE ABOVE TARGET DEPTH {shoe_depth:.1f} m MD]", None
         return text, value
     
     slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
@@ -415,7 +469,9 @@ def generate_executive_summary(
             volume, density = get_slurry_display_values(fluid_data, slurry)
             top, top_depth_value = slurry_top(slurry)
             if bottom_depth is not None and top_depth_value is not None and top_depth_value >= bottom_depth:
-                top, top_depth_value = ".... m [TOP MUST BE ABOVE PREVIOUS INTERVAL]", None
+                # BUG-30: same as the target-depth token — print the actual
+                # limit value instead of an unquantified complaint.
+                top, top_depth_value = f".... m [TOP MUST BE ABOVE PREVIOUS INTERVAL {bottom_depth:.1f} m MD]", None
             placement_parts.append(f"{density} {slurry.lower()} cement slurry from {bottom} to {top}")
             volume_parts.append(f"{slurry}: {volume}")
             bottom = top
@@ -890,11 +946,32 @@ def _render_report_editor(key, spec, label, height, widget_key, regenerate_label
                  on_change=_store_report_edit, args=(key, widget_key))
 
 
-def document_signature(context, template_path):
+@st.cache_data(show_spinner=False)
+def _load_template_bytes(template_path: str, mtime: float) -> bytes:
+    """BUG-28: master_template.docx used to be re-read and re-hashed on every
+    Phase X rerun (and again on each Build). Cache the bytes keyed by
+    path+mtime — replacing the template file changes its mtime and the cache
+    invalidates naturally."""
     with open(template_path, "rb") as handle:
-        template_hash = hashlib.sha256(handle.read()).hexdigest()
+        return handle.read()
+
+
+def document_signature(context, template_path):
+    mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
+    template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items() if k != "generated_timestamp"},
                         "template": template_hash})
+
+
+# BUG-32: the single source of truth for "which bracketed tokens mark an
+# unresolved operational input". The optional VOLUME BASIS explanation is
+# deliberately excluded (VOLUME(?! BASIS)) — both the export gate and the
+# Phase X pre-render warning must consume THIS pattern so they can never
+# contradict each other again.
+UNRESOLVED_INPUT_TOKEN = re.compile(
+    r"\[(?:TOP|TARGET DEPTH|HOST|VOLUME(?! BASIS)|MIX WATER|MIXING TANK|PUMP|ADDITIVES|DENSITY)[^\]]*\]",
+    flags=re.IGNORECASE,
+)
 
 
 def unresolved_export_inputs(specs):
@@ -904,15 +981,11 @@ def unresolved_export_inputs(specs):
     Target depth, slurry top and the other marked operational inputs are
     required to issue a complete Word procedure.
     """
-    required = re.compile(
-        r"\[(?:TOP|TARGET DEPTH|HOST|VOLUME(?! BASIS)|MIX WATER|MIXING TANK|PUMP|ADDITIVES|DENSITY)[^\]]*\]",
-        flags=re.IGNORECASE,
-    )
     found = {
         match.group(0)
         for key, spec in specs.items()
         for content in (spec["generated"], st.session_state.get(key, ""))
-        for match in required.finditer(content)
+        for match in UNRESOLVED_INPUT_TOKEN.finditer(content)
     }
     return sorted(found)
 
@@ -932,6 +1005,33 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                for name in st.session_state.get("fluids_config", {}).get("active", [])):
         invalidate_document(st.session_state)
         raise ValueError("Phase IV: select at least one cement slurry before Word export.")
+    # Read the two state sources the F3 gate needs BEFORE any report-text
+    # synchronization consumes the volumes — the gate must be the first to
+    # speak so its message can name the offending fluid.
+    fluid_data = st.session_state.get("fluid_data", {})
+    active_fluids = st.session_state.get("fluids_config", {}).get("active", [])
+    active_slurries = active_slurry_names(active_fluids)
+    # F3 (P1-03, owner-approved 2026-09-29): one unreadable numeric volume in
+    # any fluid that feeds this report must surface as a CONTROLLED
+    # export-block naming the offender — never as a raw float() ValueError
+    # from inside the payload layer (uncaught crash screen) and never as a
+    # silent 0.0 bbl row (fabricated report). Reachable only via a malformed
+    # project JSON (Phase IV's own widgets always emit floats); same
+    # philosophy as the placement '....' gate further below.
+    _volume_sources = list(active_slurries) + [
+        n for n in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind")
+        if n in active_fluids]
+    unreadable_volumes = sorted(
+        f"{name} → volume ({fluid_data[name].get('volume')!r})"
+        for name in dict.fromkeys(_volume_sources)
+        if isinstance(fluid_data.get(name), dict)
+        and fluid_data[name].get("volume") is not None
+        and safe_float(fluid_data[name].get("volume"), None) is None)
+    if unreadable_volumes:
+        invalidate_document(st.session_state)
+        raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
+                         "open Phase IV to repair it: "
+                         + ", ".join(unreadable_volumes))
     specs = synchronize_report_texts()
     if any(spec["pending"] for spec in specs.values()):
         invalidate_document(st.session_state)
@@ -943,8 +1043,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                          + ", ".join(missing))
     doc_ctrl = st.session_state.get("doc_control", {})
     well_data = st.session_state.get("well_data", {})
-    fluid_data = st.session_state.get("fluid_data", {})
-    active_fluids = st.session_state.get("fluids_config", {}).get("active", [])
+    # fluid_data / active_fluids / active_slurries were already read above the
+    # F3 unreadable-volume gate.
     job_type = st.session_state.get("job_type", "CSG 20\"")
     
     # 1. Hardware Table Serialization
@@ -955,12 +1055,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     fluids_train = [fluid_data[f] for f in active_fluids if f in fluid_data]
             
     # 3. Cement Slurry Payloads (Segregated Blend Data & Additives Data)
+    # active_slurries comes from active_slurry_names() above the F3 gate.
     slurries_payload = []
-    slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
-    active_slurries = [
-        f for f in active_fluids 
-        if any(f.replace(" ", "").lower() == s.replace(" ", "").lower() for s in slurry_archetypes)
-    ]
     
     for s in active_slurries:
         p = st.session_state.get("cement_params", {}).get(s, {})
@@ -1052,16 +1148,50 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "crush_pressure": crush_pressure
             }
         })
+        # BUG-04: populate the four placement keys the template's per-slurry
+        # placement block consumes (top/bottom/excess_oh/excess_csg).
+        _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,
+                                 st.session_state.get("placement_config", {}))
+
+    # BUG-19 (merged BUG-04 scope): a bare standardized '....' in any of the
+    # four placement cells is now an explicit export blocker instead of
+    # silently printing into the Word placement table.
+    unresolved_placement = sorted({
+        f"{payload['name']} → {field}"
+        for payload in slurries_payload
+        for field in ("top", "bottom", "excess_oh", "excess_csg")
+        if payload.get(field) == "...."
+    })
+    if unresolved_placement:
+        invalidate_document(st.session_state)
+        raise ValueError("Complete the placement table inputs before Word export: "
+                         + ", ".join(unresolved_placement))
 
     # 4. Pre-flush Data Serialization with Structured Rows (جدول سطری Pre-flush)
-    preflush_data = dict(st.session_state.get("preflush_calc") or {})
+    # F1 (P0-01, owner-approved 2026-09-29): preflush_calc is a Phase-VI render
+    # byproduct and goes STALE when Phase IV volume/density edits are followed
+    # by direct sidebar navigation to Phase X (live-proven: the report printed
+    # 80 bbl while the fluid truth was 25 bbl, readiness checklist still 'ok').
+    # The report payload is therefore RECOMPUTED here, at consumption time,
+    # from the source of truth (preflush_config + fluid_data) via the same
+    # pure semantics Phase VI applies. The cached preflush_calc remains only
+    # as a fallback for projects saved before preflush_config existed.
+    preflush_data = {}
+    if "Pre Flush" in active_fluids:
+        _pf_config = st.session_state.get("preflush_config")
+        if _pf_config:
+            from phase_6_spacer import compute_preflush_payload
+            preflush_data = dict(compute_preflush_payload(
+                _pf_config, fluid_data.get("Pre Flush", {})))
+        else:
+            preflush_data = dict(st.session_state.get("preflush_calc") or {})
     preflush_rows = []
-    if preflush_data and float(preflush_data.get("volume_bbl", 0.0)) > 0:
-        w_bbl = float(preflush_data.get("water_bbl", 0.0))
-        nacl_lbs = float(preflush_data.get("nacl_lbs", 0.0))
-        nacl_m = float(preflush_data.get("nacl_multiplier", 0.0))
-        wash_gal = float(preflush_data.get("wash_gal", 0.0))
-        wash_m = float(preflush_data.get("wash_multiplier", 0.0))
+    if preflush_data and safe_float(preflush_data.get("volume_bbl", 0.0)) > 0:
+        w_bbl = safe_float(preflush_data.get("water_bbl", 0.0))
+        nacl_lbs = safe_float(preflush_data.get("nacl_lbs", 0.0))
+        nacl_m = safe_float(preflush_data.get("nacl_multiplier", 0.0))
+        wash_gal = safe_float(preflush_data.get("wash_gal", 0.0))
+        wash_m = safe_float(preflush_data.get("wash_multiplier", 0.0))
         
         preflush_rows.append({
             "Item": 1,
@@ -1098,7 +1228,13 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     preflush_data["volume"] = preflush_data.get("volume_bbl", 0.0)
     preflush_data["weight"] = preflush_data.get("density_pcf", "")
 
-    # 5. Spacers Serialization
+    # 5. Spacers Serialization — BUG-05: the Word template now consumes this
+    # payload through a cloned "Spacer Formulation Data" table. The rows are
+    # FLATTENED to the exact same schema the Pre-flush table loops over
+    # (Item via loop.index, Name, Material Type, amount, ratio) so the
+    # template needs a single {%tr for r in spacers %} loop instead of
+    # fragile nested {%tr %} loops: one summary row per spacer followed by
+    # its chemical rows.
     spacers_payload = []
     for sp_name in ["Spacer", "Spacer Ahead", "Spacer Behind"]:
         if sp_name in active_fluids and sp_name in st.session_state.get("spacer_dfs", {}):
@@ -1109,15 +1245,50 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "density_pcf": fluid_data.get(sp_name, {}).get("density", ""),
                 "chemicals": sp_df.to_dict(orient="records") if not sp_df.empty else []
             })
+    spacer_rows = []
+    for sp in spacers_payload:
+        spacer_rows.append({
+            "Name": str(sp.get("name", "") or ""),
+            "Material Type": "Spacer",
+            "amount": f"{safe_float(sp.get('volume_bbl', 0.0)):.1f} bbl @ {sp.get('density_pcf', '')} pcf",
+            "ratio": "-"
+        })
+        for c in (sp.get("chemicals") or []):
+            spacer_rows.append({
+                "Name": str(c.get("Chemical", "") or ""),
+                "Material Type": str(c.get("Weighting Agent Type", "") or ""),
+                "amount": str(c.get("User Input (% or gal)", "") or ""),
+                "ratio": "-"
+            })
+    spacer_volume_bbl = round_half_up(
+        sum(safe_float(sp.get("volume_bbl", 0.0)) for sp in spacers_payload), 1)
+    # F4 (P2-01, owner-approved 2026-09-29): densities are free-text ('115-118'
+    # is a legal Phase IV entry — the field's own help example), so the note
+    # must order them NUMERICALLY. Plain sorted() ordered them lexically
+    # ('100.0, 95.0'); the critique's raw key=float would have crashed on
+    # '115-118'. parse_effective_numeric handles ranges (mean 116.5) and
+    # returns the +inf default for non-numeric junk, which sorts last and
+    # never raises; the string itself breaks ties deterministically.
+    spacer_densities = ", ".join(sorted(
+        {str(sp.get("density_pcf", "") or "").strip()
+         for sp in spacers_payload if str(sp.get("density_pcf", "") or "").strip()},
+        key=lambda s: (parse_effective_numeric(s, default=float("inf")), s)))
+    spacer_density_note = (f"{spacer_densities} pcf" if spacer_densities else "-")
 
-    # فلگ‌های شرطی برای تمپلیت ورد
-    has_spacer = any("Spacer" in f for f in active_fluids)
+    # فلگ‌های شرطی برای تمپلیت ورد — has_spacer reflects whether actual
+    # spacer rows were built (a Spacer selected in Phase IV without any
+    # formulation data prints nothing rather than an empty table).
+    has_spacer = bool(spacer_rows)
     has_preflush = "Pre Flush" in active_fluids
-    has_centralizer = not any(x in job_type.upper() for x in ["PLUG", "SQUEEZE", "20", "24", "30"])
+    # BUG-14 (confirmed): 'CSG 18 5/8"' takes the surface stab-in inner-string
+    # procedure branch above (grouped with 20"/24"/30"), so it must also be
+    # excluded from centralizer and open-hole content — previously it got
+    # stab-in steps AND centralizer/open-hole notes in the same document.
+    has_centralizer = not any(x in job_type.upper() for x in ["PLUG", "SQUEEZE", "20", "24", "30", "18"])
     # Notes 5-6 (Hydrostatic / Pore & Frac) follow the exact same job-type
     # grouping as has_centralizer — validated against all 8 real reference
     # documents: present for CSG 13-3/8"/9-5/8"/7", LNR, and Tie Back; absent
-    # for Plug, Squeeze, and the shallow surface strings (20"/24"/30").
+    # for Plug, Squeeze, and the shallow surface strings (18-5/8"/20"/24"/30").
     has_open_hole_notes = has_centralizer
 
     # 5.5 Sequential NOTE numbering (never hardcode "NOTE N:" anywhere else)
@@ -1179,7 +1350,9 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         
         "slurries": note_ctx["slurries"],
         "preflush": preflush_data,
-        "spacers": spacers_payload,
+        "spacers": spacer_rows,
+        "spacer_volume_bbl": spacer_volume_bbl,
+        "spacer_density_note": spacer_density_note,
         
         "has_spacer": has_spacer,
         "has_preflush": has_preflush,
@@ -1213,6 +1386,30 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         value = doc_ctrl.get(key, "")
         context[key] = str(value).strip() if value is not None and str(value).strip() else "-"
     return _escape_xml_special_chars(context)
+
+def _go_to_phase(phase_key):
+    """BUG-02 deep-link callback: retarget the sidebar navigation radio
+    before it remounts (same mechanism as _go_to_fluid_configuration)."""
+    st.session_state["_app_mode_key"] = phase_key
+
+
+# Longest/most-specific tokens first: "Phase VI" is a substring of
+# "Phase VII", and "Phase V" of both.
+_PHASE_DEEP_LINK_ORDER = (
+    ("Phase II & III", "phase2_3"), ("Phase VII", "phase7"),
+    ("Phase VI", "phase6"), ("Phase IV", "phase4"), ("Phase V", "phase5"),
+    ("Phase II", "phase2_3"), ("Phase III", "phase2_3"), ("Phase I:", "phase1"),
+)
+
+
+def _phase_for_issue(issue):
+    """Map a prepare_calculations issue message to the phase that owns it."""
+    text = str(issue)
+    for token, key in _PHASE_DEEP_LINK_ORDER:
+        if token in text:
+            return key
+    return None
+
 
 def render():
     st.header("Phase X: Procedure & Export")
@@ -1251,9 +1448,24 @@ def render():
 
     issues = prepare_calculations(st.session_state)
     if issues:
+        # BUG-02 (confirmed): the early return here used to hide the whole
+        # Phase X UI on the first validation failure, stranding the operator
+        # on a near-empty screen with no way to reach the editors or the
+        # checklist. Render each issue with a deep-link button to the
+        # responsible phase instead, and keep rendering — the controls below
+        # still reflect the last refresh and remain editable while the
+        # problems are being fixed.
         for issue in issues:
             st.error(issue)
-        return
+        _rescue_phases = sorted({_phase_for_issue(issue) for issue in issues} - {None})
+        if _rescue_phases:
+            st.caption("Jump to the responsible phase to fix the problem — the controls below stay available in the meantime.")
+            _rescue_cols = st.columns(len(_rescue_phases))
+            for _col, _phase_key in zip(_rescue_cols, _rescue_phases):
+                with _col:
+                    st.button(f"→ Phase {_phase_names[_phase_key].split(':')[0]}",
+                              on_click=_go_to_phase, args=(_phase_key,),
+                              key=f"_rescue_{_phase_key}")
 
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     job_type = st.session_state.get("job_type", "CSG 20\"")
@@ -1267,8 +1479,13 @@ def render():
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
 
     specs = synchronize_report_texts()
-    if any(re.search(r"\[(?:TOP|TARGET DEPTH|HOST|VOLUME|MIX WATER|MIXING TANK|PUMP|ADDITIVES|DENSITY)[^\]]*\]",
-                     spec["generated"]) for spec in specs.values()):
+    # BUG-32 (new finding, this audit): this pre-render warning regex used to
+    # omit the "(?! BASIS)" lookahead that unresolved_export_inputs() carries,
+    # so the OPTIONAL VOLUME BASIS token was flagged here as a problem while
+    # the export gate itself correctly treats it as optional — the two
+    # warnings contradicted each other on the same screen. Reuse the export
+    # gate's own pattern so they can never disagree again.
+    if any(UNRESOLVED_INPUT_TOKEN.search(spec["generated"]) for spec in specs.values()):
         st.warning("Some operational inputs are missing or inconsistent. Review the marked fields in the generated text, especially the target and tie-back host in Phase II/III and the slurry tops in Phase V.")
     st.subheader("1. Executive Summary (Proposal Preamble)")
     _render_report_editor("exec_summary_text", specs["exec_summary_text"],
@@ -1293,22 +1510,47 @@ def render():
     summary_cards = []
     total_well_sacks = 0.0
     total_slurry_vol = 0.0
-    
+    # F-01 (system audit 2026-09-29, owner-approved): these cards used to read
+    # fluid volumes with a raw float() — OUTSIDE the F3 unreadable-volume gate
+    # in build_master_context. A malformed project JSON can carry a textual
+    # fluid_data volume (the loader number-checks only fluids_config.params,
+    # not fluid_data), and whenever refresh_fluids aborts on the same junk the
+    # stale payload survives into this render: the page died with a raw
+    # ValueError crash screen. Same philosophy as F3: a controlled,
+    # offender-naming gate — never a crash, never a fabricated 0.0 bbl row;
+    # unreadable cells render as honest N/A (same convention as the blank
+    # volume-basis fix) and Build stays blocked via invalidate_document.
+    unreadable_card_volumes = []
     for s in active_slurries:
         p = cement_params.get(s, {})
-        vol = float(fluid_data.get(s, {}).get("volume", 0.0))
+        vol_raw = fluid_data.get(s, {}).get("volume", 0.0)
+        vol = safe_float(vol_raw, None)
+        if vol is None:
+            unreadable_card_volumes.append(f"{s} → volume ({vol_raw!r})")
         yd = float(p.get("yield", 1.18))
-        sacks = float(p.get("total_sacks") or (round_half_up((vol * 5.6146) / yd, 1) if yd > 0 else 0.0))
-        total_well_sacks += sacks
-        total_slurry_vol += vol
+        sacks = safe_float(p["total_sacks"], None) if p.get("total_sacks") else None
+        if sacks is None and vol is not None:
+            sacks = round_half_up((vol * 5.6146) / yd, 1) if yd > 0 else 0.0
+        if vol is not None:
+            total_slurry_vol += vol
+        if sacks is not None:
+            total_well_sacks += sacks
         summary_cards.append({
             "Slurry": s,
-            "Volume (bbl)": f"{vol:.1f}",
-            "Sacks": f"{sacks:.1f}",
+            "Volume (bbl)": f"{vol:.1f}" if vol is not None else "N/A",
+            "Sacks": f"{sacks:.1f}" if sacks is not None else "N/A",
             "Mix Water (bbl)": f"{float(p.get('mix_water', 0.0)):.1f}",
             "Dead Vol (bbl)": f"{float(p.get('dead_vol', 0.0)):.1f}",
             "Tank": p.get("tank_name", "-")
         })
+
+    if unreadable_card_volumes:
+        # Controlled F3-style gate naming the offender, so the operator sees
+        # exactly which fluid record is broken; the compiled document is
+        # invalidated so a stale download can never outlive the broken input.
+        invalidate_document(st.session_state)
+        st.error("Unreadable numeric volume in Phase IV fluid data — open Phase IV to repair it: "
+                 + ", ".join(unreadable_card_volumes))
         
     if summary_cards:
         st.table(pd.DataFrame(summary_cards))
@@ -1366,7 +1608,10 @@ def render():
                 invalidate_document(st.session_state)
                 try:
                     with st.spinner("Compiling full engineering dossier..."):
-                        doc = DocxTemplate(template_path)
+                        # BUG-28: render from the cached template bytes instead
+                        # of re-reading the 650 KB file on every Build.
+                        _tpl_mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
+                        doc = DocxTemplate(io.BytesIO(_load_template_bytes(str(template_path), _tpl_mtime)))
                         doc.render(master_context)
                         
                         doc_io = io.BytesIO()

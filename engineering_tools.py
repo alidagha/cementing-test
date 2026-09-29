@@ -29,6 +29,24 @@ def lab_temperature_valid(bhct, bhst):
     except (TypeError, ValueError, OverflowError):
         return False
 
+
+def thickening_time_valid(value) -> bool:
+    """F2 (P1-02, owner-approved 2026-09-29): Thickening Time must be a
+    well-formed HH:MM value INSIDE the measurable envelope. '00:00' is not a
+    measurable thickening time and any value ABOVE 24 hours is outside
+    lab-report plausibility — both must fail this gate exactly like a
+    malformed format (BUG-09 only enforced the HH:MM shape, so '00:00' and
+    '99:59' sailed through to the Word report verbatim). 24:00 itself is the
+    inclusive upper bound; the owner spec rejects values above 24 hours.
+    Deliberately NO digit normalization here: it mirrors the pre-existing
+    format regex's strictness on what the operator literally typed."""
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{1,2}:[0-5]\d", text):
+        return False
+    hours, minutes = text.split(":")
+    total_minutes = int(hours) * 60 + int(minutes)
+    return 0 < total_minutes <= 24 * 60
+
 # ==============================================================================
 # 1. CORE NUMERIC, STRING & HYDRAULIC UTILITIES
 # ==============================================================================
@@ -121,9 +139,20 @@ def parse_effective_numeric(val_str: str, default: float = 0.0) -> float:
     s = normalize_digits(val_str).strip().replace("/", "-")
     if not s:
         return default
-    if s.startswith("-") and s.count("-") == 1:
+    if s.startswith("-"):
+        # BUG-22 (runtime-confirmed): "-80-82" (a leading negative PLUS a
+        # range) used to fall through to the unsigned range branch and
+        # silently return +81.0 - the visible minus sign was stripped and
+        # every downstream calculation happily used a plausible positive
+        # value. Keep the documented "stay visibly wrong" convention:
+        # parse the number(s) after the sign and return the NEGATED result,
+        # so a physically impossible input propagates as obviously broken.
         m = re.findall(r"\d*\.\d+|\d+", s)
-        return -float(m[0]) if m else default
+        if not m:
+            return default
+        if len(m) == 1:
+            return -float(m[0])
+        return -sum(float(x) for x in m) / len(m)
     segments = [seg for seg in s.split("-") if seg.strip()]
     nums = []
     for seg in segments:
@@ -133,6 +162,36 @@ def parse_effective_numeric(val_str: str, default: float = 0.0) -> float:
     if not nums:
         return default
     return sum(nums) / len(nums)
+
+
+
+
+def safe_float(value, default: float = 0.0):
+    """F3 (P1-03, owner-approved 2026-09-29): crash-proof float coercion for
+    the report payload layer. float() raises ValueError on junk like 'abc'
+    and float('') on blanks — deep inside Word-report construction that means
+    an uncaught crash screen. safe_float returns `default` instead; pass
+    default=None at the call site when 'unreadable' must stay distinguishable
+    from a real 0.0 (phase_10's unreadable-volume gate does exactly that).
+    Handles Persian/Arabic digits like every other numeric reader in this app
+    (Section 5 digit invariant), blank/whitespace strings, numpy scalars;
+    bools are rejected as junk rather than coerced to 1.0/0.0."""
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = normalize_digits(value).strip()
+        if not s:
+            return default
+        try:
+            return float(s)
+        except ValueError:
+            return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def require_positive_density(value) -> float:
@@ -452,6 +511,19 @@ def calculate_slurry_from_components(
     water_density_pcf = max(clean_number(water_density_pcf), 1.0)
     salt_pct = clean_number(salt_pct)
 
+    # BUG-13: reject implausible slurry densities BEFORE the mass balance can
+    # produce negative mix water / yield. Below fresh water's ~62.4 pcf the
+    # formula denominator flips sign and the screen shows negative water,
+    # negative yield and negative lab gram rows (e.g. a 55 pcf typo or a mud
+    # density pasted into the slurry field). 75-180 pcf is the realistic
+    # conventional cement-slurry range; every caller reports the ValueError
+    # gracefully instead of rendering nonsense quantities.
+    if not (75.0 <= slurry_weight_pcf <= 180.0):
+        raise ValueError(
+            f"Slurry weight {slurry_weight_pcf:.1f} pcf is outside the realistic "
+            "75-180 pcf range for a cement slurry; review the slurry density "
+            "before building quantities")
+
     powders = powders or []
     liquids = liquids or []
 
@@ -623,6 +695,21 @@ def compute_phase_status(ss) -> dict:
         except (TypeError, ValueError, OverflowError):
             return False
 
+    # BUG-12: hardware "MD (m)" legitimately accepts interval strings
+    # ("1200.0-2816.0") — Phase II/III documents shoe intervals that way and
+    # the placement resolver (placement.measured_depth) parses them. The old
+    # float() check tripped on every interval row and flagged the phase with
+    # "Complete hardware description, depth, size and ID." forever, which
+    # disabled the Phase X Build button. Use the same parser here.
+    from placement import measured_depth
+
+    def _positive_md(value):
+        try:
+            depth = measured_depth(value)
+        except Exception:
+            return False
+        return depth is not None and math.isfinite(depth) and depth > 0
+
     # Phase I: Document Control
     well_name = str(ss.get("well_name", "")).strip()
     client = str(ss.get("client", "")).strip()
@@ -654,7 +741,7 @@ def compute_phase_status(ss) -> dict:
     elif geo_tvd > geo_md:
         status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
     elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
-             or not _positive_number(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
+             or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
              for _, row in hw.iterrows()):
         status["phase2_3"] = {"level": "warning", "message": "Complete hardware description, depth, size and ID."}
     else:

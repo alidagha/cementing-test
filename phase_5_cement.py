@@ -26,6 +26,29 @@ def _go_to_fluid_configuration():
     st.session_state["_app_mode_key"] = "phase4"
 
 
+def _commit_cement_param(slurry: str, field: str, widget_key: str) -> None:
+    """BUG-01 (same protection as Phase IV's _commit_fluid_widget): commit the
+    last widget edit into cement_params before a phase-switch rerun can
+    garbage-collect this widget. Streamlit runs widget callbacks before
+    rerouting, so an edit blurred by a navigation click still reaches the
+    canonical dict even though this phase's render() never executes again."""
+    value = st.session_state[widget_key]
+    entry = st.session_state.get("cement_params", {}).get(slurry)
+    if isinstance(entry, dict):
+        entry[field] = value
+
+
+def _commit_manual_override(slurry: str, field: str, widget_key: str) -> None:
+    """BUG-01 companion for the manual Yield/Mix Water inputs: commits both the
+    live value and its manual_* mirror so the auto→manual reconciliation on the
+    next Phase V visit restores the edited value, not a stale one."""
+    value = st.session_state[widget_key]
+    entry = st.session_state.get("cement_params", {}).get(slurry)
+    if isinstance(entry, dict):
+        entry[field] = value
+        entry[f"manual_{field}"] = value
+
+
 def build_salt_additive_row(item: int, name: str, material_type: str,
                             salt_pct_bwow: float, mix_water_bbl: float,
                             total_sacks: float, dead_vol_bbl: float) -> dict:
@@ -419,15 +442,19 @@ def render():
                     else:
                         cur_cement = "Cement G Delijan"
                 cement_idx = cement_options.index(cur_cement) if cur_cement in cement_options else 0
+                cemb_key = f"_{get_slurry_key(slurry, 'cemb')}_{load_sig}"
                 p["base_cement"] = st.selectbox(
                     f"Base Cement - {slurry}",
                     options=cement_options,
                     index=cement_idx,
-                    key=f"_{get_slurry_key(slurry, 'cemb')}_{load_sig}"
+                    key=cemb_key,
+                    on_change=_commit_cement_param,
+                    args=(slurry, "base_cement", cemb_key)
                 )
             with col_t2:
                 sg_ref = materials_db.CEMENT_SG_REFERENCE
                 sg_ref_text = " | ".join(f"{k}: {v:.2f}" for k, v in sg_ref.items())
+                sg_key = f"_{get_slurry_key(slurry, 'sg')}_{load_sig}"
                 p["cmt_sg"] = st.number_input(
                     f"Cement SG - {slurry}",
                     min_value=2.5,
@@ -435,7 +462,9 @@ def render():
                     step=0.01,
                     value=float(p.get("cmt_sg", 3.20)),
                     format="%.2f",
-                    key=f"_{get_slurry_key(slurry, 'sg')}_{load_sig}",
+                    key=sg_key,
+                    on_change=_commit_cement_param,
+                    args=(slurry, "cmt_sg", sg_key),
                     help=f"Specific Gravity of base dry cement. Reference: {sg_ref_text}."
                 )
             with col_t3:
@@ -449,16 +478,21 @@ def render():
                     f"Mixing Tank - {slurry}",
                     options=job_tank_options,
                     index=tank_idx,
-                    key=tank_key
+                    key=tank_key,
+                    on_change=_commit_cement_param,
+                    args=(slurry, "tank_name", tank_key)
                 )
                 p["tank_name"] = selected_tank
             with col_t4:
+                dv_key = f"_{get_slurry_key(slurry, 'dv')}_{load_sig}"
                 p["dead_vol"] = st.number_input(
                     f"Dead Vol (bbl) - {slurry}",
                     min_value=0.0,
                     step=1.0,
                     value=float(p.get("dead_vol", 31.0)),
-                    key=f"_{get_slurry_key(slurry, 'dv')}_{load_sig}",
+                    key=dv_key,
+                    on_change=_commit_cement_param,
+                    args=(slurry, "dead_vol", dv_key),
                     help="Unpumpable liquid volume retained in the mixing tank."
                 )
 
@@ -475,13 +509,18 @@ def render():
                 p.pop("draft_top_depth", None)
             mode_key = f"_top_mode_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
             p["top_mode"] = st.selectbox(f"Top of cement - {slurry}", top_options,
-                                         index=top_options.index(top_mode), key=mode_key)
+                                         index=top_options.index(top_mode), key=mode_key,
+                                         on_change=_commit_cement_param,
+                                         args=(slurry, "top_mode", mode_key))
             if p["top_mode"] == "Depth (m MD)":
                 initial_depth = p.get("top_depth") or p.get("draft_top_depth") or 0.0
+                topd_key = f"_top_depth_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
                 p["top_depth"] = st.number_input(
                     f"Top of cement depth (m MD) - {slurry}",
                     min_value=0.0, step=1.0, value=float(initial_depth),
-                    key=f"_top_depth_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}",
+                    key=topd_key,
+                    on_change=_commit_cement_param,
+                    args=(slurry, "top_depth", topd_key),
                     help="0 means the depth has not yet been entered."
                 )
                 if p["top_depth"] > 0.0:
@@ -756,21 +795,27 @@ def render():
                 # Manual entry fields if user overrides
                 col_ov1, col_ov2, col_ov3 = st.columns(3)
                 with col_ov1:
+                    yd_ov_key = f"_{get_slurry_key(slurry, 'yd_ov')}_{load_sig}"
                     p["yield"] = st.number_input(
                         f"Custom Yield (cuft/sk)",
                         min_value=0.001,
                         step=0.001,
                         value=float(p.get("yield", 1.18)),
                         format="%.3f",
-                        key=f"_{get_slurry_key(slurry, 'yd_ov')}_{load_sig}"
+                        key=yd_ov_key,
+                        on_change=_commit_manual_override,
+                        args=(slurry, "yield", yd_ov_key)
                     )
                 with col_ov2:
+                    mw_ov_key = f"_{get_slurry_key(slurry, 'mw_ov')}_{load_sig}"
                     p["mix_water"] = st.number_input(
                         f"Custom Mix Water (bbl)",
                         min_value=0.0,
                         step=1.0,
                         value=float(p.get("mix_water", 119.0)),
-                        key=f"_{get_slurry_key(slurry, 'mw_ov')}_{load_sig}"
+                        key=mw_ov_key,
+                        on_change=_commit_manual_override,
+                        args=(slurry, "mix_water", mw_ov_key)
                     )
                 with col_ov3:
                     total_sacks_manual = round_half_up((vol * 5.6146) / p["yield"], 1) if p["yield"] > 0 else 0.0

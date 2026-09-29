@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import materials_db
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid
+from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from engineering_tools import (
@@ -19,6 +19,17 @@ from engineering_tools import (
 )
 
 LAB_GRID_COLUMNS = ["Material", "Concentration", "Unit", "Mass", "Lot No"]
+
+
+def _commit_lab_qc(slurry: str, field: str, widget_key: str) -> None:
+    """BUG-01 (same protection as Phase IV's _commit_fluid_widget): commit the
+    last widget edit into lab_qc_params before a phase-switch rerun can
+    garbage-collect this widget. Critical for the free-text Thickening Time
+    input, whose blurred edit is otherwise silently lost on navigation."""
+    value = st.session_state[widget_key]
+    entry = st.session_state.get("lab_qc_params", {}).get(slurry)
+    if isinstance(entry, dict):
+        entry[field] = value
 
 def get_slurry_key(slurry_name: str, prefix: str) -> str:
     sanitized = "".join(c if c.isalnum() else "_" for c in str(slurry_name)).lower()
@@ -296,6 +307,13 @@ def render():
                 if slurry_vol <= 0:
                     raise ValueError("Phase IV slurry volume must be positive")
                 slurry_den = require_positive_density(fluid_data.get(slurry, {}).get("density"))
+                # BUG-13: the Phase VII-side gate. An implausible density must be
+                # rejected here — before lab quantities are built — with a message
+                # that names the problem instead of showing negative gram rows.
+                if not (75.0 <= slurry_den <= 180.0):
+                    raise ValueError(
+                        f"slurry density {slurry_den:.1f} pcf is outside the realistic "
+                        "75-180 pcf range for a cement slurry")
             except ValueError as exc:
                 st.error(f"{slurry}: invalid Phase IV/V input ({exc}). Correct it before syncing lab quantities.")
                 continue
@@ -407,13 +425,16 @@ def render():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
+                bhct_key = f"_qc_bhct_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["bhct"] = st.number_input(
                     f"BHCT (°F) - {slurry}",
                     min_value=60,
                     max_value=400,
                     value=int(qc.get("bhct", 150)),
                     step=5,
-                    key=f"_qc_bhct_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    key=bhct_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "bhct", bhct_key)
                 )
                 st.caption(f"BHST Reference: **{bhst} °F**")
                 # FIX (requested, Level 2 #8): BHCT (circulating temperature,
@@ -429,24 +450,30 @@ def render():
                     st.caption(f"ℹ️ BHCT is {bhst - qc['bhct']}°F below BHST — verify this matches the actual circulating temperature schedule.")
                 
             with col2:
+                fl_key = f"_qc_fl_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["api_fl"] = st.number_input(
                     f"Filtrate @ 30 min (ml) - {slurry}",
                     min_value=0.0,
                     step=1.0,
                     value=float(qc.get("api_fl", 0.0)),
-                    key=f"_qc_fl_{get_slurry_key(slurry, 'in')}_{load_sig}",
+                    key=fl_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "api_fl", fl_key),
                     help="API standard 30-min filter press test volume"
                 )
                 calc_fl = qc["api_fl"] * 2.0
                 st.success(f"**API FL (St. 2x):** {calc_fl:.1f} ml/30min")
                 
             with col3:
+                fw_key = f"_qc_fw_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["free_water"] = st.number_input(
                     f"Free Water (ml) - {slurry}",
                     min_value=0.0,
                     step=0.1,
                     value=float(qc.get("free_water", 0.0)),
-                    key=f"_qc_fw_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    key=fw_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "free_water", fw_key)
                 )
                 st.success(f"**FW:** {qc['free_water']:.1f} ml / 250ml")
                 
@@ -454,25 +481,34 @@ def render():
                 comp_opts = ["CRUSH", "UCA"]
                 cur_comp = qc.get("comp_test", "CRUSH")
                 comp_idx = comp_opts.index(cur_comp) if cur_comp in comp_opts else 0
+                comp_key = f"_qc_comp_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["comp_test"] = st.selectbox(
                     f"Compressive Test - {slurry}",
                     options=comp_opts,
                     index=comp_idx,
-                    key=f"_qc_comp_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    key=comp_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "comp_test", comp_key)
                 )
+                tt_key = f"_qc_tt_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["thickening_time"] = st.text_input(
                     f"Thickening Time (HH:MM) - {slurry}",
                     value=str(qc.get("thickening_time", "03:30")),
-                    key=f"_qc_tt_{get_slurry_key(slurry, 'in')}_{load_sig}",
+                    key=tt_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "thickening_time", tt_key),
                     help="Reported thickening time. Select its measured endpoint below."
                 )
                 endpoint_options = ["Not specified", "70 Bc", "100 Bc"]
                 endpoint = qc.get("thickening_endpoint", "Not specified")
+                tte_key = f"_qc_tt_endpoint_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["thickening_endpoint"] = st.selectbox(
                     f"Thickening Time Endpoint - {slurry}",
                     endpoint_options,
                     index=endpoint_options.index(endpoint) if endpoint in endpoint_options else 0,
-                    key=f"_qc_tt_endpoint_{get_slurry_key(slurry, 'in')}_{load_sig}",
+                    key=tte_key,
+                    on_change=_commit_lab_qc,
+                    args=(slurry, "thickening_endpoint", tte_key),
                     help="For an older project, leave Not specified unless the test endpoint is known."
                 )
                 # FIX (requested, Level 2 #8): this is free text with no
@@ -481,17 +517,25 @@ def render():
                 # inputs), and it's printed into the Word report exactly as
                 # typed. A caption-level nudge catches an obviously malformed
                 # value (e.g. "3:3", "03.30") without blocking anything.
-                if not re.match(r"^\d{1,2}:[0-5]\d$", qc["thickening_time"].strip()):
-                    st.caption("⚠️ Format should be HH:MM (e.g. 03:30). This value is printed in the report exactly as typed.")
+                # BUG-09 + F2 (P1-02, owner-approved 2026-09-29): two-stage
+                # gate — the HH:MM format check AND the semantic envelope:
+                # '00:00' is not a measurable thickening time and anything
+                # above 24 hours is outside lab-report plausibility. Both now
+                # fail tt_valid, so they can neither be confirmed (button
+                # below) nor keep a stale 'reviewed' status alive.
+                tt_valid = thickening_time_valid(qc["thickening_time"])
+                if not tt_valid:
+                    st.caption("⚠️ Format should be HH:MM (e.g. 03:30); '00:00' and values above 24 hours are rejected. This value is printed in the report exactly as typed.")
 
             temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
-            review_matches = (temperature_valid and qc.get("reviewed", False)
+            review_matches = (temperature_valid and tt_valid
+                              and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
                               and signatures.get(slurry) == current_p5_sig)
             if review_matches:
                 st.success("Lab readings and formulation reviewed for this slurry.")
             elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                           disabled=drifted or not temperature_valid,
+                           disabled=drifted or not temperature_valid or not tt_valid,
                            help="Confirm the values above are measured and checked for the current well and formulation."):
                 qc["reviewed"] = True
                 qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
@@ -500,6 +544,11 @@ def render():
                 st.caption("Sync or keep reviewed lab entries before confirming their measured results.")
             elif not temperature_valid:
                 st.caption("Correct BHCT/BHST before confirming the lab results.")
+            elif not tt_valid:
+                # BUG-09 + F2: malformed OR out-of-envelope Thickening Time
+                # ('00:00', above 24:00) must not be confirmable into the
+                # exported report.
+                st.caption("Correct the Thickening Time (HH:MM, e.g. 03:30 — '00:00' and values above 24 hours are rejected) before confirming the lab results.")
             else:
                 st.warning("Lab QC has not been confirmed for this slurry; defaults are not measured results.")
 

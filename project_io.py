@@ -125,6 +125,57 @@ def _validate_project(data):
             raise ValueError(f"{key} is missing required columns.")
 
 
+# F-03 (system audit 2026-09-29, owner-approved): the Phase VII lab grid is
+# rendered with st.column_config.TextColumn editors (phase_7_lab), which
+# reject non-string underlying dtypes with a raw StreamlitAPIException
+# ("The configured column type 'text' for column 'Concentration' is not
+# compatible for editing the underlying data type 'ColumnDataKind.FLOAT'").
+# The app's own save path always writes strings into these columns, but a
+# hand-edited or migrated project JSON can carry numeric cells (e.g.
+# Concentration: 100.0); decode used to accept it and Phase VII crashed on
+# first render. Coerce every text-valued grid column to strings at decode
+# time — before any session write — while keeping missing cells (null/NaN)
+# missing instead of fabricating "None"/"nan" text. Unit is a
+# SelectboxColumn whose options are strings, so a non-string dtype there is
+# equally foreign to the editor and gets the same treatment.
+_LAB_GRID_TEXT_COLUMNS = ("Material", "Concentration", "Unit", "Mass", "Lot No")
+
+
+def _is_missing_cell(cell):
+    return cell is None or (isinstance(cell, float) and math.isnan(cell))
+
+
+def _coerce_lab_grid_text_columns(df):
+    if not isinstance(df, pd.DataFrame):
+        return df
+    for column in _LAB_GRID_TEXT_COLUMNS:
+        if column not in df.columns:
+            continue
+        series = df[column]
+        already_text = series.dtype == object and all(
+            isinstance(cell, (str, type(None))) or _is_missing_cell(cell)
+            for cell in series)
+        if already_text:
+            continue
+        df[column] = [cell if _is_missing_cell(cell) else str(cell)
+                      for cell in series]
+    return df
+
+
+def _normalize_lab_grids(project):
+    """F-03: decode-time dtype normalization for every lab grid the session
+    will ever render — the active lab_grid_dfs AND the archived inactive-
+    slurry drafts, which the enable-cycle later restores into lab_grid_dfs
+    and would otherwise re-introduce the same crash after the load."""
+    for grid in project.get("lab_grid_dfs", {}).values():
+        _coerce_lab_grid_text_columns(grid)
+    for draft in project.get("inactive_slurry_drafts", {}).values():
+        if isinstance(draft, dict) and isinstance(draft.get("lab_grid_dfs"), dict):
+            for grid in draft["lab_grid_dfs"].values():
+                _coerce_lab_grid_text_columns(grid)
+    return project
+
+
 def decode_project(raw_bytes, deserialize_item):
     """All parsing, reconstruction and shape checks occur without session writes."""
     loaded = json.loads(raw_bytes.decode("utf-8-sig"),
@@ -135,6 +186,7 @@ def decode_project(raw_bytes, deserialize_item):
         raise ValueError("Project field names must be strings.")
     project = {key: deserialize_item(value) for key, value in loaded.items() if is_project_key(key)}
     _check_finite(project)
+    _normalize_lab_grids(project)
     _validate_project(project)
     return project
 

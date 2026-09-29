@@ -27,6 +27,12 @@ def serialize_item(obj, path="project"):
             "columns": list(obj.columns),
             "data": rows
         }
+    elif obj is pd.NaT:
+        # BUG-26: pd.NaT passes the datetime isinstance check below, and its
+        # isoformat() is the literal string "NaT", so a saved project with a
+        # NaT cell crashed every later reload on datetime.fromisoformat("NaT").
+        # Serialize the missing timestamp as JSON null instead.
+        return None
     elif isinstance(obj, datetime):
         return {"__type__": "DateTime", "val": obj.isoformat()}
     elif isinstance(obj, date):
@@ -40,6 +46,13 @@ def serialize_item(obj, path="project"):
         return [serialize_item(item, f"{path}[{index}]") for index, item in enumerate(obj)]
     elif isinstance(obj, float) and not math.isfinite(obj):
         raise ValueError(f"Non-finite numeric value at {path}; correct it before saving.")
+    elif hasattr(obj, "item") and not isinstance(obj, (str, bytes)):
+        # BUG-25: numpy scalars (np.int64, np.bool_, ...) reached the str()
+        # fallback and were saved as text ("42"), desyncing typed widgets and
+        # numeric comparisons after a reload. .item() unwraps them to native
+        # Python numbers/bools — the same treatment _canonical() applies for
+        # fingerprints.
+        return serialize_item(obj.item(), path)
     elif isinstance(obj, (str, int, float, bool)) or obj is None:
         return obj
     return str(obj)
@@ -223,15 +236,24 @@ if st.session_state.pop("_baseline_loaded_project", False) and current_project_j
 
 # JSON is a work-in-progress checkpoint; keep incomplete additive rows, but
 # show their location so they cannot be mistaken for export-ready values.
+# BUG-27: every empty cell used to render its own warning card on every
+# rerun, flooding the sidebar on a draft with several unfinished rows.
+# Aggregate them into a single card that lists all affected slurries/rows.
+_incomplete_additive_rows = []
 for _slurry in st.session_state.get("fluids_config", {}).get("active", []):
     _additives = st.session_state.get("cement_additives_dfs", {}).get(_slurry)
     if isinstance(_additives, pd.DataFrame) and "User Input" in _additives.columns:
-        for _row_number, _value in enumerate(_additives["User Input"], start=1):
-            if pd.isna(_value):
-                _project_manager_slot.warning(
-                    f"{_slurry}: Phase V additive row {_row_number} has an empty User Input "
-                    "(concentration). You can save this draft; complete the cell before Word export."
-                )
+        _empty_rows = [str(_row_number)
+                       for _row_number, _value in enumerate(_additives["User Input"], start=1)
+                       if pd.isna(_value) or str(_value).strip() == ""]
+        if _empty_rows:
+            _incomplete_additive_rows.append(f"{_slurry}: row {', '.join(_empty_rows)}")
+if _incomplete_additive_rows:
+    _project_manager_slot.warning(
+        "Phase V additive rows with an empty User Input (concentration) — "
+        + "; ".join(_incomplete_additive_rows)
+        + ". You can save this draft; complete the cells before Word export."
+    )
 
 _project_manager_slot.download_button(
     label="Download Project (.json)",

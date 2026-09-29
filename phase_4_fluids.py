@@ -75,8 +75,15 @@ def render():
     st.markdown("Configure fluid train parameters. **Displacement Fluid density is dynamically referenced from Phase II.**")
 
     # 1. Dynamic Reference to Phase II Drilling Fluid Data (Live Sync)
-    live_mud_density_display = str(st.session_state.get("mud_density") or "80.0")
-    live_effective_mud_density = float(st.session_state.get("effective_mud_density") or parse_effective_numeric(live_mud_density_display, 80.0))
+    # BUG-31 (residual): an unset Phase II mud density used to DISPLAY here
+    # as "80.0 pcf" — a fabricated number that looked like entered data. The
+    # export path already rejects an empty mud density (phase status +
+    # require_positive_density); the screen no longer pretends one exists.
+    _raw_mud_density = st.session_state.get("mud_density")
+    _mud_density_set = _raw_mud_density is not None and str(_raw_mud_density).strip() not in ("", "nan", "None")
+    live_mud_density_display = str(_raw_mud_density).strip() if _mud_density_set else ""
+    live_effective_mud_density = (float(st.session_state.get("effective_mud_density") or 0.0)
+                                  if _mud_density_set else 0.0)
 
     # 2. Canonical State Initialization
     if "fluids_config" not in st.session_state:
@@ -198,15 +205,24 @@ def render():
             disp_density_text = live_mud_density_display
             disp_effective_density = live_effective_mud_density
         else:
+            # BUG-20: spacer stages used to inherit the pre-flush 80.0 pcf
+            # default — an unweighted-brine density that contradicts a
+            # spacer's purpose. Default the three spacer stages to the same
+            # 95 pcf reference profile the rest of the app documents; every
+            # value stays editable.
+            _default_density = (
+                "118.0" if ("Main" in fluid or "Tail" in fluid)
+                else ("95.0" if "Spacer" in fluid else "80.0")
+            )
             p = cfg["params"].setdefault(
                 fluid,
                 {
                     "volume": 0.0,
-                    "density": "118.0" if "Main" in fluid or "Tail" in fluid else "80.0",
+                    "density": _default_density,
                     "pump_rate": "4.0"
                 }
             )
-            disp_density_text = str(p.get("density", "80.0"))
+            disp_density_text = str(p.get("density", ""))
 
         # Material Name — the Fluids Sequence table's "Name" column (e.g. "Cement
         # Slurry", "Salt Saturated Water", "Mud"), distinct from the "Type" column
@@ -240,9 +256,11 @@ def render():
             if fluid == "Displacement Fluid":
                 st.text_input(
                     f"Density (pcf) - {fluid}",
-                    value=disp_density_text,
+                    value=disp_density_text if _mud_density_set else "Not set in Phase II & III",
                     disabled=True,
-                    help=f"Dynamic reference to Phase II (Effective: {disp_effective_density:.2f} pcf)",
+                    help=(f"Dynamic reference to Phase II (Effective: {disp_effective_density:.2f} pcf)"
+                          if _mud_density_set
+                          else "Dynamic reference to Phase II — set Mud Weight there first."),
                     key="den_disp_live"
                 )
             else:

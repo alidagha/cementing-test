@@ -190,6 +190,47 @@ def render():
         key=f"_editor_hardware_{st.session_state.get(hardware_revision_key, 0)}",
         width='stretch'
     )
+
+    # BUG-03: explicit add/delete row controls beside the grid. The built-in
+    # dynamic-row affordance makes empty rows easy to create accidentally and
+    # its delete UX is unclear; these buttons give the operator a deliberate
+    # way to append a defaulted row or remove a specific one by row number.
+    _hw_rev = st.session_state.get(hardware_revision_key, 0)
+    add_col, del_col, pick_col = st.columns([1.1, 1.6, 2.2])
+    with add_col:
+        if st.button("＋ Add Row", key=f"_hw_add_{_hw_rev}",
+                     help="Append one hardware row with sensible defaults."):
+            base = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
+                    else st.session_state["hardware_table"]).copy(deep=True)
+            new_row = {col: "" for col in HARDWARE_COLUMNS}
+            new_row.update({"Description": "Casing", "MD (m)": "0.0", "Size (in)": "",
+                            "ID (in)": 0.0, "Joint (m)": 0.0, "Weight (ppf)": 0.0,
+                            "Grade": "-", "Collapse (psi)": 0.0, "Burst (psi)": 0.0})
+            st.session_state["hardware_editor_draft"] = pd.concat(
+                [base, pd.DataFrame([new_row])], ignore_index=True)
+            st.session_state[hardware_revision_key] = _hw_rev + 1
+            st.rerun()
+    with pick_col:
+        _hw_rows_now = len(hardware_draft) if isinstance(hardware_draft, pd.DataFrame) \
+            else len(st.session_state["hardware_table"])
+        _hw_del_pick = st.number_input(
+            f"Row # to delete (1–{_hw_rows_now})" if _hw_rows_now else "No rows to delete",
+            min_value=0,
+            max_value=max(_hw_rows_now, 0),
+            value=0,
+            step=1,
+            key=f"_hw_del_pick_{_hw_rev}",
+            help="Enter the row number as shown top-to-bottom in the table, then press Delete Row. 0 = none.")
+    with del_col:
+        if st.button("🗑 Delete Row", key=f"_hw_del_{_hw_rev}",
+                     disabled=_hw_del_pick < 1 or _hw_del_pick > _hw_rows_now,
+                     help="Delete the selected row number from the table."):
+            base = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
+                    else st.session_state["hardware_table"]).copy(deep=True)
+            base = base.drop(index=int(_hw_del_pick) - 1).reset_index(drop=True)
+            st.session_state["hardware_editor_draft"] = base
+            st.session_state[hardware_revision_key] = _hw_rev + 1
+            st.rerun()
     
     pending_rows = edited_df.copy(deep=True)
     cleaned_rows = []
