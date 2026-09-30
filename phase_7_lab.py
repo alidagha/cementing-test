@@ -7,6 +7,10 @@ from project_state import lab_source_signature
 from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
+# IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
+# The read-only engine (engineering_tools.py / materials_db.py) is untouched;
+# the manual BHCT entry and lab_temperature_valid remain the only authority.
+from bhct_helper import M_TO_FT, suggest_bhct
 from engineering_tools import (
     clean_number,
     require_positive_density,
@@ -34,6 +38,52 @@ def _commit_lab_qc(slurry: str, field: str, widget_key: str) -> None:
 def get_slurry_key(slurry_name: str, prefix: str) -> str:
     sanitized = "".join(c if c.isalnum() else "_" for c in str(slurry_name)).lower()
     return f"{prefix}_{sanitized}"
+
+def _bhct_suggestion():
+    """IH-15: resolve the i-Handbook / API 10B BHCT suggestion from the current
+    well data, or return None when the inputs don't support the correlation.
+
+    CRITICAL unit note: `geo_tvd` (Phase II/III) is stored in METERS while the
+    decompiled correlations take FEET, so it is converted with the pinned
+    factor M_TO_FT = 3.28084 before entering suggest_bhct. The lookup mirrors
+    the established well-data pattern (well_data snapshot first, top-level
+    shadow key as fallback) so the suggestion and the BHST Reference caption
+    always come from the same data vintage. The suggestion stays hidden when
+    TVD is non-positive or BHST <= 80 degF: the i-Handbook pseudo gradient
+    PsTG = (MaxRBHST - 80) * 100 / TVD only makes physical sense above the
+    80 degF surface-temperature base of the correlation.
+
+    Returns (tvd_m, tvd_ft, suggestion_dict) or None.
+    """
+    tvd_m = st.session_state.get("well_data", {}).get(
+        "geo_tvd", st.session_state.get("geo_tvd", 3000.0))
+    bhst_v = st.session_state.get("well_data", {}).get(
+        "bhst", st.session_state.get("bhst", 200))
+    try:
+        tvd_ft = float(tvd_m) * M_TO_FT
+        bhst_f = float(bhst_v)
+    except (TypeError, ValueError):
+        return None
+    if tvd_ft <= 0 or bhst_f <= 80:
+        return None
+    try:
+        return float(tvd_m), tvd_ft, suggest_bhct(tvd_ft=tvd_ft, max_rbhest_f=bhst_f)
+    except ValueError:
+        return None
+
+def _apply_bhct_suggestion(slurry: str, suggested: int, widget_key: str) -> None:
+    """IH-15 on_click callback for the 'Apply' button under the BHCT field.
+
+    Commits the suggested value into st.session_state["lab_qc_params"][slurry]
+    ["bhct"] AND into the live number_input widget key. Callbacks run BEFORE
+    the script re-executes, so assigning a widget-backed key here is legal —
+    this is the only way the visible field actually follows the suggestion
+    (setting it after instantiation raises StreamlitAPIException). The click
+    itself triggers the rerun that re-renders the field with the new value;
+    no explicit st.rerun() is needed (and one inside would be redundant).
+    """
+    st.session_state.setdefault("lab_qc_params", {}).setdefault(slurry, {})["bhct"] = suggested
+    st.session_state[widget_key] = suggested
 
 
 def has_legacy_salt_basis(phase5_df: pd.DataFrame, lab_df: pd.DataFrame) -> bool:
@@ -262,6 +312,10 @@ def render():
         
     bhst = st.session_state.get("well_data", {}).get("bhst", st.session_state.get("bhst", 200))
     fluid_data = st.session_state.get("fluid_data", {})
+    # IH-15: i-Handbook/API 10B suggestion, resolved once per render from the
+    # well-level TVD/BHST (same data vintage as `bhst` above); None when the
+    # inputs don't support the correlation. Pure math — no side effects.
+    bhct_suggestion = _bhct_suggestion()
     
     # Canonical State Initializations
     if "lab_qc_params" not in st.session_state:
@@ -437,6 +491,33 @@ def render():
                     args=(slurry, "bhct", bhct_key)
                 )
                 st.caption(f"BHST Reference: **{bhst} °F**")
+                # IH-15: advisory i-Handbook/API 10B suggestion, shown only
+                # when TVD + BHST support the correlation. Display-only caption
+                # plus an explicit 'Apply' button — it never overwrites anything
+                # by itself and can never hard-block the phase (the manual entry
+                # and the lab_temperature_valid check stay authoritative).
+                # The suggested value is clamped to the widget's 60-400 °F range
+                # before applying so the number_input can never receive an
+                # out-of-bounds state; any clamping is disclosed in the caption.
+                if bhct_suggestion is not None:
+                    sug_m, sug_ft, sug = bhct_suggestion
+                    sug_raw = int(round(sug["temp_degF"]))
+                    sug_apply = max(60, min(400, sug_raw))
+                    clamp_note = (f" (clamped to the 60-400 °F field range)"
+                                  if sug_apply != sug_raw else "")
+                    st.caption(
+                        f"💡 Suggested {sug['kind']} ≈ **{sug_raw} °F**{clamp_note} — "
+                        f"i-Handbook: TVD {sug_ft:,.0f} ft ({sug_m:,.0f} m), "
+                        f"BHST {bhst} °F, PsTG {sug['pstg_degF_per_100ft']:.2f} °F/100ft"
+                    )
+                    st.button(
+                        f"Apply {sug_apply} °F",
+                        key=f"_qc_bhct_apply_{get_slurry_key(slurry, 'btn')}_{load_sig}",
+                        on_click=_apply_bhct_suggestion,
+                        args=(slurry, sug_apply, bhct_key),
+                        help="Overwrite the manual BHCT entry with the i-Handbook/API 10B "
+                             "estimate computed from well TVD and BHST.",
+                    )
                 # FIX (requested, Level 2 #8): BHCT (circulating temperature,
                 # what the slurry actually experiences while being pumped)
                 # can never physically exceed BHST (static temperature) —
