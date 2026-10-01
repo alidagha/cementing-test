@@ -6,7 +6,7 @@ import math
 import pandas as pd
 from datetime import date, datetime
 from engineering_tools import compute_phase_status
-from project_state import is_project_key
+from project_state import is_project_key, invalidate_document
 from project_io import content_signature, decode_project, replace_project_state
 
 st.set_page_config(page_title="Cementing Report Engine", layout="wide", page_icon="🛢️")
@@ -176,7 +176,11 @@ elif app_mode == "Phase X: Procedure & Export":
 # instead of leaving its label one edit behind. Navigation is already mounted,
 # and its formatted options remain constant, so this rerun preserves the
 # browser's selected phase while refreshing the separate status captions.
-if compute_phase_status(st.session_state) != _phase_status:
+_current_phase_status = compute_phase_status(st.session_state)
+if (any(v["level"] != "ok" for key, v in _current_phase_status.items() if key != "phase6")
+        or _current_phase_status["phase6"]["level"] == "warning"):
+    invalidate_document(st.session_state)
+if _current_phase_status != _phase_status:
     st.rerun()
 
 # ==========================================

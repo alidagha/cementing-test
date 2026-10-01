@@ -4,6 +4,7 @@ Run from the repository root with: python -m unittest discover -s tests -v
 """
 import ast
 from datetime import date, datetime
+from copy import deepcopy
 from io import BytesIO
 import json
 import math
@@ -19,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import materials_db
-from engineering_tools import compute_phase_status
+from engineering_tools import compute_phase_status, lab_review_signature
 from project_io import decode_project
-from project_state import is_project_key
+from project_state import is_project_key, prepare_calculations
 
 # Use the application's serializers without running its top-level UI.
 tree = ast.parse((ROOT / "main.py").read_text())
@@ -37,6 +38,9 @@ def round_trip(state):
              for key, value in state.items() if is_project_key(key)}
     return decode_project(json.dumps(saved, allow_nan=False).encode(),
                           namespace["deserialize_item"])
+
+
+BATCH1_JOBS = ('CSG 9 5/8"', 'CMT PLUG', 'CMT SQUEEZE', 'LNR 7"', 'TIE BACK LNR 7"')
 
 
 class AuditRegressions(unittest.TestCase):
@@ -207,6 +211,138 @@ class AuditRegressions(unittest.TestCase):
         self.phase(app, "phase10")
         self.assertTrue(next(b for b in app.button if b.label == "Build Word Document").disabled)
         self.assertNotIn("_compiled_doc_bytes", app.session_state)
+
+
+    def assert_export_blocked(self, app):
+        self.phase(app, "phase10")
+        self.assertTrue(next(b for b in app.button if b.label == "Build Word Document").disabled)
+        for key in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"):
+            self.assertNotIn(key, app.session_state)
+        self.assertFalse(any(b.proto.label == "Download Final Document (.docx)"
+                             for b in app.get("download_button")))
+        readiness = next(e for e in app.expander if "Export readiness checklist" in e.label)
+        self.assertFalse(readiness.label.startswith("✅"))
+        self.assertEqual(len(app.text_area), 2)  # Repairable report editors stay mounted.
+
+    def test_batch1_calculation_errors_block_export(self):
+        for job in BATCH1_JOBS:
+            with self.subTest(job=job):
+                app = self.configured_app(job, optional_fluids=True)
+                self.export(app)
+                app.session_state["preflush_config"]["wash_multiplier"] = "abc"
+                # The stale Phase VI cache still looks complete: the calculation
+                # failure itself must block export, independently of status.
+                self.assertTrue(all(s["level"] == "ok"
+                                    for s in compute_phase_status(app.session_state).values()))
+                self.assert_export_blocked(app)
+                self.assertTrue(app.error)
+                self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))
+                self.assertEqual(round_trip(app.session_state.to_dict())["preflush_config"]["wash_multiplier"], "abc")
+                self.phase(app, "phase6")
+                next(w for w in app.text_input if w.label.startswith("Correct Preflush wash ratio")).set_value("3").run()
+                next(b for b in app.button if b.label == "Apply corrected values").click().run()
+                self.export(app)
+
+    def test_batch1_restored_cement_bounds_block_export(self):
+        invalid = (("yield", -1.0), ("yield", 0.0), ("yield", 0.0005),
+                   ("mix_water", -1.0), ("dead_vol", -31.0),
+                   ("cmt_sg", 2.49), ("cmt_sg", 3.51))
+        for job in BATCH1_JOBS:
+            valid = self.configured_app(job)
+            self.export(valid)
+            saved = round_trip(valid.session_state.to_dict())
+            compiled = {k: valid.session_state[k] for k in
+                        ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature")}
+            for field, value in invalid:
+                with self.subTest(job=job, field=field, value=value):
+                    project = deepcopy(saved)
+                    project["cement_params"]["Main"].update(auto_calc=False)
+                    project["cement_params"]["Main"][field] = value
+                    app = self.app({**round_trip(project), **compiled})
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+                    self.assertNotIn("_compiled_doc_bytes", app.session_state)
+                    self.assert_export_blocked(app)
+                    self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))
+                    self.assertEqual(app.session_state["cement_params"]["Main"][field], value)
+                    self.phase(app, "phase5")
+                    self.assertTrue(any(w.label.startswith("Correct ") for w in app.text_input))
+            with self.subTest(job=job, valid_manual=True):
+                project = deepcopy(saved)
+                project["cement_params"]["Main"].update(auto_calc=False, mix_water=30.0, dead_vol=0.0)
+                project["cement_params"]["Main"]["yield"] = 1.5
+                app = self.app(round_trip(project))
+                self.export(app)
+                self.assertEqual(app.session_state["cement_params"]["Main"]["yield"], 1.5)
+                self.assertEqual(app.session_state["cement_params"]["Main"]["total_sacks"], 187.2)
+
+    def test_batch1_lab_masses_block_confirmation_and_export(self):
+        for job in BATCH1_JOBS:
+            app = self.configured_app(job)
+            self.export(app)
+            for mass in ("-10", "abc", "nan", "inf", "", None):
+                with self.subTest(job=job, mass=mass):
+                    self.phase(app, "phase7")
+                    editor = next(e for e in app.dataframe if "_editor_lab_tbl_main_" in e.proto.id)
+                    widgets = app._tree.get_widget_states()
+                    event = widgets.widgets.add()
+                    event.id = editor.proto.id
+                    event.string_value = json.dumps({"edited_rows": {"0": {"Mass": mass}},
+                                                     "added_rows": [], "deleted_rows": []})
+                    app._run(widgets)
+                    self.healthy(app)
+                    confirm = next(b for b in app.button if b.label == "Confirm measured lab results")
+                    self.assertTrue(confirm.disabled)
+                    self.assertEqual(compute_phase_status(app.session_state)["phase7"]["level"], "warning")
+                    self.assertNotIn("_compiled_doc_bytes", app.session_state)
+                    # Even matching restored review metadata cannot bless a bad mass.
+                    qc = app.session_state["lab_qc_params"]["Main"]
+                    qc["reviewed"] = True
+                    qc["review_signature"] = lab_review_signature(qc, app.session_state["lab_grid_dfs"]["Main"])
+                    restored = round_trip(app.session_state.to_dict())
+                    self.assertEqual(compute_phase_status(restored)["phase7"]["level"], "warning")
+                    self.assert_export_blocked(app)
+                    self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))
+                    stored = restored["lab_grid_dfs"]["Main"].iloc[0]["Mass"]
+                    self.assertTrue(pd.isna(stored) if mass is None else stored == mass)
+            # Repaired data can be confirmed and exported without syncing away edits.
+            self.phase(app, "phase7")
+            editor = next(e for e in app.dataframe if "_editor_lab_tbl_main_" in e.proto.id)
+            widgets = app._tree.get_widget_states()
+            event = widgets.widgets.add()
+            event.id = editor.proto.id
+            event.string_value = json.dumps({"edited_rows": {"0": {"Mass": "0"}},
+                                             "added_rows": [], "deleted_rows": []})
+            app._run(widgets)
+            next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
+            self.export(app)
+            self.assertEqual(app.session_state["lab_grid_dfs"]["Main"].iloc[0]["Mass"], "0")
+
+    def test_batch1_reviewed_thickening_time_is_revalidated(self):
+        for job in BATCH1_JOBS:
+            valid = self.configured_app(job)
+            self.export(valid)
+            saved = round_trip(valid.session_state.to_dict())
+            compiled = {k: valid.session_state[k] for k in
+                        ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature")}
+            for time in ("00:00", "24:01", "99:59", "03.30", None, "00:01", "24:00"):
+                with self.subTest(job=job, time=time):
+                    project = deepcopy(saved)
+                    qc = project["lab_qc_params"]["Main"]
+                    qc["thickening_time"] = time
+                    qc["review_signature"] = lab_review_signature(qc, project["lab_grid_dfs"]["Main"])
+                    app = self.app({**round_trip(project), **compiled})
+                    if time in ("00:01", "24:00"):
+                        self.export(app)
+                        doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                        self.assertTrue(any(time in c.text for t in doc.tables for row in t.rows for c in row.cells))
+                    else:
+                        self.assertEqual(compute_phase_status(app.session_state)["phase7"]["level"], "warning")
+                        self.assertNotIn("_compiled_doc_bytes", app.session_state)
+                        self.assert_export_blocked(app)
+                        self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))
+                        self.assertEqual(app.session_state["lab_qc_params"]["Main"]["thickening_time"], time)
+                        self.phase(app, "phase7")
+                        self.assertTrue(next(b for b in app.button if b.label == "Confirm measured lab results").disabled)
 
 
 if __name__ == "__main__":

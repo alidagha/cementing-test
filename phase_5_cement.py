@@ -7,6 +7,7 @@ from engineering_tools import (
     clean_number,
     require_positive_density,
     require_nonnegative_number,
+    validate_cement_parameters,
     calculate_slurry_from_components,
     resolve_additive_density,
     resolve_physical_state,
@@ -275,6 +276,7 @@ def refresh_cement_calculations(state):
             continue
         try:
             p = dict(p)  # Commit only after the calculation and tables succeed.
+            validate_cement_parameters(p)
             info = state.get("fluid_data", {}).get(slurry, {})
             volume = clean_number(info.get("volume"))
             if volume <= 0:

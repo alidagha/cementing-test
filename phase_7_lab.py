@@ -15,6 +15,7 @@ from engineering_tools import (
     clean_number,
     require_positive_density,
     require_nonnegative_number,
+    validate_lab_masses,
     calculate_slurry_from_components,
     resolve_additive_density,
     resolve_physical_state,
@@ -608,19 +609,27 @@ def render():
                 if not tt_valid:
                     st.caption("⚠️ Format should be HH:MM (e.g. 03:30); '00:00' and values above 24 hours are rejected. This value is printed in the report exactly as typed.")
 
+            try:
+                validate_lab_masses(edited_lab_df)
+                masses_valid = True
+            except ValueError as exc:
+                masses_valid = False
+                st.error(f"{slurry}: {exc}. Correct the lab mass before confirming or exporting.")
             temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
-            review_matches = (temperature_valid and tt_valid
+            review_matches = (temperature_valid and tt_valid and masses_valid
                               and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
                               and signatures.get(slurry) == current_p5_sig)
             if review_matches:
                 st.success("Lab readings and formulation reviewed for this slurry.")
             elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                           disabled=drifted or not temperature_valid or not tt_valid,
+                           disabled=drifted or not temperature_valid or not tt_valid or not masses_valid,
                            help="Confirm the values above are measured and checked for the current well and formulation."):
                 qc["reviewed"] = True
                 qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
                 st.rerun()
+            elif not masses_valid:
+                st.caption("Correct the lab masses before confirming the lab results; unfinished entries remain saved.")
             elif drifted:
                 st.caption("Sync or keep reviewed lab entries before confirming their measured results.")
             elif not temperature_valid:

@@ -115,6 +115,25 @@ def require_nonnegative_number(value, label="Quantity") -> float:
         raise ValueError(f"{label}: dosage cannot be negative")
     return result
 
+def validate_cement_parameters(params):
+    """Enforce the existing Phase V input bounds before status or calculation."""
+    sg = require_nonnegative_number(params.get("cmt_sg", 3.20), "Cement SG")
+    if not 2.5 <= sg <= 3.5:
+        raise ValueError("Cement SG must be within 2.5–3.5")
+    require_nonnegative_number(params.get("dead_vol", 0.0), "Dead volume")
+    if not params.get("auto_calc", True):
+        yield_value = require_nonnegative_number(params.get("yield"), "Manual yield")
+        if yield_value < 0.001:
+            raise ValueError("Manual yield must be at least 0.001 cuft/sk")
+        require_nonnegative_number(params.get("mix_water"), "Manual mix water")
+
+
+def validate_lab_masses(grid):
+    """Keep unfinished lab masses as drafts; only finite nonnegative masses pass."""
+    for number, (_, row) in enumerate(grid.iterrows(), start=1):
+        require_nonnegative_number(row.get("Mass"), f"Lab row {number} mass")
+
+
 def parse_effective_numeric(val_str: str, default: float = 0.0) -> float:
     """
     Extracts the operational arithmetic mean from text ranges (e.g. '80-82' -> 81.0, '115/118' -> 116.5).
@@ -840,6 +859,7 @@ def compute_phase_status(ss) -> dict:
             for slurry in active_slurries:
                 fluid = ss.get("fluid_data", {}).get(slurry, {})
                 try:
+                    validate_cement_parameters(ss.get("cement_params", {}).get(slurry, {}))
                     if not _positive_number(fluid.get("volume")):
                         raise ValueError("Phase IV volume is missing")
                     density = require_positive_density(fluid.get("density"))
@@ -913,6 +933,14 @@ def compute_phase_status(ss) -> dict:
                 continue
             if any(not all(filled(row.get(field)) for field in ("Material", "Concentration", "Unit", "Mass"))
                    for _, row in grid.iterrows()):
+                missing.append(slurry)
+                continue
+            try:
+                validate_lab_masses(grid)
+            except ValueError:
+                missing.append(slurry)
+                continue
+            if not thickening_time_valid(qc[slurry].get("thickening_time")):
                 missing.append(slurry)
                 continue
             bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst", 200))

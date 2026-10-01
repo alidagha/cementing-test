@@ -1423,6 +1423,7 @@ def render():
     # two can never disagree about what "ready" means; shown collapsed by
     # default once required phases are complete. An unselected optional
     # Pre-flush/Spacer phase is neutral, not an export-readiness problem.
+    issues = prepare_calculations(st.session_state)
     _status = compute_phase_status(st.session_state)
     _phase_names = {
         "phase1": "I: Document Control", "phase2_3": "II & III: Well Data",
@@ -1434,8 +1435,8 @@ def render():
                                for name in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind"))
     _not_ok = [(k, v) for k, v in _status.items()
                if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
-    _icon = "✅" if not _not_ok else ("⚠️" if any(v["level"] == "warning" for _, v in _not_ok) else "⚪")
-    with st.expander(f"{_icon} Export readiness checklist", expanded=bool(_not_ok)):
+    _icon = "✅" if not (_not_ok or issues) else ("⚠️" if issues or any(v["level"] == "warning" for _, v in _not_ok) else "⚪")
+    with st.expander(f"{_icon} Export readiness checklist", expanded=bool(_not_ok or issues)):
         for key, name in _phase_names.items():
             v = _status[key]
             line = f"{'✅' if v['level'] == 'ok' else ('⚠️' if v['level'] == 'warning' else '⚪')} **Phase {name}** — {v['message']}"
@@ -1446,7 +1447,6 @@ def render():
             else:
                 st.markdown(line)
 
-    issues = prepare_calculations(st.session_state)
     if issues:
         # BUG-02 (confirmed): the early return here used to hide the whole
         # Phase X UI on the first validation failure, stranding the operator
@@ -1568,6 +1568,7 @@ def render():
     _status_pre_build = compute_phase_status(st.session_state)
     _unresolved = [v["message"] for k, v in _status_pre_build.items()
                    if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
+    _unresolved.extend(issues)
     if _unresolved:
         st.warning("⚠️ **Before building:** " + " | ".join(_unresolved))
         # Do not leave a previously compiled document downloadable when the
@@ -1593,7 +1594,7 @@ def render():
         current_doc_signature = None
         if any(spec["pending"] for spec in specs.values()):
             st.warning("Review the preserved report text above before building the document.")
-        else:
+        elif not issues:
             try:
                 master_context = build_master_context(calculations_prepared=True)
                 current_doc_signature = document_signature(master_context, template_path)

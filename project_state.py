@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 import materials_db
 from engineering_tools import (require_positive_density, require_positive_pump_rate,
-                               format_to_hr_mm, round_half_up, safe_float)
+                               format_to_hr_mm, round_half_up, safe_float,
+                               validate_lab_masses, thickening_time_valid)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -254,6 +255,16 @@ def refresh_lab_payloads(state):
                 break
         if incomplete_row:
             state.pop(f"lab_payload_{slurry}", None)
+            continue
+        try:
+            validate_lab_masses(grid)
+        except ValueError as exc:
+            state.pop(f"lab_payload_{slurry}", None)
+            issues.append(f"{slurry}: Phase VII {exc}; correct the lab mass before Word export.")
+            continue
+        if not thickening_time_valid(qc.get("thickening_time")):
+            state.pop(f"lab_payload_{slurry}", None)
+            issues.append(f"{slurry}: Phase VII thickening time must be valid HH:MM, greater than 00:00 and at most 24:00.")
             continue
         p = state.get("cement_params", {}).get(slurry, {})
         well = state.get("well_data", {})
