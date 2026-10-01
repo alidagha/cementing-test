@@ -63,18 +63,15 @@ def on_job_type_change():
     # anything the operator had typed by hand — e.g. a real injection-string
     # note for a Plug job like "Inside 9 5/8" CSG" (see the field's own help
     # text, which explicitly invites exactly that kind of custom value).
-    # Losing it isn't visible until the exported report is reviewed. Now the
-    # auto-fill only applies until the operator's first manual edit to this
-    # field THIS session (tracked by _hole_size_customized, set by the
-    # field's own on_change below — never by this callback, so the auto-fill
-    # here can never itself be mistaken for a manual edit).
-    if not st.session_state.get("_hole_size_customized", False):
+    # The customization marker is project data so save/load preserves it.
+    # Older projects infer it from the saved value during initialization.
+    if not st.session_state.get("hole_size_customized", False):
         new_hole = materials_db.DEFAULT_HOLE_SIZES.get(new_job, "12 1/4\"")
         st.session_state["hole_size"] = new_hole
         st.session_state["_w_hole_size"] = new_hole
 
 def _mark_hole_size_customized():
-    st.session_state["_hole_size_customized"] = True
+    st.session_state["hole_size_customized"] = True
 
 def _seed(widget_key, shadow_key):
     """Seed a widget-only key from its shadow, only if the widget key is
@@ -116,6 +113,13 @@ def render():
     for key, val in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+    if "hole_size_customized" not in st.session_state:
+        st.session_state["hole_size_customized"] = (
+            st.session_state.get("_hole_size_customized", False)
+            or st.session_state["hole_size"] != materials_db.DEFAULT_HOLE_SIZES.get(
+                st.session_state["job_type"], "12 1/4\"")
+        )
 
     col1, col2 = st.columns(2)
     

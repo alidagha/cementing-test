@@ -788,8 +788,11 @@ def compute_phase_status(ss) -> dict:
     else:
         adds = ss.get("cement_additives_dfs", {})
         def rows_complete(table):
-            if table is None or not hasattr(table, "iterrows") or len(table) == 0:
+            if table is None or not hasattr(table, "iterrows"):
                 return False
+            # An initialized empty table is a neat cement design. Missing
+            # tables remain incomplete; placement and mass balance are
+            # still validated below for every slurry.
             for _, row in table.iterrows():
                 material = str(row.get("Material Type")).strip()
                 if material in ("", "None", "nan", "<NA>"):

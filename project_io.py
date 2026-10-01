@@ -170,9 +170,8 @@ def _normalize_lab_grids(project):
     for grid in project.get("lab_grid_dfs", {}).values():
         _coerce_lab_grid_text_columns(grid)
     for draft in project.get("inactive_slurry_drafts", {}).values():
-        if isinstance(draft, dict) and isinstance(draft.get("lab_grid_dfs"), dict):
-            for grid in draft["lab_grid_dfs"].values():
-                _coerce_lab_grid_text_columns(grid)
+        if isinstance(draft, dict):
+            _coerce_lab_grid_text_columns(draft.get("lab_grid_dfs"))
     return project
 
 

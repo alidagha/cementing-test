@@ -205,14 +205,10 @@ def render():
             disp_density_text = live_mud_density_display
             disp_effective_density = live_effective_mud_density
         else:
-            # BUG-20: spacer stages used to inherit the pre-flush 80.0 pcf
-            # default — an unweighted-brine density that contradicts a
-            # spacer's purpose. Default the three spacer stages to the same
-            # 95 pcf reference profile the rest of the app documents; every
-            # value stays editable.
+            # Match the initial configuration, including 80 pcf spacers.
             _default_density = (
                 "118.0" if ("Main" in fluid or "Tail" in fluid)
-                else ("95.0" if "Spacer" in fluid else "80.0")
+                else "80.0"
             )
             p = cfg["params"].setdefault(
                 fluid,

@@ -302,7 +302,7 @@ _has_meaningful_data = (
         ("report_date", date.today()),
         ("made_by", "NIDC Cement Engineering and Planning Department"),
     ))
-    or bool(st.session_state.get("_hole_size_customized"))
+    or bool(st.session_state.get("hole_size_customized"))
 )
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
 if _has_meaningful_data and st.session_state.get("_saved_sig") != _current_sig:
