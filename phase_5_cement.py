@@ -352,7 +352,7 @@ def render():
                                       ("mix_water", "Manual mix water", 0.0)):
                 if field in params:
                     bounded.append((params, field, f"{label} - {slurry}", low, None, False))
-        if params.get("top_mode") == "Depth (m MD)" and "top_depth" in params:
+        if params.get("top_mode") == "Depth (m MD)" and params.get("top_depth") is not None:
             bounded.append((params, "top_depth", f"Top depth - {slurry}", 0.0, None, False))
     if repair_invalid_inputs(bounded, f"phase5_{load_sig}"):
         return

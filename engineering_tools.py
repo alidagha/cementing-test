@@ -844,18 +844,12 @@ def compute_phase_status(ss) -> dict:
             return True
 
         missing = [s for s in active_slurries if not rows_complete(adds.get(s))]
-        missing_tops = []
-        for slurry in active_slurries:
-            params = ss.get("cement_params", {}).get(slurry, {})
-            mode = params.get("top_mode")
-            if mode == "Surface":
-                continue
-            if mode == "Depth (m MD)" and _positive_number(params.get("top_depth")):
-                continue
-            # Older projects can contain an approved depth without top_mode.
-            if mode is None and _positive_number(params.get("top_depth")):
-                continue
-            missing_tops.append(slurry)
+        from placement import slurry_intervals
+        intervals = slurry_intervals(ss.get("hardware_table"), ss.get("job_type", ""),
+                                     ss.get("placement_config", {}), active_slurries,
+                                     ss.get("cement_params", {}))
+        missing_tops = [slurry for slurry, interval in intervals.items()
+                        if interval["top_depth"] is None or interval["bottom_depth"] is None]
         invalid_calculations = []
         if not missing and not missing_tops:
             from phase_5_cement import build_components
@@ -883,7 +877,7 @@ def compute_phase_status(ss) -> dict:
         if missing:
             status["phase5"] = {"level": "warning", "message": f"Additive rows incomplete for: {', '.join(missing)}."}
         elif missing_tops:
-            status["phase5"] = {"level": "warning", "message": f"Top of cement not entered for: {', '.join(missing_tops)}."}
+            status["phase5"] = {"level": "warning", "message": f"Top of cement missing or invalid for: {', '.join(missing_tops)}."}
         elif invalid_calculations:
             status["phase5"] = {"level": "warning", "message": f"Review Phase IV fluid data or Phase V mass balance for: {', '.join(invalid_calculations)}."}
         else:

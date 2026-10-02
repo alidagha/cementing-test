@@ -3,6 +3,7 @@ import math
 import re
 import pandas as pd
 from project_state import fingerprint
+from engineering_tools import require_nonnegative_number
 
 _MD = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:[-–]\s*(\d+(?:\.\d+)?)\s*)?$")
 HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner", "Liner"}
@@ -62,12 +63,41 @@ def host_label(table, job_type, config):
     return f'{row["size"]}" {kind}'
 
 
-def top_label(params):
+def top_label(params, job_type=None, target=None):
+    if job_type is not None and params.get("top_job_type") not in (None, job_type):
+        return ".... m [TOP NOT SET IN PHASE V]", None
     mode = params.get("top_mode")
+    text, depth = ".... m [TOP NOT SET IN PHASE V]", None
     if mode == "Surface":
-        return "surface", 0.0
-    if mode == "Depth (m MD)" or (mode is None and params.get("top_depth") not in (None, "", 0)):
+        text, depth = "surface", 0.0
+    elif mode == "Depth (m MD)" or (mode is None and params.get("top_depth") not in (None, "", 0)):
+        try:
+            require_nonnegative_number(params.get("top_depth"), "Top depth")
+        except ValueError:
+            return text, None
         depth = measured_depth(params.get("top_depth"))
         if depth is not None:
-            return f"{depth:.1f} m", depth
-    return ".... m [TOP NOT SET IN PHASE V]", None
+            text = f"{depth:.1f} m"
+    if target is not None and depth is not None and depth >= target:
+        return f".... m [TOP MUST BE ABOVE TARGET DEPTH {target:.1f} m MD]", None
+    return text, depth
+
+
+def slurry_intervals(table, job_type, config, active_slurries, cement_params):
+    """Share the summary's established deepest-first chain with readiness/Word."""
+    target = target_depth(table, job_type, config)
+    target_text = (f"{target:.1f} m MD" if target is not None
+                   else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]")
+    job = str(job_type).upper()
+    chained = "CSG" in job or ("LNR" in job and "TIE BACK" not in job)
+    bottom_text, bottom_depth = target_text, target
+    intervals = {}
+    for slurry in reversed(active_slurries) if chained else active_slurries:
+        top, depth = top_label(cement_params.get(slurry, {}), job_type, target)
+        if chained and bottom_depth is not None and depth is not None and depth >= bottom_depth:
+            top, depth = f".... m [TOP MUST BE ABOVE PREVIOUS INTERVAL {bottom_depth:.1f} m MD]", None
+        intervals[slurry] = {"top": top, "top_depth": depth,
+                             "bottom": bottom_text, "bottom_depth": bottom_depth}
+        if chained:
+            bottom_text, bottom_depth = top, depth
+    return intervals

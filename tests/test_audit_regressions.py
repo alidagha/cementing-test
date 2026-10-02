@@ -8,6 +8,7 @@ from copy import deepcopy
 from io import BytesIO
 import json
 import math
+import re
 from pathlib import Path
 import sys
 import unittest
@@ -21,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import materials_db
-from engineering_tools import compute_phase_status, lab_review_signature
+from engineering_tools import compute_phase_status, lab_review_signature, round_half_up
 from project_io import decode_project
 from project_state import is_project_key, prepare_calculations, hardware_draft_pending
 
@@ -595,6 +596,260 @@ class AuditRegressions(unittest.TestCase):
         self.assertTrue(missing.isna().all().all())
         self.assertEqual(missing["MD (m)"].dtype, object)
         self.assertEqual(missing["Size (in)"].dtype, object)
+
+    def test_batch3_first_top_depth_and_restored_repairs(self):
+        valid = self.configured_app('CSG 9 5/8"')
+        saved = round_trip(valid.session_state.to_dict())
+        project = deepcopy(saved)
+        project.pop("cement_params")  # First Phase V entry for the slurry.
+        app = self.app(project)
+        self.phase(app, "phase5")
+        mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
+        self.assertEqual(mode.value, "Not entered")
+        self.assertIsNone(app.session_state["cement_params"]["Main"]["top_depth"])
+        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+        mode.set_value("Depth (m MD)").run()
+        self.healthy(app)
+        depth = next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main")
+        self.assertEqual(depth.value, 0.0)
+        self.assertFalse(any(w.label.startswith("Correct Top depth") for w in app.text_input))
+        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+        self.assert_export_blocked(app)
+        self.phase(app, "phase5")
+        next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main").set_value(2100.0)
+        app.radio(key="_app_mode_key").set_value("phase10").run()
+        self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], 2100.0)
+        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+        self.export(app)
+        saved_depth = round_trip(app.session_state.to_dict())
+        for value in (None, "bad depth", -10.0, 2100.0):
+            with self.subTest(restored_depth=value):
+                project = deepcopy(saved_depth)
+                project["cement_params"]["Main"]["top_depth"] = value
+                project["cement_params"]["Main"].pop("draft_top_depth", None)
+                app = self.app(round_trip(project))
+                self.phase(app, "phase5")
+                if value is None:
+                    self.assertEqual(next(w for w in app.number_input if w.label.startswith("Top of cement depth")).value, 0.0)
+                    self.assertNotEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                elif value == 2100.0:
+                    self.assertEqual(next(w for w in app.number_input if w.label.startswith("Top of cement depth")).value, value)
+                    self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], value)
+                    self.export(app)
+                else:
+                    repair = next(w for w in app.text_input if w.label.startswith("Correct Top depth"))
+                    self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], value)
+                    self.assertNotEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                    repair.set_value("2100").run()
+                    next(b for b in app.button if b.label == "Apply corrected values").click().run()
+                    self.healthy(app)
+                    self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], 2100.0)
+                    self.export(app)
+
+    def test_batch3_top_ownership_after_job_changes(self):
+        import phase_10_procedure as report
+        for index, job in enumerate(BATCH1_JOBS):
+            with self.subTest(job=job):
+                app = self.configured_app(job)
+                self.export(app)
+                next_job = BATCH1_JOBS[(index + 2) % len(BATCH1_JOBS)]
+                for marker in ("absent", None):
+                    with self.subTest(legacy_owner=marker):
+                        legacy = round_trip(app.session_state.to_dict())
+                        legacy["cement_params"]["Main"].pop("top_job_type", None)
+                        if marker is None:
+                            legacy["cement_params"]["Main"]["top_job_type"] = None
+                        old = self.app(legacy)
+                        self.assertEqual(compute_phase_status(old.session_state)["phase5"]["level"], "ok")
+                        old.selectbox(key="_w_job_type").set_value(next_job)
+                        old.radio(key="_app_mode_key").set_value("phase10").run()
+                        self.assertEqual(old.session_state["cement_params"]["Main"]["top_job_type"], job)
+                        old.session_state["placement_config"]["job_type"] = next_job
+                        self.assertEqual(compute_phase_status(old.session_state)["phase5"]["level"], "warning")
+                        self.assert_export_blocked(old)
+                self.phase(app, "phase1")
+                app.selectbox(key="_w_job_type").set_value(next_job)
+                app.radio(key="_app_mode_key").set_value("phase10").run()
+                self.assertEqual(app.session_state["cement_params"]["Main"]["top_job_type"], job)
+                self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+                self.assert_export_blocked(app)
+                # Reviewing the new job target alone cannot bless the old top.
+                self.phase(app, "phase2_3")
+                next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__").run()
+                next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
+                if "TIE BACK" in next_job:
+                    next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
+                self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
+                self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+                restored = round_trip(app.session_state.to_dict())
+                app = self.app(restored)
+                self.assert_export_blocked(app)
+                with patch.object(report.st, "session_state", deepcopy(restored)):
+                    with self.assertRaises(ValueError):
+                        report.build_master_context()
+                self.phase(app, "phase5")
+                mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
+                self.assertEqual(mode.value, "Not entered")
+                mode.set_value("Depth (m MD)").run()
+                next(w for w in app.number_input if w.label.startswith("Top of cement depth")).set_value(2100.0).run()
+                self.assertEqual(app.session_state["cement_params"]["Main"]["top_job_type"], next_job)
+                self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                self.export(app)
+
+    def test_batch3_top_limits_match_export_readiness(self):
+        import phase_10_procedure as report
+        for job in BATCH1_JOBS:
+            saved = round_trip(self.configured_app(job).session_state.to_dict())
+            for depth, accepted in ((2999.0, True), (3000.0, False), (3001.0, False), (0.0, False),
+                                    (-10.0, False), ("2000-2100", False), ("NaN", False)):
+                with self.subTest(job=job, top=depth):
+                    project = deepcopy(saved)
+                    project["cement_params"]["Main"].update(top_mode="Depth (m MD)", top_depth=depth, top_job_type=job)
+                    app = self.app(round_trip(project))
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if accepted else "warning")
+                    if accepted:
+                        self.export(app)
+                        with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                            context = report.build_master_context()
+                        self.assertEqual(context["slurries"][0]["top"], "2999.0 m")
+                        self.assertEqual(context["slurries"][0]["bottom"], "3000.0 m MD")
+                    else:
+                        self.assert_export_blocked(app)
+                        with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                            with self.assertRaises(ValueError):
+                                report.build_master_context()
+            # Legacy approved depths without top_mode/ownership remain supported.
+            project = deepcopy(saved)
+            top = project["cement_params"]["Main"]
+            top.pop("top_mode", None)
+            top.pop("top_job_type", None)
+            top["top_depth"] = 2100.0
+            app = self.app(round_trip(project))
+            self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+            self.export(app)
+            project["placement_config"]["manual_depth_m"] = 0.0
+            self.assertEqual(compute_phase_status(project)["phase5"]["level"], "warning")
+
+    def test_batch3_chained_word_placement_matches_summary(self):
+        import phase_10_procedure as report
+        for job in ('CSG 9 5/8"', 'LNR 7"'):
+            valid = self.configured_app(job)
+            self.export(valid)  # Single-slurry behavior remains valid.
+            saved = round_trip(valid.session_state.to_dict())
+            for slurries, depths in ((["Lead", "Main"], {"Main": 2000.0, "Lead": 1000.0}),
+                                     (["Lead #1", "Lead #2", "Main"], {"Main": 2000.0, "Lead #2": 1000.0, "Lead #1": 500.0})):
+                with self.subTest(job=job, slurries=slurries):
+                    project = deepcopy(saved)
+                    project["fluids_config"]["active"] = [*slurries, "Displacement Fluid"]
+                    for slurry in slurries:
+                        project["fluids_config"]["params"][slurry] = deepcopy(project["fluids_config"]["params"]["Main"])
+                        project["cement_params"][slurry] = deepcopy(saved["cement_params"]["Main"])
+                        project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=depths[slurry], top_job_type=job)
+                        project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
+                    app = self.app(round_trip(project))
+                    for phase in ("phase2_3", "phase4", "phase5", "phase7"):
+                        self.phase(app, phase)
+                    for _ in slurries:
+                        confirms = [b for b in app.button if b.label == "Confirm measured lab results"]
+                        if confirms:
+                            confirms[0].click().run()
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                    app = self.app(round_trip(app.session_state.to_dict()))
+                    for phase in ("phase2_3", "phase4", "phase5", "phase7"):
+                        self.phase(app, phase)
+                    self.export(app)
+                    with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                        context = report.build_master_context()
+                    expected, bottom = [], 3000.0
+                    for slurry in reversed(slurries):
+                        expected.append((slurry, bottom, depths[slurry]))
+                        bottom = depths[slurry]
+                    payload = [(p["name"], float(p["bottom"].split()[0]), float(p["top"].split()[0]))
+                               for p in context["slurries"]]
+                    # Chained upper bottoms use a top label, without the MD suffix.
+                    summary = [(name.title(), float(bottom), float(top)) for name, bottom, top in re.findall(
+                        r"(main|lead(?: #\d)?) cement slurry from ([\d.]+) m(?: MD)? to ([\d.]+) m", context["exec_summary"])]
+                    self.assertEqual(payload, expected)
+                    self.assertEqual(summary, expected)
+                    self.assertIn("target depth is 3000.0 m MD", context["exec_summary"])
+                    doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                    word = []
+                    for table in doc.tables:
+                        title = table.rows[0].cells[0].text
+                        if title.endswith(" Cement Slurry Data"):
+                            row = next(r for r in table.rows if r.cells[0].text == "Bottom")
+                            word.append((title.removesuffix(" Cement Slurry Data"),
+                                         float(row.cells[1].text.split()[0]), float(row.cells[3].text.split()[0])))
+                    self.assertEqual(word, expected)
+                    # A top below the previous slurry's top must fail both gates.
+                    invalid = round_trip(app.session_state.to_dict())
+                    invalid["cement_params"][slurries[0]]["top_depth"] = 2500.0
+                    bad = self.app(invalid)
+                    self.assertEqual(compute_phase_status(bad.session_state)["phase5"]["level"], "warning")
+                    self.assert_export_blocked(bad)
+        # Sibling jobs retain independent target-based bottoms, without chaining.
+        from placement import slurry_intervals
+        for job in ('CMT PLUG', 'CMT SQUEEZE', 'TIE BACK LNR 7"'):
+            intervals = slurry_intervals(None, job, {"job_type": job, "target_row": "__manual__", "manual_depth_m": 3000.0},
+                                         ["Lead", "Main"], {"Lead": {"top_mode": "Depth (m MD)", "top_depth": 1000.0},
+                                                            "Main": {"top_mode": "Depth (m MD)", "top_depth": 2000.0}})
+            self.assertEqual(list(intervals), ["Lead", "Main"])
+            self.assertTrue(all(p["bottom_depth"] == 3000.0 for p in intervals.values()))
+
+    def test_batch3_note_and_procedure_use_total_water(self):
+        import phase_10_procedure as report
+        from phase_5_cement import build_components, calculate_base_results
+        for job in BATCH1_JOBS:
+            valid = self.configured_app(job, additives=True)
+            saved = round_trip(valid.session_state.to_dict())
+            for auto, dead in ((True, 20.0), (False, 20.0), (False, 0.0)):
+                with self.subTest(job=job, automatic=auto, dead_volume=dead):
+                    project = deepcopy(saved)
+                    p = project["cement_params"]["Main"]
+                    p.update(auto_calc=auto, dead_vol=dead)
+                    if not auto:
+                        p.update(mix_water=30.0, manual_mix_water=30.0, manual_yield=1.5)
+                        p["yield"] = 1.5
+                        project["cement_additives_dfs"]["Main"].loc[0, "User Input"] = 60.0 / 187.2
+                    app = self.app(round_trip(project))
+                    self.phase(app, "phase5")
+                    self.phase(app, "phase7")
+                    keeps = [b for b in app.button if b.label == "Keep reviewed lab entries"]
+                    if keeps:
+                        keeps[0].click().run()
+                        next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
+                    p = deepcopy(app.session_state["cement_params"]["Main"])
+                    adds = app.session_state["cement_calc_Main"].copy(deep=True)
+                    formulation = app.session_state["cement_additives_dfs"]["Main"]
+                    fluid = app.session_state["fluid_data"]["Main"]
+                    engine = calculate_base_results(deepcopy(p), fluid["volume"], float(fluid["effective_density"]), *build_components(formulation))
+                    if auto:
+                        self.assertEqual(p["mix_water"], round_half_up(engine["field_water_bbl"], 1))
+                    else:
+                        self.assertEqual(p["mix_water"], 30.0)
+                        self.assertEqual(p["yield"], 1.5)
+                        self.assertEqual(p["total_sacks"], 187.2)
+                    self.assertEqual(p["dead_vol"], dead)
+                    total = round_half_up(p["mix_water"] + dead, 1)
+                    concentration = float(adds.iloc[0]["(lbs or gal)/bbl"].split()[0])
+                    amount = float(adds.iloc[0]["lbs or gal (with dead Vol.)"].split()[0])
+                    self.assertEqual(amount, round_half_up((p["mix_water"] + dead) * concentration, 2))
+                    if not auto:
+                        self.assertEqual(concentration, 2.0)
+                        self.assertEqual(amount, 100.0 if dead else 60.0)
+                    self.assertIn(f"**{total:.1f} bbl**", app.session_state["cement_note_Main"])
+                    self.export(app)
+                    with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                        context = report.build_master_context()
+                    payload = context["slurries"][0]
+                    self.assertEqual(payload["mix_water_bbl"], p["mix_water"])
+                    self.assertEqual(payload["dead_vol_bbl"], dead)
+                    self.assertEqual(payload["total_water_bbl"], total)
+                    self.assertIn(f"{total:.1f} bbl Fresh Water", payload["note_mix"])
+                    water_line = next(line for line in context["procedure_text"].splitlines() if "Fill up" in line)
+                    self.assertIn(f"{total:.1f} bbl", water_line)
+                    self.assertEqual(app.session_state["cement_params"]["Main"], p)
+                    pd.testing.assert_frame_equal(app.session_state["cement_calc_Main"], adds)
 
 if __name__ == "__main__":
     unittest.main()

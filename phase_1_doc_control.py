@@ -50,6 +50,10 @@ def on_job_type_change():
     """Callback: Synchronously updates suggested hole size and method without UI lag."""
     new_job = st.session_state.get("_w_job_type", materials_db.JOB_TYPES[0])
     new_method = materials_db.get_cementing_method(new_job)
+    # Legacy tops have no owner marker until their original job is changed.
+    for params in st.session_state.get("cement_params", {}).values():
+        if params.get("top_job_type") is None:
+            params["top_job_type"] = st.session_state["job_type"]
 
     _commit_doc_widget("job_type")
     st.session_state["cementing_method"] = new_method

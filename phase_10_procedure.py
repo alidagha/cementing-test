@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from placement import target_depth, host_label, top_label
+from placement import target_depth, host_label, slurry_intervals
 from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
@@ -205,11 +205,11 @@ def parse_shoe_depth_from_hardware(hw_df, default_md=None, job_type="", placemen
     return target_depth(hw_df, job_type, placement_config or {})
 
 
-def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config):
+def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None):
     """BUG-04: populate the four placement keys the Word template's per-slurry
     placement block reads via s.get('top'/'bottom'/'excess_oh'/'excess_csg',
-    '....'). bottom comes from the placement config's selected target row,
-    top from the Phase V slurry top (with the above-target sanity check), and
+    '....'). top/bottom come from the same validated intervals as the summary,
+    using the selected target and Phase V tops, and
     the two excess cells share the placement volume basis (dedicated per-side
     excess fields remain future work once Phase II/III captures them).
 
@@ -219,15 +219,12 @@ def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_
     block Word export. top/bottom keep the '....' fallback, which stays
     export-blocking through the build_master_context guard because a report
     without a real target depth would be misleading, not merely incomplete."""
-    bottom_depth = target_depth(hw_df, job_type, placement_config or {})
-    _bottom = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
-    _top_text, _top_val = top_label(slurry_params)
-    if bottom_depth is not None and _top_val is not None and _top_val >= bottom_depth:
-        _top_text = "...."
-    payload["top"] = (_top_text
-                      if slurry_params.get("top_mode") in ("Depth (m MD)", "Surface")
-                      else "....")
-    payload["bottom"] = _bottom
+    if interval is None:
+        interval = slurry_intervals(hw_df, job_type, placement_config or {},
+                                    [payload["name"]], {payload["name"]: slurry_params})[payload["name"]]
+    bottom_depth = interval["bottom_depth"]
+    payload["top"] = interval["top"] if interval["top_depth"] is not None else "...."
+    payload["bottom"] = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
     basis = (str(placement_config.get("volume_basis") or "").strip()
              if placement_config.get("job_type") == job_type else "")
     payload["excess_oh"] = basis or "N/A"
@@ -387,23 +384,14 @@ def generate_executive_summary(
              if placement_config.get("job_type") == job_type else "")
     basis = basis or "[VOLUME BASIS NOT SET IN PHASE II/III]"
 
-    def slurry_top(slurry):
-        params = (cement_params or {}).get(slurry, {})
-        if params.get("top_job_type") not in (None, job_type):
-            return ".... m [TOP NOT SET IN PHASE V]", None
-        text, value = top_label(params)
-        if shoe_depth is not None and value is not None and value >= shoe_depth:
-            # BUG-30: name the offending limit inside the token so the
-            # operator sees the constraint without opening Phase II/III.
-            return f".... m [TOP MUST BE ABOVE TARGET DEPTH {shoe_depth:.1f} m MD]", None
-        return text, value
-    
     slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
     active_slurries = [
         f for f in active_fluids 
         if any(f.replace(" ", "").lower() == s.replace(" ", "").lower() for s in slurry_archetypes)
     ]
     
+    placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {})
+
     has_dry_blend = False
     has_neat = False
     for s in active_slurries:
@@ -442,7 +430,7 @@ def generate_executive_summary(
     else:
         volume_statement = f"Planned slurry volume: {primary_vol}"
     if "PLUG" in job_upper:
-        top, _ = slurry_top(primary)
+        top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
         p3 = (f"Cement plug target depth is {shoe_str}. {design_str} for cement placement inside casing / open hole; "
               f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top}. "
               f"{volume_statement}; basis: {basis}.")
@@ -451,7 +439,7 @@ def generate_executive_summary(
               f"{primary_den} {primary.lower()} cement slurry is planned at {shoe_str}. "
               f"{volume_statement}; basis: {basis}.")
     elif "TIE BACK" in job_upper:
-        top, _ = slurry_top(primary)
+        top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
         host = parse_tieback_host_label(hw_df, job_type=job_type, placement_config=placement_config)
         host = host or "[HOST NOT SELECTED IN PHASE II/III]"
         p3 = (f"{job_type} target depth is {shoe_str}. {design_str} for this tie back; "
@@ -461,21 +449,10 @@ def generate_executive_summary(
         kind = "Liner" if "LNR" in job_upper else "Casing"
         placement_parts = []
         volume_parts = []
-        bottom = shoe_str
-        bottom_depth = shoe_depth
-        # The last pumped slurry is deepest. Every top is an entered Phase-V
-        # depth (or an explicit Surface choice); unknown intervals remain marked.
-        for slurry in reversed(active_slurries):
+        for slurry, interval in placements.items():
             volume, density = get_slurry_display_values(fluid_data, slurry)
-            top, top_depth_value = slurry_top(slurry)
-            if bottom_depth is not None and top_depth_value is not None and top_depth_value >= bottom_depth:
-                # BUG-30: same as the target-depth token — print the actual
-                # limit value instead of an unquantified complaint.
-                top, top_depth_value = f".... m [TOP MUST BE ABOVE PREVIOUS INTERVAL {bottom_depth:.1f} m MD]", None
-            placement_parts.append(f"{density} {slurry.lower()} cement slurry from {bottom} to {top}")
+            placement_parts.append(f"{density} {slurry.lower()} cement slurry from {interval['bottom']} to {interval['top']}")
             volume_parts.append(f"{slurry}: {volume}")
-            bottom = top
-            bottom_depth = top_depth_value
         intervals = "; ".join(placement_parts) if placement_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
         volumes = "; ".join(volume_parts) if volume_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
         p3 = (f"{job_type} {kind.lower()} target depth is {shoe_str}. {design_str} for this {kind.lower()}; "
@@ -580,7 +557,7 @@ def generate_official_procedure(
     water_parts = []
     for s in active_slurries:
         p_s = cement_params.get(s, {})
-        mw = float(p_s.get("mix_water") or 0.0)
+        mw = round_half_up(float(p_s.get("mix_water") or 0.0) + float(p_s.get("dead_vol") or 0.0), 1)
         water = f"{mw:.1f} bbl" if mw > 0 else ".... bbl [MIX WATER NOT SET IN PHASE V]"
         if len(active_slurries) > 1:
             water_parts.append(f"{s}: {water}")
@@ -1057,8 +1034,10 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # 3. Cement Slurry Payloads (Segregated Blend Data & Additives Data)
     # active_slurries comes from active_slurry_names() above the F3 gate.
     slurries_payload = []
-    
-    for s in active_slurries:
+    placements = slurry_intervals(hw_df, job_type, st.session_state.get("placement_config", {}),
+                                 active_slurries, st.session_state.get("cement_params", {}))
+
+    for s in placements:
         p = st.session_state.get("cement_params", {}).get(s, {})
         vol = float(fluid_data.get(s, {}).get("volume", 0.0))
         yd = float(p.get("yield", 1.18))
@@ -1151,7 +1130,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         # BUG-04: populate the four placement keys the template's per-slurry
         # placement block consumes (top/bottom/excess_oh/excess_csg).
         _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,
-                                 st.session_state.get("placement_config", {}))
+                                 st.session_state.get("placement_config", {}), placements[s])
 
     # BUG-19 (merged BUG-04 scope): a bare standardized '....' in any of the
     # four placement cells is now an explicit export blocker instead of
