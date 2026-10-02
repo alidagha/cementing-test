@@ -563,7 +563,7 @@ def generate_official_procedure(
             water_parts.append(f"{s}: {water}")
         else:
             no_main_prefix = ("PLUG" in job_upper) or is_standalone_lnr
-            water_parts.append(water if no_main_prefix else f"Main: {water}")
+            water_parts.append(water if no_main_prefix else f"{s}: {water}")
     water_vols_str = " & ".join(water_parts) if water_parts else ".... bbl [MIX WATER NOT SET IN PHASE V]"
     
     mixing_blocks = []
@@ -1233,10 +1233,11 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             "ratio": "-"
         })
         for c in (sp.get("chemicals") or []):
+            amount = c.get("User Input (% or gal)")
             spacer_rows.append({
                 "Name": str(c.get("Chemical", "") or ""),
                 "Material Type": str(c.get("Weighting Agent Type", "") or ""),
-                "amount": str(c.get("User Input (% or gal)", "") or ""),
+                "amount": str(amount) if amount is not None else "",
                 "ratio": "-"
             })
     spacer_volume_bbl = round_half_up(
@@ -1252,7 +1253,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         {str(sp.get("density_pcf", "") or "").strip()
          for sp in spacers_payload if str(sp.get("density_pcf", "") or "").strip()},
         key=lambda s: (parse_effective_numeric(s, default=float("inf")), s)))
-    spacer_density_note = (f"{spacer_densities} pcf" if spacer_densities else "-")
+    spacer_density_note = spacer_densities or "-"  # The Word cell supplies pcf.
 
     # فلگ‌های شرطی برای تمپلیت ورد — has_spacer reflects whether actual
     # spacer rows were built (a Spacer selected in Phase IV without any

@@ -851,5 +851,107 @@ class AuditRegressions(unittest.TestCase):
                     self.assertEqual(app.session_state["cement_params"]["Main"], p)
                     pd.testing.assert_frame_equal(app.session_state["cement_calc_Main"], adds)
 
+    def test_batch4_word_units_and_surface(self):
+        import phase_10_procedure as report
+        for job in BATCH1_JOBS:
+            with self.subTest(job=job):
+                app = self.configured_app(job, optional_fluids=True)
+                self.phase(app, "phase5")
+                next(w for w in app.selectbox if w.label == "Top of cement - Main").set_value("Depth (m MD)").run()
+                next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main").set_value(1000.0).run()
+                self.export(app)
+                doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                slurry = next(t for t in doc.tables if t.rows[0].cells[0].text == "Main Cement Slurry Data")
+                placement = next(r for r in slurry.rows if r.cells[0].text == "Bottom")
+                self.assertEqual(placement.cells[1].text, "3000.0 m MD")
+                self.assertEqual(placement.cells[3].text, "1000.0 m")
+                self.assertEqual(slurry.rows[1].cells[1].text, "50.0 bbl")
+                self.assertEqual(slurry.rows[1].cells[3].text, "118.0 pcf")
+                self.assertTrue(slurry.rows[4].cells[1].text.endswith(" cuft/sk"))
+                spacer = next(t for t in doc.tables if t.rows[0].cells[0].text == "Spacer Formulation Data")
+                self.assertEqual(spacer.rows[1].cells[4].text, "80.0 pcf")
+                self.assertEqual(spacer.rows[3].cells[3].text, "50.0 bbl @ 80.0 pcf")
+                preflush = next(t for t in doc.tables if t.rows[0].cells[0].text == "Pre Flush Data")
+                self.assertEqual(preflush.rows[1].cells[2].text, "50.0 bbl")
+                self.assertEqual(preflush.rows[1].cells[4].text.count("pcf"), 1)
+                word_text = "\n".join(c.text for t in doc.tables for r in t.rows for c in r.cells)
+                self.assertNotRegex(word_text, r"\bm MD m\b|\bm m\b|\bpcf pcf\b")
+                with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                    context = report.build_master_context()
+                self.assertIn("3000.0 m MD", context["exec_summary"])
+                self.assertEqual(context["slurries"][0]["top"], "1000.0 m")
+                # Surface is a representation, not a numeric depth with a unit.
+                project = round_trip(app.session_state.to_dict())
+                project["cement_params"]["Main"].update(top_mode="Surface", top_depth=0.0)
+                app = self.app(round_trip(project))
+                for phase in ("phase2_3", "phase4", "phase5", "phase6", "phase7"):
+                    self.phase(app, phase)
+                self.export(app)
+                doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                slurry = next(t for t in doc.tables if t.rows[0].cells[0].text == "Main Cement Slurry Data")
+                placement = next(r for r in slurry.rows if r.cells[0].text == "Bottom")
+                self.assertEqual(placement.cells[1].text, "3000.0 m MD")
+                self.assertEqual(placement.cells[3].text, "surface")
+
+    def test_batch4_single_slurry_water_label(self):
+        import phase_10_procedure as report
+        for job in BATCH1_JOBS:
+            saved = round_trip(self.configured_app(job).session_state.to_dict())
+            for slurry in ("Main", "Lead", "Tail"):
+                with self.subTest(job=job, slurry=slurry):
+                    project = deepcopy(saved)
+                    project["fluids_config"]["active"] = [slurry, "Displacement Fluid"]
+                    project["fluids_config"]["params"][slurry] = deepcopy(saved["fluids_config"]["params"]["Main"])
+                    for key in ("cement_params", "cement_additives_dfs"):
+                        project[key][slurry] = deepcopy(saved[key]["Main"])
+                    app = self.app(round_trip(project))
+                    for phase in ("phase2_3", "phase4", "phase5", "phase7"):
+                        self.phase(app, phase)
+                    confirms = [b for b in app.button if b.label == "Confirm measured lab results"]
+                    if confirms:
+                        confirms[0].click().run()
+                        self.healthy(app)
+                    self.export(app)
+                    with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                        context = report.build_master_context()
+                    self.assertEqual([p["name"] for p in context["slurries"]], [slurry])
+                    water_line = next(line for line in context["procedure_text"].splitlines() if "Fill up" in line)
+                    prefix = "PLUG" not in job and not ("LNR" in job and "TIE BACK" not in job)
+                    total = context["slurries"][0]["total_water_bbl"]
+                    expected = (f"with {total:.1f} bbl fresh water" if "PLUG" in job else
+                                f"Fresh water ({slurry + ': ' if prefix else ''}{total:.1f} bbl)")
+                    self.assertIn(expected, water_line)
+                    if slurry != "Main":
+                        self.assertNotIn("Main:", water_line)
+                    doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                    word_line = next(p.text for p in doc.paragraphs if "Fill up" in p.text)
+                    self.assertIn(expected, word_line)
+
+    def test_batch4_spacer_zero_positive_and_missing_dosage(self):
+        for job in BATCH1_JOBS:
+            saved = round_trip(self.configured_app(job, optional_fluids=True).session_state.to_dict())
+            for dosage in (0.0, 1.25, None):
+                with self.subTest(job=job, dosage=dosage):
+                    project = deepcopy(saved)
+                    project["spacer_dfs"]["Spacer"].loc[0, "User Input (% or gal)"] = dosage
+                    app = self.app(round_trip(project))
+                    for phase in ("phase2_3", "phase4", "phase5", "phase6", "phase7"):
+                        self.phase(app, phase)
+                    amount = app.session_state["spacer_dfs"]["Spacer"].iloc[0]["User Input (% or gal)"]
+                    if dosage is None:
+                        self.assertTrue(pd.isna(amount))
+                        self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "warning")
+                        self.assert_export_blocked(app)
+                        continue
+                    self.assertEqual(amount, dosage)
+                    self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "ok")
+                    before = app.session_state["spacer_dfs"]["Spacer"].copy(deep=True)
+                    self.export(app)
+                    doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                    spacer = next(t for t in doc.tables if t.rows[0].cells[0].text == "Spacer Formulation Data")
+                    chemical = next(r for r in spacer.rows if r.cells[1].text == "Spacer" and r.cells[2].text == "-")
+                    self.assertEqual(chemical.cells[3].text, str(dosage))
+                    pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer"], before)
+
 if __name__ == "__main__":
     unittest.main()
