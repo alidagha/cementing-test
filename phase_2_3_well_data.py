@@ -4,7 +4,8 @@ import pandas as pd
 import math
 import materials_db
 from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth
-from project_state import fingerprint
+from project_state import fingerprint, WELL_DATA_DEFAULTS
+from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from engineering_tools import parse_effective_numeric, parse_fractional_size
@@ -48,22 +49,30 @@ def get_well_data() -> dict:
         "bhsp": st.session_state.get("bhsp", "")
     }
 
+def _commit_well_widget(field):
+    """Keep the flat input and export-facing well snapshot in step on blur."""
+    st.session_state[field] = st.session_state[f"_w_{field}"]
+    for source, effective, default in (("mud_density", "effective_mud_density", 80.0),
+                                       ("plastic_viscosity", "effective_pv", 45.0),
+                                       ("yield_point", "effective_yp", 15.0)):
+        if field == source:
+            st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=default)
+    st.session_state["well_data"] = get_well_data()
+
+
+def _commit_placement(field, widget_key):
+    placement = st.session_state.setdefault("placement_config", {})
+    placement.update(job_type=st.session_state.get("job_type", ""), **{field: st.session_state[widget_key]})
+    if field == "target_row" and placement[field] == "__manual__":
+        placement.setdefault("manual_depth_m", 0.0)  # Existing "not entered" value.
+
+
 def render():
     st.header("Phase II & III: Well Data")
     st.markdown("Configure tubular hardware, drilling fluid properties, and geothermal temperature profile.")
     
     # 1. Canonical State Initialization (shadow keys — survive navigation)
-    defaults = {
-        "mud_type": "WBM",
-        "mud_density": "80.0",
-        "plastic_viscosity": "45",
-        "yield_point": "15",
-        "geo_md": 3000.0,
-        "geo_tvd": 3000.0,
-        "bhst": 200,
-        "geo_gradient": 1.25,
-        "bhsp": ""
-    }
+    defaults = WELL_DATA_DEFAULTS
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -100,6 +109,10 @@ def render():
     if "hardware_table" not in st.session_state or not isinstance(st.session_state["hardware_table"], pd.DataFrame):
         st.session_state["hardware_table"] = pd.DataFrame(columns=HARDWARE_COLUMNS)
     
+    # TextColumn input must be normalized before the editor is mounted.
+    normalize_hardware_text_columns(st.session_state["hardware_table"])
+    normalize_hardware_text_columns(st.session_state.get("hardware_editor_draft"))
+
     # Ensure float typing for numeric columns
     for col in ["ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"]:
         st.session_state["hardware_table"][col] = pd.to_numeric(
@@ -330,6 +343,7 @@ def render():
                                    else "Enter measured depth manually" if token == "__manual__"
                                    else targets[token]["label"]),
         key=choice_key,
+        on_change=_commit_placement, args=("target_row", choice_key),
         help="Choose the actual target row for this job. Changing its MD invalidates the previous selection."
     )
     if placement["target_row"] == "__manual__":
@@ -337,6 +351,7 @@ def render():
             "Measured target depth (m MD)", min_value=0.0, step=1.0,
             value=float(placement.get("manual_depth_m") or 0.0),
             key=f"_placement_manual_depth_{load_sig}",
+            on_change=_commit_placement, args=("manual_depth_m", f"_placement_manual_depth_{load_sig}"),
             help="0 means not entered; only a measured job-specific depth is printed."
         )
     if "TIE BACK" in job_type.upper():
@@ -348,12 +363,14 @@ def render():
             "Tie-back host (the existing casing / liner)", host_options,
             index=host_options.index(host),
             format_func=lambda token: hosts[token]["label"] if token else "Select the actual host",
-            key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}"
+            key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}",
+            on_change=_commit_placement, args=("host_row", f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}")
         )
     placement["volume_basis"] = st.text_input(
         "Slurry volume basis / excess (if specified)",
         value=str(placement.get("volume_basis") or ""),
         key=f"_placement_volume_basis_{load_sig}",
+        on_change=_commit_placement, args=("volume_basis", f"_placement_volume_basis_{load_sig}"),
         help="Enter the approved job-specific basis. Leave blank to show that it was not supplied."
     )
     if placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
@@ -369,14 +386,14 @@ def render():
         _seed("_w_mud_type", "mud_type")
         if st.session_state["_w_mud_type"] not in MUD_TYPES:
             st.session_state["_w_mud_type"] = MUD_TYPES[0]
-        st.selectbox("Mud Type", MUD_TYPES, key="_w_mud_type")
+        st.selectbox("Mud Type", MUD_TYPES, key="_w_mud_type", on_change=_commit_well_widget, args=("mud_type",))
         st.session_state["mud_type"] = st.session_state["_w_mud_type"]
         
     with col_m2:
         _seed("_w_mud_density", "mud_density")
         st.text_input(
             "Mud Weight (pcf)", 
-            key="_w_mud_density",
+            key="_w_mud_density", on_change=_commit_well_widget, args=("mud_density",),
             help="Single density (e.g. 82.0) or range (e.g. 80-82)"
         )
         st.session_state["mud_density"] = st.session_state["_w_mud_density"]
@@ -394,7 +411,7 @@ def render():
         _seed("_w_plastic_viscosity", "plastic_viscosity")
         st.text_input(
             "Plastic Viscosity (cp)", 
-            key="_w_plastic_viscosity",
+            key="_w_plastic_viscosity", on_change=_commit_well_widget, args=("plastic_viscosity",),
             help="e.g. 45 or 45-50"
         )
         st.session_state["plastic_viscosity"] = st.session_state["_w_plastic_viscosity"]
@@ -405,7 +422,7 @@ def render():
         _seed("_w_yield_point", "yield_point")
         st.text_input(
             "Yield Point (lb/100ft²)", 
-            key="_w_yield_point",
+            key="_w_yield_point", on_change=_commit_well_widget, args=("yield_point",),
             help="e.g. 15 or 10-20"
         )
         st.session_state["yield_point"] = st.session_state["_w_yield_point"]
@@ -426,24 +443,24 @@ def render():
     col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
     with col_g1:
         _seed("_w_geo_md", "geo_md")
-        st.number_input("MD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md")
+        st.number_input("MD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md", on_change=_commit_well_widget, args=("geo_md",))
         st.session_state["geo_md"] = st.session_state["_w_geo_md"]
     with col_g2:
         _seed("_w_geo_tvd", "geo_tvd")
-        st.number_input("TVD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd")
+        st.number_input("TVD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd", on_change=_commit_well_widget, args=("geo_tvd",))
         st.session_state["geo_tvd"] = st.session_state["_w_geo_tvd"]
     with col_g3:
         _seed("_w_bhst", "bhst")
-        st.number_input("BHST (degF)", min_value=0, step=1, key="_w_bhst")
+        st.number_input("BHST (degF)", min_value=0, step=1, key="_w_bhst", on_change=_commit_well_widget, args=("bhst",))
         st.session_state["bhst"] = st.session_state["_w_bhst"]
     with col_g4:
         _seed("_w_geo_gradient", "geo_gradient")
-        st.number_input("Gradient (degF/100ft)", min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient")
+        st.number_input("Gradient (degF/100ft)", min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient", on_change=_commit_well_widget, args=("geo_gradient",))
         st.session_state["geo_gradient"] = st.session_state["_w_geo_gradient"]
     with col_g5:
         _seed("_w_bhsp", "bhsp")
         st.text_input(
-            "BHSP (psi)", key="_w_bhsp",
+            "BHSP (psi)", key="_w_bhsp", on_change=_commit_well_widget, args=("bhsp",),
             help="Bottom Hole Static/Shut-in Pressure. Free text — supports compound values as shown in real reports (e.g. '7300+1000')."
         )
         st.session_state["bhsp"] = st.session_state["_w_bhsp"]

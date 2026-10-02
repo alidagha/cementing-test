@@ -751,7 +751,10 @@ def compute_phase_status(ss) -> dict:
 
     geo_md = depth_or_none("geo_md")
     geo_tvd = depth_or_none("geo_tvd")
-    if geo_md is None or geo_tvd is None:
+    from project_state import hardware_draft_pending
+    if hardware_draft_pending(ss):
+        status["phase2_3"] = {"level": "warning", "message": "Review pending hardware edits in Phase II & III before export."}
+    elif geo_md is None or geo_tvd is None:
         status["phase2_3"] = {"level": "warning", "message": "MD/TVD is invalid; review Phase II & III."}
     elif hw_rows == 0:
         status["phase2_3"] = {"level": "empty", "message": "Tubular/Casing Hardware table is empty."}

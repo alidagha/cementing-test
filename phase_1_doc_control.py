@@ -2,20 +2,7 @@
 import streamlit as st
 import materials_db
 from datetime import date, datetime
-
-DOCUMENT_DETAIL_FIELDS = (
-    ("Request Date Received", "request_date"),
-    ("Request Number", "request_number"),
-    ("Request Description", "request_description"),
-    ("Prepared Date", "prepared_date"),
-    ("Prepared Phone", "prepared_phone"),
-    ("Checked Date", "checked_date"),
-    ("Checked Phone", "checked_phone"),
-    ("Approved Date", "approved_date"),
-    ("Approved Phone", "approved_phone"),
-    ("Revision Date", "revision_date"),
-    ("Revision Description", "revision_description"),
-)
+from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS
 
 # FIX (real bug, confirmed pre-existing — not introduced by any earlier update):
 # Streamlit deletes a widget's session_state entry whenever that widget is not
@@ -40,7 +27,8 @@ DOCUMENT_DETAIL_FIELDS = (
 # user) is mirrored back into the shadow. The "_w_" prefix also means these
 # widget-only keys are automatically excluded from the saved project JSON
 # (see main.py's get_serializable_state) — only the shadow keys are saved,
-# which is correct.
+# which is correct. Callbacks also commit shadows and export snapshots before
+# navigation can skip this render.
 #
 # Job Type's on_change callback additionally writes the DEPENDENT fields'
 # widget keys directly (not just their shadows), because once a widget key
@@ -49,14 +37,24 @@ DOCUMENT_DETAIL_FIELDS = (
 # cementing_method visibly jump to their new auto-filled value the instant
 # Job Type changes is to set their widget keys in the same callback.
 
+def _commit_doc_widget(field):
+    """Commit metadata and its export snapshot before navigation unmounts it."""
+    value = st.session_state[f"_w_{field}"]
+    st.session_state[field] = value
+    if field == "report_date":
+        value = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
+    st.session_state.setdefault("doc_control", {})["date" if field == "report_date" else field] = value
+
+
 def on_job_type_change():
     """Callback: Synchronously updates suggested hole size and method without UI lag."""
     new_job = st.session_state.get("_w_job_type", materials_db.JOB_TYPES[0])
     new_method = materials_db.get_cementing_method(new_job)
 
-    st.session_state["job_type"] = new_job
+    _commit_doc_widget("job_type")
     st.session_state["cementing_method"] = new_method
     st.session_state["_w_cementing_method"] = new_method
+    _commit_doc_widget("cementing_method")
 
     # FIX (requested, Level 1 #2): this used to unconditionally overwrite
     # Hole Size with the new Job Type's default, silently discarding
@@ -69,9 +67,11 @@ def on_job_type_change():
         new_hole = materials_db.DEFAULT_HOLE_SIZES.get(new_job, "12 1/4\"")
         st.session_state["hole_size"] = new_hole
         st.session_state["_w_hole_size"] = new_hole
+        _commit_doc_widget("hole_size")
 
 def _mark_hole_size_customized():
     st.session_state["hole_size_customized"] = True
+    _commit_doc_widget("hole_size")
 
 def _seed(widget_key, shadow_key):
     """Seed a widget-only key from its shadow, only if the widget key is
@@ -84,32 +84,7 @@ def render():
     st.markdown("Enter primary operational metadata for the cementing program compliant with NIDC standards.")
     
     # 1. Initialize Flat Canonical State (shadow keys — survive navigation)
-    default_values = {
-        "job_type": "CSG 20\"",
-        "hole_size": "26\"",
-        "field": "",
-        "well_location": "",
-        "well_name": "",
-        "rig_name": "",
-        "client": "",
-        "contract_number": "",
-        "proposal_number": "",
-        "report_date": date.today(),
-        "cementing_method": "Primary Cementing",
-        "district_phone": "061-341-43513",
-        "made_by": "NIDC Cement Engineering and Planning Department",
-        # FIX (requested): a formal engineering document needs an approval
-        # chain and a revision marker, not just a single "Made By" line, to
-        # go from "internal draft" to "citable record". Revision defaults to
-        # "0" (the first issue of a document) rather than blank, since every
-        # real document has *some* revision number from the start.
-        "prepared_by": "",
-        "checked_by": "",
-        "approved_by": "",
-        "revision_no": "0"
-    }
-    
-    default_values.update({key: "" for _, key in DOCUMENT_DETAIL_FIELDS})
+    default_values = dict(DOC_CONTROL_DEFAULTS, report_date=date.today())
     for key, val in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -150,7 +125,7 @@ def render():
                                    ("Well Name", "well_name"), ("Rig Name", "rig_name")]:
             widget_key = f"_w_{shadow_key}"
             _seed(widget_key, shadow_key)
-            st.text_input(label, key=widget_key)
+            st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
             st.session_state[shadow_key] = st.session_state[widget_key]
         
     with col2:
@@ -158,24 +133,24 @@ def render():
                                    ("Proposal Number", "proposal_number")]:
             widget_key = f"_w_{shadow_key}"
             _seed(widget_key, shadow_key)
-            st.text_input(label, key=widget_key)
+            st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
             st.session_state[shadow_key] = st.session_state[widget_key]
 
         _seed("_w_report_date", "report_date")
-        st.date_input("Date", key="_w_report_date")
+        st.date_input("Date", key="_w_report_date", on_change=_commit_doc_widget, args=("report_date",))
         st.session_state["report_date"] = st.session_state["_w_report_date"]
         
         methods = ["Primary Cementing", "Remedial Cementing", "Plug Cementing"]
         _seed("_w_cementing_method", "cementing_method")
         if st.session_state["_w_cementing_method"] not in methods:
             st.session_state["_w_cementing_method"] = methods[0]
-        st.selectbox("Cementing Method", methods, key="_w_cementing_method")
+        st.selectbox("Cementing Method", methods, key="_w_cementing_method", on_change=_commit_doc_widget, args=("cementing_method",))
         st.session_state["cementing_method"] = st.session_state["_w_cementing_method"]
         
         for label, shadow_key in [("District Phone", "district_phone"), ("Made By", "made_by")]:
             widget_key = f"_w_{shadow_key}"
             _seed(widget_key, shadow_key)
-            st.text_input(label, key=widget_key)
+            st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
             st.session_state[shadow_key] = st.session_state[widget_key]
 
     # FIX (requested): approval chain + revision marker for a citable formal
@@ -186,19 +161,19 @@ def render():
     col_a1, col_a2, col_a3, col_a4 = st.columns(4)
     with col_a1:
         _seed("_w_prepared_by", "prepared_by")
-        st.text_input("Prepared By", key="_w_prepared_by")
+        st.text_input("Prepared By", key="_w_prepared_by", on_change=_commit_doc_widget, args=("prepared_by",))
         st.session_state["prepared_by"] = st.session_state["_w_prepared_by"]
     with col_a2:
         _seed("_w_checked_by", "checked_by")
-        st.text_input("Checked By", key="_w_checked_by")
+        st.text_input("Checked By", key="_w_checked_by", on_change=_commit_doc_widget, args=("checked_by",))
         st.session_state["checked_by"] = st.session_state["_w_checked_by"]
     with col_a3:
         _seed("_w_approved_by", "approved_by")
-        st.text_input("Approved By", key="_w_approved_by")
+        st.text_input("Approved By", key="_w_approved_by", on_change=_commit_doc_widget, args=("approved_by",))
         st.session_state["approved_by"] = st.session_state["_w_approved_by"]
     with col_a4:
         _seed("_w_revision_no", "revision_no")
-        st.text_input("Revision No.", key="_w_revision_no", help="e.g. '0' for the first issue, '1', '2', ... for later revisions, or 'A'/'B' if your convention uses letters.")
+        st.text_input("Revision No.", key="_w_revision_no", on_change=_commit_doc_widget, args=("revision_no",), help="e.g. '0' for the first issue, '1', '2', ... for later revisions, or 'A'/'B' if your convention uses letters.")
         st.session_state["revision_no"] = st.session_state["_w_revision_no"]
 
     with st.expander("Request and approval details (optional)"):
@@ -208,7 +183,7 @@ def render():
             with detail_columns[index % 2]:
                 widget_key = f"_w_{shadow_key}"
                 _seed(widget_key, shadow_key)
-                st.text_input(label, key=widget_key)
+                st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
                 st.session_state[shadow_key] = st.session_state[widget_key]
 
     # 2. Harmonize backwards-compatible dictionary for export modules

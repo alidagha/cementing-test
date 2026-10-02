@@ -3,11 +3,15 @@ import streamlit as st
 import json
 import hashlib
 import math
+import materials_db
 import pandas as pd
 from datetime import date, datetime
 from engineering_tools import compute_phase_status
-from project_state import is_project_key, invalidate_document
+from project_state import (is_project_key, invalidate_document, restore_canonical_fields,
+                           DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS)
 from project_io import content_signature, decode_project, replace_project_state
+
+restore_canonical_fields(st.session_state)
 
 st.set_page_config(page_title="Cementing Report Engine", layout="wide", page_icon="🛢️")
 
@@ -294,18 +298,20 @@ _project_details = (
 _saved_doc_control = st.session_state.get("doc_control", {})
 _has_meaningful_data = (
     any(_is_meaningful(st.session_state.get(k)) for k in (
-        "fluid_data", "hardware_table", "cement_params", "cement_additives_dfs",
+        "hardware_table", "hardware_editor_draft", "cement_params", "cement_additives_dfs",
         "lab_grid_dfs", "spacer_dfs", "inactive_slurry_drafts"
     ))
     or any(str(st.session_state.get(k, "")).strip() for k in _project_details)
     or (isinstance(_saved_doc_control, dict) and any(
         str(_saved_doc_control.get(k, "")).strip() for k in _project_details
     ))
-    or any(st.session_state.get(k) not in (None, default) for k, default in (
-        ("job_type", 'CSG 20"'), ("hole_size", '26"'), ("revision_no", "0"),
-        ("report_date", date.today()),
-        ("made_by", "NIDC Cement Engineering and Planning Department"),
-    ))
+    or any(st.session_state.get(k) not in (None, default) for k, default in
+           dict(DOC_CONTROL_DEFAULTS, **WELL_DATA_DEFAULTS, report_date=date.today()).items())
+    or any(value for key, value in st.session_state.get("placement_config", {}).items() if key != "job_type")
+    or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
+           or str(params.get("pump_rate", "4.0")) not in ("4", "4.0")
+           or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
+           for name, params in st.session_state.get("fluid_data", {}).items())
     or bool(st.session_state.get("hole_size_customized"))
 )
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
@@ -360,6 +366,9 @@ if uploaded_project is not None:
                 replace_confirmed = _project_manager_slot.button(
                     "Replace current project and discard unsaved changes", key="_confirm_upload_replacement"
                 )
+                if not replace_confirmed and _project_manager_slot.button("Cancel loading project", key="_cancel_upload_replacement"):
+                    st.session_state["_uploader_revision"] = uploader_revision + 1
+                    st.rerun()
             if reload_requested or not pending_changes or replace_confirmed:
                 replace_project_state(st.session_state, prepared, upload_sig,
                                       preserved_keys=(uploader_key, "_uploader_revision"))

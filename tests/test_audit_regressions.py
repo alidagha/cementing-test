@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 from docx import Document
@@ -22,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 import materials_db
 from engineering_tools import compute_phase_status, lab_review_signature
 from project_io import decode_project
-from project_state import is_project_key, prepare_calculations
+from project_state import is_project_key, prepare_calculations, hardware_draft_pending
 
 # Use the application's serializers without running its top-level UI.
 tree = ast.parse((ROOT / "main.py").read_text())
@@ -344,6 +345,256 @@ class AuditRegressions(unittest.TestCase):
                         self.phase(app, "phase7")
                         self.assertTrue(next(b for b in app.button if b.label == "Confirm measured lab results").disabled)
 
+
+    def hardware_event(self, app, edits, navigate=None):
+        if navigate:
+            app.radio(key="_app_mode_key").set_value(navigate)
+        editor = next(e for e in app.dataframe if "_editor_hardware_" in e.proto.id)
+        widgets = app._tree.get_widget_states()
+        event = widgets.widgets.add()
+        event.id = editor.proto.id
+        event.string_value = json.dumps({"edited_rows": {}, "added_rows": [], "deleted_rows": [], **edits})
+        app._run(widgets)
+        self.healthy(app)
+
+    def test_batch2_final_edits_survive_navigation(self):
+        import phase_10_procedure
+        for index, job in enumerate(BATCH1_JOBS):
+            with self.subTest(job=job):
+                app = self.configured_app(job)
+                self.phase(app, "phase1")
+                app.selectbox(key="_w_job_type").set_value('CSG 20"').run()
+                name = f"Navigation Well {index}"
+                app.text_input(key="_w_well_name").set_value(name)
+                app.text_input(key="_w_prepared_by").set_value("Navigation Engineer")
+                app.text_input(key="_w_request_number").set_value("REQ-7")
+                app.date_input(key="_w_report_date").set_value(date(2026, 9, 20))
+                app.selectbox(key="_w_job_type").set_value(job)
+                app.radio(key="_app_mode_key").set_value("phase2_3").run()
+                self.healthy(app)
+                self.assertEqual(app.session_state["well_name"], name)
+                self.assertEqual(app.session_state["doc_control"]["well_name"], name)
+                self.assertEqual(app.session_state["job_type"], job)
+                self.assertEqual(app.session_state["doc_control"]["job_type"], job)
+                self.assertEqual(app.session_state["doc_control"]["date"], "2026-09-20")
+                next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__")
+                app.radio(key="_app_mode_key").set_value("phase4").run()
+                self.assertEqual(app.session_state["placement_config"]["target_row"], "__manual__")
+                self.phase(app, "phase2_3")
+                app.text_input(key="_w_mud_density").set_value("84-86")
+                app.text_input(key="_w_plastic_viscosity").set_value("46-48")
+                app.text_input(key="_w_yield_point").set_value("16-18")
+                app.text_input(key="_w_bhsp").set_value("7300+1000")
+                next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(2850.0)
+                next(w for w in app.text_input if w.label.startswith("Slurry volume basis")).set_value("Approved field basis")
+                if "TIE BACK" in job:
+                    next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1)
+                app.radio(key="_app_mode_key").set_value("phase4").run()
+                self.healthy(app)
+                well = app.session_state["well_data"]
+                self.assertEqual(well["mud_density"], "84-86")
+                self.assertEqual(well["effective_mud_density"], 85.0)
+                self.assertEqual(well["effective_pv"], 47.0)
+                self.assertEqual(well["effective_yp"], 17.0)
+                self.assertEqual(well["bhsp"], "7300+1000")
+                placement = app.session_state["placement_config"]
+                self.assertEqual(placement["manual_depth_m"], 2850.0)
+                self.assertEqual(placement["volume_basis"], "Approved field basis")
+                saved = round_trip(app.session_state.to_dict())
+                self.assertEqual(saved["well_name"], name)
+                self.assertEqual(saved["doc_control"]["job_type"], job)
+                self.assertEqual(saved["well_data"]["mud_density"], "84-86")
+                app = self.app(saved)
+                self.assertEqual(app.text_input(key="_w_well_name").value, name)
+                self.assertEqual(app.text_input(key="_w_prepared_by").value, "Navigation Engineer")
+                self.assertEqual(app.text_input(key="_w_request_number").value, "REQ-7")
+                self.assertEqual(app.selectbox(key="_w_job_type").value, job)
+                self.phase(app, "phase2_3")
+                self.assertEqual(app.text_input(key="_w_mud_density").value, "84-86")
+                self.assertEqual(next(w for w in app.number_input if w.label == "Measured target depth (m MD)").value, 2850.0)
+                for phase in ("phase4", "phase5", "phase6", "phase7"):
+                    self.phase(app, phase)
+                next(b for b in app.button if b.label == "Keep reviewed lab entries").click().run()
+                next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
+                self.export(app)
+                with patch.object(phase_10_procedure.st, "session_state", deepcopy(app.session_state.to_dict())):
+                    context = phase_10_procedure.build_master_context()
+                self.assertEqual(context["well_name"], name)
+                self.assertEqual(context["job_type"], job)
+                self.assertEqual(context["well_data"]["mud_density"], "84-86")
+                self.assertIn("2850.0", context["exec_summary"])
+                doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
+                self.assertIn(name, doc._element.xml)  # Metadata also appears inside nested Word tables.
+
+    def test_batch2_pending_hardware_blocks_stale_export(self):
+        actions = ({"edited_rows": {"0": {"MD (m)": "2950"}}},
+                   {"added_rows": [{"MD (m)": "1200"}]},
+                   {"deleted_rows": [0]})
+        for job in BATCH1_JOBS:
+            valid = self.configured_app(job)
+            self.export(valid)
+            saved = round_trip(valid.session_state.to_dict())
+            compiled = {key: valid.session_state[key] for key in
+                        ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature")}
+            for action in actions:
+                with self.subTest(job=job, action=action):
+                    app = self.app({**deepcopy(saved), **compiled})
+                    self.phase(app, "phase2_3")
+                    original = app.session_state["hardware_table"].copy(deep=True)
+                    self.hardware_event(app, action, navigate="phase10")
+                    self.assertTrue(app.session_state["hardware_table"].equals(original))
+                    self.assertTrue(hardware_draft_pending(app.session_state))
+                    self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "warning")
+                    self.assert_export_blocked(app)
+                    self.assertTrue(any("pending hardware" in issue for issue in
+                                        prepare_calculations(deepcopy(app.session_state.to_dict()))))
+                    restored = round_trip(app.session_state.to_dict())
+                    self.assertTrue(hardware_draft_pending(restored))
+                    app = self.app(restored)
+                    self.assert_export_blocked(app)
+                    self.phase(app, "phase2_3")
+                    if "added_rows" in action:
+                        self.assertTrue(hardware_draft_pending(app.session_state))
+                        self.hardware_event(app, {"edited_rows": {"1": {
+                            "Description": "Open Hole Size", "Size (in)": "12.25", "ID (in)": 12.25,
+                            "Joint (m)": 3.0, "Weight (ppf)": 30.0, "Grade": "L-80",
+                            "Collapse (psi)": 100.0, "Burst (psi)": 200.0}}})
+                        open_hole = app.session_state["hardware_table"].iloc[1]
+                        for field in ("Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"):
+                            self.assertEqual(open_hole[field], 0.0)
+                        self.assertEqual(open_hole["Grade"], "-")
+                    elif "deleted_rows" in action:
+                        self.assertTrue(app.session_state["hardware_table"].empty)
+                        self.assertNotEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
+                        self.hardware_event(app, {"added_rows": original.to_dict("records")})
+                    else:
+                        self.assertEqual(app.session_state["hardware_table"].iloc[0]["MD (m)"], "2950")
+                    self.assertFalse(hardware_draft_pending(app.session_state))
+                    if "TIE BACK" in job:
+                        # A changed/deleted host must be selected again after review.
+                        next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
+                    self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
+                    app = self.app(round_trip(app.session_state.to_dict()))
+                    self.phase(app, "phase2_3")
+                    self.export(app)
+
+    def test_batch2_nested_restoration_and_flat_precedence(self):
+        nested = {"doc_control": {"job_type": 'CSG 9 5/8"', "well_name": "Nested Well",
+                                  "client": "Nested Client", "hole_size": "Approved hole",
+                                  "date": "2026-09-20", "prepared_by": "Nested Engineer"},
+                  "well_data": {"mud_type": "OBM", "mud_density": "90-92", "plastic_viscosity": "50",
+                                "yield_point": "20", "geo_md": 3300.0, "geo_tvd": 3200.0,
+                                "bhst": 210, "geo_gradient": 1.40, "bhsp": "6000+500"}}
+        for flat in ({}, {"well_name": "Flat Well", "client": "", "job_type": 'CMT PLUG',
+                         "mud_density": "84", "geo_md": 3400.0, "report_date": date(2026, 9, 21)}):
+            with self.subTest(flat=flat):
+                restored = round_trip({**deepcopy(nested), **flat})
+                self.assertEqual(restored["well_name"], flat.get("well_name", "Nested Well"))
+                self.assertEqual(restored["job_type"], flat.get("job_type", 'CSG 9 5/8"'))
+                self.assertEqual(restored["client"], flat.get("client", "Nested Client"))
+                self.assertEqual(restored["mud_density"], flat.get("mud_density", "90-92"))
+                self.assertEqual(restored["geo_md"], flat.get("geo_md", 3300.0))
+                self.assertEqual(restored["effective_mud_density"], 84.0 if flat else 91.0)
+                app = self.app(restored)
+                self.assertEqual(app.text_input(key="_w_well_name").value, restored["well_name"])
+                self.phase(app, "phase2_3")
+                self.assertEqual(app.text_input(key="_w_mud_density").value, restored["mud_density"])
+                self.assertEqual(app.number_input(key="_w_geo_md").value, restored["geo_md"])
+                self.phase(app, "phase4")
+                self.phase(app, "phase1")
+                saved = round_trip(app.session_state.to_dict())
+                for key in ("well_name", "job_type", "client", "mud_density", "geo_md", "report_date"):
+                    self.assertEqual(saved[key], restored[key])
+                self.assertEqual(saved["doc_control"]["well_name"], saved["well_name"])
+                self.assertEqual(saved["doc_control"]["job_type"], saved["job_type"])
+                self.assertEqual(saved["well_data"]["mud_density"], saved["mud_density"])
+        with self.assertRaises(ValueError):
+            round_trip({"doc_control": {"job_type": "Unsupported job"}})
+        with self.assertRaises(ValueError):
+            round_trip({"well_data": {"geo_md": "invalid"}})
+
+    def test_batch2_well_only_replacement_requires_confirmation(self):
+        incoming = BytesIO(json.dumps({"well_name": "Incoming Well", "client": "Incoming Client"}).encode())
+        incoming.name = "replacement.json"
+        incoming.size = len(incoming.getvalue())
+        for field, value in (("mud_type", "OBM"), ("mud_density", "90"), ("plastic_viscosity", "50"),
+                             ("yield_point", "20"), ("geo_md", 3300.0), ("geo_tvd", 2800.0),
+                             ("bhst", 210), ("geo_gradient", 1.40), ("bhsp", "6000")):
+            with self.subTest(field=field):
+                app = self.app()
+                self.phase(app, "phase2_3")
+                widget = next(w for w in [*app.text_input, *app.number_input, *app.selectbox]
+                              if w.key == f"_w_{field}")
+                widget.set_value(value)
+                app.radio(key="_app_mode_key").set_value("phase1").run()
+                self.assertTrue(any("unsaved changes" in w.value for w in app.warning))
+                uploader_key = f"proj_uploader_{app.session_state.to_dict().get('_uploader_revision', 0)}"
+                with patch("streamlit.delta_generator.DeltaGenerator.file_uploader",
+                           side_effect=lambda *args, **kwargs: incoming if kwargs.get("key") == uploader_key else None):
+                    app.run()
+                    self.healthy(app)
+                    self.assertTrue(any(b.key == "_confirm_upload_replacement" for b in app.button))
+                    self.assertEqual(app.session_state[field], value)
+                    next(b for b in app.button if b.key == "_cancel_upload_replacement").click().run()
+                    self.healthy(app)
+                    self.assertEqual(app.session_state[field], value)
+                    self.assertEqual(app.session_state["well_data"][field], value)
+                    self.assertFalse(any(b.key == "_confirm_upload_replacement" for b in app.button))
+        # Visiting untouched initialization pages must not count as user edits.
+        app = self.app()
+        for phase in ("phase2_3", "phase4", "phase5", "phase6", "phase7", "phase1"):
+            self.phase(app, phase)
+        self.assertFalse(any("unsaved changes" in w.value for w in app.warning))
+        with patch("streamlit.delta_generator.DeltaGenerator.file_uploader", return_value=incoming):
+            app.run()
+            self.healthy(app)
+            self.assertEqual(app.session_state["well_name"], "Incoming Well")
+            self.assertFalse(any(b.key == "_confirm_upload_replacement" for b in app.button))
+        # Explicit confirmation uses the same replacement path after a well-only edit.
+        app = self.app()
+        self.phase(app, "phase2_3")
+        app.text_input(key="_w_mud_density").set_value("91").run()
+        with patch("streamlit.delta_generator.DeltaGenerator.file_uploader", return_value=incoming):
+            app.run()
+            next(b for b in app.button if b.key == "_confirm_upload_replacement").click().run()
+            self.healthy(app)
+            self.assertEqual(app.session_state["well_name"], "Incoming Well")
+            self.assertNotIn("mud_density", app.session_state)
+
+    def test_batch2_numeric_hardware_is_normalized_before_mount(self):
+        from phase_2_3_well_data import HARDWARE_COLUMNS
+        grid = pd.DataFrame([
+            ["Previous Casing", 3000.0, 20.0, 18.0, 12.0, 100.0, "K-55", 1000.0, 2000.0],
+            [None, None, None, None, None, None, None, None, None],
+        ], columns=HARDWARE_COLUMNS)
+        for draft in (False, True):
+            with self.subTest(draft=draft):
+                key = "hardware_editor_draft" if draft else "hardware_table"
+                restored = round_trip({"job_type": 'CSG 20"', key: grid.copy(deep=True)})
+                self.assertEqual(restored[key].iloc[0]["MD (m)"], "3000.0")
+                self.assertEqual(restored[key].iloc[0]["Size (in)"], "20.0")
+                self.assertTrue(pd.isna(restored[key].iloc[1]["MD (m)"]))
+                self.assertTrue(pd.isna(restored[key].iloc[1]["Size (in)"]))
+                app = self.app(restored)
+                self.phase(app, "phase2_3")
+                source = app.session_state["_editor_source__editor_hardware_0"]
+                self.assertEqual(source.iloc[0]["MD (m)"], "3000.0")
+                self.assertEqual(source.iloc[0]["Size (in)"], "20.0")
+                self.assertTrue(pd.isna(source.iloc[1]["MD (m)"]))
+                self.assertTrue(pd.isna(source.iloc[1]["Size (in)"]))
+                self.phase(app, "phase1")
+                app = self.app(round_trip(app.session_state.to_dict()))
+                self.phase(app, "phase2_3")
+                # In-memory/legacy state also normalizes before the first mount.
+                app = self.app({"job_type": 'CSG 20"', key: grid.copy(deep=True)})
+                self.phase(app, "phase2_3")
+        from project_io import normalize_hardware_text_columns
+        missing = pd.DataFrame({"MD (m)": pd.Series([pd.NA, None], dtype=object),
+                                "Size (in)": [None, float("nan")]})
+        normalize_hardware_text_columns(missing)
+        self.assertTrue(missing.isna().all().all())
+        self.assertEqual(missing["MD (m)"].dtype, object)
+        self.assertEqual(missing["Size (in)"].dtype, object)
 
 if __name__ == "__main__":
     unittest.main()

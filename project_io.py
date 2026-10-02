@@ -4,7 +4,7 @@ import json
 import math
 import pandas as pd
 import materials_db
-from project_state import SLURRIES, is_project_key
+from project_state import SLURRIES, is_project_key, restore_canonical_fields
 
 
 def content_signature(raw_bytes):
@@ -142,13 +142,13 @@ _LAB_GRID_TEXT_COLUMNS = ("Material", "Concentration", "Unit", "Mass", "Lot No")
 
 
 def _is_missing_cell(cell):
-    return cell is None or (isinstance(cell, float) and math.isnan(cell))
+    return cell is None or cell is pd.NA or (isinstance(cell, float) and math.isnan(cell))
 
 
-def _coerce_lab_grid_text_columns(df):
+def _coerce_text_columns(df, columns):
     if not isinstance(df, pd.DataFrame):
         return df
-    for column in _LAB_GRID_TEXT_COLUMNS:
+    for column in columns:
         if column not in df.columns:
             continue
         series = df[column]
@@ -157,8 +157,8 @@ def _coerce_lab_grid_text_columns(df):
             for cell in series)
         if already_text:
             continue
-        df[column] = [cell if _is_missing_cell(cell) else str(cell)
-                      for cell in series]
+        df[column] = pd.Series([cell if _is_missing_cell(cell) else str(cell)
+                                for cell in series], index=series.index, dtype=object)
     return df
 
 
@@ -168,11 +168,16 @@ def _normalize_lab_grids(project):
     slurry drafts, which the enable-cycle later restores into lab_grid_dfs
     and would otherwise re-introduce the same crash after the load."""
     for grid in project.get("lab_grid_dfs", {}).values():
-        _coerce_lab_grid_text_columns(grid)
+        _coerce_text_columns(grid, _LAB_GRID_TEXT_COLUMNS)
     for draft in project.get("inactive_slurry_drafts", {}).values():
         if isinstance(draft, dict):
-            _coerce_lab_grid_text_columns(draft.get("lab_grid_dfs"))
+            _coerce_text_columns(draft.get("lab_grid_dfs"), _LAB_GRID_TEXT_COLUMNS)
     return project
+
+
+def normalize_hardware_text_columns(df):
+    """Normalize accepted numeric depths/sizes without inventing missing cells."""
+    return _coerce_text_columns(df, ("MD (m)", "Size (in)"))
 
 
 def decode_project(raw_bytes, deserialize_item):
@@ -187,6 +192,10 @@ def decode_project(raw_bytes, deserialize_item):
     _check_finite(project)
     _normalize_lab_grids(project)
     _validate_project(project)
+    restore_canonical_fields(project)
+    _validate_project(project)
+    for key in ("hardware_table", "hardware_editor_draft"):
+        normalize_hardware_text_columns(project.get(key))
     return project
 
 

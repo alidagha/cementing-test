@@ -9,9 +9,91 @@ import pandas as pd
 import materials_db
 from engineering_tools import (require_positive_density, require_positive_pump_rate,
                                format_to_hr_mm, round_half_up, safe_float,
-                               validate_lab_masses, thickening_time_valid)
+                               validate_lab_masses, thickening_time_valid, parse_effective_numeric)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
+
+
+DOCUMENT_DETAIL_FIELDS = (
+    ("Request Date Received", "request_date"),
+    ("Request Number", "request_number"),
+    ("Request Description", "request_description"),
+    ("Prepared Date", "prepared_date"),
+    ("Prepared Phone", "prepared_phone"),
+    ("Checked Date", "checked_date"),
+    ("Checked Phone", "checked_phone"),
+    ("Approved Date", "approved_date"),
+    ("Approved Phone", "approved_phone"),
+    ("Revision Date", "revision_date"),
+    ("Revision Description", "revision_description"),
+)
+
+DOC_CONTROL_DEFAULTS = {
+    "job_type": "CSG 20\"",
+    "hole_size": "26\"",
+    "field": "",
+    "well_location": "",
+    "well_name": "",
+    "rig_name": "",
+    "client": "",
+    "contract_number": "",
+    "proposal_number": "",
+    "cementing_method": "Primary Cementing",
+    "district_phone": "061-341-43513",
+    "made_by": "NIDC Cement Engineering and Planning Department",
+    # FIX (requested): a formal engineering document needs an approval
+    # chain and a revision marker, not just a single "Made By" line, to
+    # go from "internal draft" to "citable record". Revision defaults to
+    # "0" (the first issue of a document) rather than blank, since every
+    # real document has *some* revision number from the start.
+    "prepared_by": "",
+    "checked_by": "",
+    "approved_by": "",
+    "revision_no": "0"
+}
+
+
+DOC_CONTROL_DEFAULTS.update({key: "" for _, key in DOCUMENT_DETAIL_FIELDS})
+
+WELL_DATA_DEFAULTS = {
+    "mud_type": "WBM",
+    "mud_density": "80.0",
+    "plastic_viscosity": "45",
+    "yield_point": "15",
+    "geo_md": 3000.0,
+    "geo_tvd": 3000.0,
+    "bhst": 200,
+    "geo_gradient": 1.25,
+    "bhsp": ""
+}
+
+
+def restore_canonical_fields(state):
+    """Fill missing flat fields from legacy snapshots; explicit flat values win."""
+    for name, defaults in (("doc_control", DOC_CONTROL_DEFAULTS), ("well_data", WELL_DATA_DEFAULTS)):
+        nested = state.get(name)
+        if not isinstance(nested, dict):
+            continue
+        for key in defaults:
+            if key not in state and key in nested:
+                state[key] = nested[key]
+            if key in state:
+                nested[key] = state[key]
+    doc = state.get("doc_control", {})
+    if isinstance(doc, dict):
+        if "report_date" not in state and doc.get("date"):
+            state["report_date"] = date.fromisoformat(str(doc["date"]))
+        if "report_date" in state:
+            value = state["report_date"]
+            doc["date"] = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
+    well = state.get("well_data", {})
+    if isinstance(well, dict):
+        for field, effective, default in (("mud_density", "effective_mud_density", 80.0),
+                                           ("plastic_viscosity", "effective_pv", 45.0),
+                                           ("yield_point", "effective_yp", 15.0)):
+            if field in state:
+                state[effective] = parse_effective_numeric(state[field], default=default)
+                well[effective] = state[effective]
 
 
 def _canonical(value):
@@ -49,6 +131,12 @@ def _canonical(value):
 def fingerprint(value):
     encoded = json.dumps(_canonical(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def hardware_draft_pending(state):
+    """A browser draft is not validated hardware until Phase II/III reviews it."""
+    draft = state.get("hardware_editor_draft")
+    return isinstance(draft, pd.DataFrame) and fingerprint(draft) != fingerprint(state.get("hardware_table"))
 
 
 def is_project_key(key):
@@ -304,7 +392,9 @@ def prepare_calculations(state):
     try:
         purge_inactive_slurries(state, state.get("fluids_config", {}).get("active", []))
         refresh_fluids(state)
-        issues = refresh_cement_calculations(state)
+        issues = (["Phase II & III: review pending hardware edits before Word export."]
+                  if hardware_draft_pending(state) else [])
+        issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         issues += refresh_lab_payloads(state)
         md, tvd = float(state.get("geo_md", 3000.0)), float(state.get("geo_tvd", 3000.0))
