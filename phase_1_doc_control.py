@@ -4,6 +4,8 @@ import materials_db
 from datetime import date, datetime
 from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS
 
+DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "approved_date", "revision_date")
+
 # FIX (real bug, confirmed pre-existing — not introduced by any earlier update):
 # Streamlit deletes a widget's session_state entry whenever that widget is not
 # instantiated on a given script rerun. This app renders only the currently-
@@ -40,6 +42,8 @@ from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS
 def _commit_doc_widget(field):
     """Commit metadata and its export snapshot before navigation unmounts it."""
     value = st.session_state[f"_w_{field}"]
+    if field in DOCUMENT_DATE_FIELDS:
+        value = value.isoformat() if isinstance(value, (date, datetime)) else ""
     st.session_state[field] = value
     if field == "report_date":
         value = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
@@ -81,7 +85,17 @@ def _seed(widget_key, shadow_key):
     """Seed a widget-only key from its shadow, only if the widget key is
     currently absent (first render, or just restored after navigation)."""
     if widget_key not in st.session_state:
-        st.session_state[widget_key] = st.session_state[shadow_key]
+        value = st.session_state[shadow_key]
+        if shadow_key in DOCUMENT_DATE_FIELDS:
+            if isinstance(value, datetime):
+                value = value.date()
+            elif not isinstance(value, date):
+                try:
+                    value = date.fromisoformat(value) if value else None
+                except (TypeError, ValueError):
+                    # Keep legacy free-text dates canonical until explicitly replaced.
+                    value = None
+        st.session_state[widget_key] = value
 
 def render():
     st.header("Phase I: Document Control")
@@ -144,12 +158,17 @@ def render():
         st.date_input("Date", key="_w_report_date", on_change=_commit_doc_widget, args=("report_date",))
         st.session_state["report_date"] = st.session_state["_w_report_date"]
         
-        methods = ["Primary Cementing", "Remedial Cementing", "Plug Cementing"]
+        methods = ["Primary Cementing", "Remedial Cementing"]
         _seed("_w_cementing_method", "cementing_method")
         if st.session_state["_w_cementing_method"] not in methods:
-            st.session_state["_w_cementing_method"] = methods[0]
+            st.session_state["_w_cementing_method"] = (
+                None if st.session_state["cementing_method"] == "Plug Cementing" else methods[0]
+            )
         st.selectbox("Cementing Method", methods, key="_w_cementing_method", on_change=_commit_doc_widget, args=("cementing_method",))
-        st.session_state["cementing_method"] = st.session_state["_w_cementing_method"]
+        if st.session_state["_w_cementing_method"] is not None:
+            st.session_state["cementing_method"] = st.session_state["_w_cementing_method"]
+        else:
+            st.warning('Saved Cementing Method "Plug Cementing" is retained. Select a supported method to replace it.')
         
         for label, shadow_key in [("District Phone", "district_phone"), ("Made By", "made_by")]:
             widget_key = f"_w_{shadow_key}"
@@ -181,14 +200,21 @@ def render():
         st.session_state["revision_no"] = st.session_state["_w_revision_no"]
 
     with st.expander("Request and approval details (optional)"):
-        st.caption("Leave unknown details blank. Dates may use your project's calendar and format.")
+        st.caption("Leave unknown details blank. Select dates using the calendar.")
         detail_columns = st.columns(2)
         for index, (label, shadow_key) in enumerate(DOCUMENT_DETAIL_FIELDS):
             with detail_columns[index % 2]:
                 widget_key = f"_w_{shadow_key}"
                 _seed(widget_key, shadow_key)
-                st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
-                st.session_state[shadow_key] = st.session_state[widget_key]
+                if shadow_key in DOCUMENT_DATE_FIELDS:
+                    st.date_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
+                    if st.session_state[widget_key] is not None:
+                        st.session_state[shadow_key] = st.session_state[widget_key].isoformat()
+                    elif st.session_state[shadow_key]:
+                        st.caption(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
+                else:
+                    st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
+                    st.session_state[shadow_key] = st.session_state[widget_key]
 
     # 2. Harmonize backwards-compatible dictionary for export modules
     st.session_state["doc_control"] = {

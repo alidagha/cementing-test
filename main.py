@@ -301,9 +301,11 @@ _has_meaningful_data = (
         "hardware_table", "hardware_editor_draft", "cement_params", "cement_additives_dfs",
         "lab_grid_dfs", "spacer_dfs", "inactive_slurry_drafts"
     ))
-    or any(str(st.session_state.get(k, "")).strip() for k in _project_details)
+    or any(str(st.session_state.get(k, "")).strip()
+           and st.session_state.get(k) != DOC_CONTROL_DEFAULTS.get(k) for k in _project_details)
     or (isinstance(_saved_doc_control, dict) and any(
-        str(_saved_doc_control.get(k, "")).strip() for k in _project_details
+        str(_saved_doc_control.get(k, "")).strip()
+        and _saved_doc_control.get(k) != DOC_CONTROL_DEFAULTS.get(k) for k in _project_details
     ))
     or any(st.session_state.get(k) not in (None, default) for k, default in
            dict(DOC_CONTROL_DEFAULTS, **WELL_DATA_DEFAULTS, report_date=date.today()).items())

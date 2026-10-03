@@ -47,13 +47,14 @@ DOC_CONTROL_DEFAULTS = {
     # "0" (the first issue of a document) rather than blank, since every
     # real document has *some* revision number from the start.
     "prepared_by": "",
-    "checked_by": "",
-    "approved_by": "",
+    "checked_by": "M.Hasannezhad",
+    "approved_by": "Sh.Jalili",
     "revision_no": "0"
 }
 
 
 DOC_CONTROL_DEFAULTS.update({key: "" for _, key in DOCUMENT_DETAIL_FIELDS})
+DOC_CONTROL_DEFAULTS.update(checked_phone="+98-916-604-7042", approved_phone="+98-917-142-1265")
 
 WELL_DATA_DEFAULTS = {
     "mud_type": "WBM",
