@@ -109,6 +109,8 @@ def _seed_session():
         "preflush_config": {"type": "Combined (Water + NaCl + Wash)",
                             "nacl_multiplier": 126.0, "wash_multiplier": 3.0},
         "preflush_calc": {"density_pcf": 75.0},
+        "lab_payload_Lead": {"surface_hardened_hours": 8.0, "free_water_45": 0.0},
+        "lab_payload_Tail": {"surface_hardened_hours": 8.0, "free_water_45": 0.0},
         "total_pump_time_min": 210.0,
         "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": TARGET_ROW,
                              "volume_basis": "Caliper + 30% excess"},

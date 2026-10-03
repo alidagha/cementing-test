@@ -109,8 +109,9 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol",) if slurry == "Main" else ())
         if "lab_qc_params" in draft:
-            _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct"),
-                                  f"inactive_slurry_drafts.{slurry}.lab_qc_params")
+            _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"),
+                                  f"inactive_slurry_drafts.{slurry}.lab_qc_params",
+                                  nullable=("free_water_45", "surface_hardened_hours", "bhct") if slurry == "Main" else ("free_water_45", "surface_hardened_hours"))
     # Empty well number inputs are valid unfinished drafts, not malformed numbers.
     for container, path in ((data, "project"), (data.get("well_data", {}), "well_data")):
         _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst")
@@ -125,7 +126,8 @@ def _validate_project(data):
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                               f"cement_params.{name}", nullable=("dead_vol",) if name == "Main" else ())
     for name, params in data.get("lab_qc_params", {}).items():
-        _check_numeric_fields(params, ("api_fl", "free_water", "bhct"), f"lab_qc_params.{name}")
+        _check_numeric_fields(params, ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",
+                              nullable=("free_water_45", "surface_hardened_hours", "bhct") if name == "Main" else ("free_water_45", "surface_hardened_hours"))
     hardware_columns = {"Description", "MD (m)", "Size (in)", "ID (in)",
                         "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"}
     for key in ("hardware_table", "hardware_editor_draft"):

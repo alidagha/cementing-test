@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import materials_db
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid
+from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid, validate_lab_collection_results
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 # IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
@@ -68,7 +68,8 @@ def _bhct_suggestion():
     if tvd_ft <= 0 or bhst_f <= 80:
         return None
     try:
-        return float(tvd_m), tvd_ft, suggest_bhct(tvd_ft=tvd_ft, max_rbhest_f=bhst_f)
+        suggestion = suggest_bhct(tvd_ft=tvd_ft, max_rbhest_f=bhst_f)
+        return (float(tvd_m), tvd_ft, suggestion) if suggestion["kind"] == "BHCT" else None
     except ValueError:
         return None
 
@@ -333,8 +334,11 @@ def render():
             ("bhct", "BHCT (°F)", 60, 400, True),
             ("api_fl", "Filtrate @ 30 min (ml)", 0.0, None, False),
             ("free_water", "Free water (ml)", 0.0, None, False),
+            ("free_water_45", "Free Water Collected (45° angle) (ml)", 0.0, None, False),
+            ("surface_hardened_hours", "Surface Sample Hours", 0.0, None, False),
         ):
-            if field in qc:
+            if field in qc and not (qc[field] is None and
+                    (field in ("free_water_45", "surface_hardened_hours") or field == "bhct" and slurry == "Main")):
                 bounded.append((qc, field, f"{label} - {slurry}", low, high, integer))
     if repair_invalid_inputs(bounded, f"phase7_{load_sig}"):
         return
@@ -346,7 +350,7 @@ def render():
             
             qc = st.session_state["lab_qc_params"].setdefault(
                 slurry, {
-                    "bhct": 150,
+                    "bhct": None if slurry == "Main" else 150,
                     "api_fl": 0.0,
                     "free_water": 0.0,
                     "comp_test": "CRUSH",
@@ -354,6 +358,10 @@ def render():
                 }
             )
             
+            qc.setdefault("bhct", None if slurry == "Main" else 150)
+            qc.setdefault("free_water_45", None)
+            qc.setdefault("surface_hardened_hours", None)
+
             # Fetch parameters from Phase V and Phase IV
             p_cement = st.session_state.get("cement_params", {}).get(slurry, {}).get("base_cement", "Cement G Delijan")
             try:
@@ -481,11 +489,13 @@ def render():
             
             with col1:
                 bhct_key = f"_qc_bhct_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                if slurry == "Main" and bhct_key not in st.session_state:
+                    st.session_state[bhct_key] = int(qc["bhct"]) if qc["bhct"] is not None else None
                 qc["bhct"] = st.number_input(
                     f"BHCT (°F) - {slurry}",
                     min_value=60,
                     max_value=400,
-                    value=int(qc.get("bhct", 150)),
+                    value=None if slurry == "Main" else int(qc["bhct"]),
                     step=5,
                     key=bhct_key,
                     on_change=_commit_lab_qc,
@@ -526,9 +536,9 @@ def render():
                 # this relationship before. A large gap the other direction
                 # is unusual but not necessarily wrong (schedules vary), so
                 # that case is a caption, not an error.
-                if bhst is not None and qc["bhct"] > bhst:
+                if qc["bhct"] is not None and bhst is not None and qc["bhct"] > bhst:
                     st.error(f"✕ BHCT ({qc['bhct']}°F) cannot exceed BHST ({bhst}°F).")
-                elif bhst is not None and bhst - qc["bhct"] > 80:
+                elif qc["bhct"] is not None and bhst is not None and bhst - qc["bhct"] > 80:
                     st.caption(f"ℹ️ BHCT is {bhst - qc['bhct']}°F below BHST — verify this matches the actual circulating temperature schedule.")
                 
             with col2:
@@ -549,7 +559,7 @@ def render():
             with col3:
                 fw_key = f"_qc_fw_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["free_water"] = st.number_input(
-                    f"Free Water (ml) - {slurry}",
+                    f"Free Water Collected (90° angle) (ml) - {slurry}",
                     min_value=0.0,
                     step=0.1,
                     value=float(qc.get("free_water", 0.0)),
@@ -558,6 +568,23 @@ def render():
                     args=(slurry, "free_water", fw_key)
                 )
                 st.success(f"**FW:** {qc['free_water']:.1f} ml / 250ml")
+                fw45_key = f"_qc_fw45_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                if fw45_key not in st.session_state:
+                    st.session_state[fw45_key] = float(qc["free_water_45"]) if qc["free_water_45"] is not None else None
+                qc["free_water_45"] = st.number_input(
+                    f"Free Water Collected (45° angle) (ml) - {slurry}",
+                    min_value=0.0, step=0.1, value=None, key=fw45_key,
+                    on_change=_commit_lab_qc, args=(slurry, "free_water_45", fw45_key)
+                )
+                hours_key = f"_qc_surface_hours_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                if hours_key not in st.session_state:
+                    st.session_state[hours_key] = float(qc["surface_hardened_hours"]) if qc["surface_hardened_hours"] is not None else None
+                qc["surface_hardened_hours"] = st.number_input(
+                    f"Surface Sample Hours - {slurry}",
+                    min_value=0.0, step=0.25, value=None, key=hours_key,
+                    on_change=_commit_lab_qc, args=(slurry, "surface_hardened_hours", hours_key),
+                    help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
+                )
                 
             with col4:
                 comp_opts = ["CRUSH", "UCA"]
@@ -615,15 +642,21 @@ def render():
             except ValueError as exc:
                 masses_valid = False
                 st.error(f"{slurry}: {exc}. Correct the lab mass before confirming or exporting.")
+            try:
+                validate_lab_collection_results(qc)
+                collection_valid = True
+            except ValueError as exc:
+                collection_valid = False
+                st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
             temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
-            review_matches = (temperature_valid and tt_valid and masses_valid
+            review_matches = (temperature_valid and tt_valid and masses_valid and collection_valid
                               and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
                               and signatures.get(slurry) == current_p5_sig)
             if review_matches:
                 st.success("Lab readings and formulation reviewed for this slurry.")
             elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                           disabled=drifted or not temperature_valid or not tt_valid or not masses_valid,
+                           disabled=drifted or not temperature_valid or not tt_valid or not masses_valid or not collection_valid,
                            help="Confirm the values above are measured and checked for the current well and formulation."):
                 qc["reviewed"] = True
                 qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
@@ -658,6 +691,8 @@ def render():
                 "api_fl": qc["api_fl"] * 2.0,
                 "api_fl_collected": qc["api_fl"],
                 "free_water": qc["free_water"],
+                "free_water_45": qc["free_water_45"],
+                "surface_hardened_hours": qc["surface_hardened_hours"],
                 "comp_test": qc["comp_test"],
                 "thickening_time": qc["thickening_time"],
                 "thickening_endpoint": qc["thickening_endpoint"],

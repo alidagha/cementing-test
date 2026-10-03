@@ -11,7 +11,7 @@ from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, safe_float,
-                               parse_effective_numeric)
+                               parse_effective_numeric, require_nonnegative_number)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -117,7 +117,7 @@ def build_ordered_notes(
         5-6      Hydrostatic Pressure / Pore & Frac Pressure          (only if has_open_hole_notes)
         next..   One "Mix above Additives" note per active slurry, in slurry order
         next..   Per slurry (same order): Fresh Water composition, Rheology
-                 (Bingham Model), measured Thickening Time endpoint
+                 (Bingham Model), surface-sample hardening observation
 
     Mutates and returns `slurries_payload` with a new "note_mix" string on each
     slurry dict, and "note_freshwater" / "note_rheology" / "note_thickening"
@@ -183,10 +183,9 @@ def build_ordered_notes(
         lab = s.setdefault("lab", {})
         lab["note_freshwater"] = counter.next(fw_phrase)
         lab["note_rheology"] = counter.next("The Result of Rheology Test is based on Bingham Model.")
-        # Thickening time is not a surface-sample hardness observation.
-        endpoint = lab.get("thickening_endpoint", "Not specified")
-        endpoint_text = endpoint if endpoint in ("70 Bc", "100 Bc") else "not specified"
-        lab["note_thickening"] = counter.next(f"Reported thickening time endpoint: {endpoint_text}.")
+        hours = require_nonnegative_number(lab.get("surface_hardened_hours"), "Surface Sample Hours")
+        hours_text = str(int(hours)) if hours.is_integer() else str(hours)
+        lab["note_thickening"] = counter.next(f"Surface Sample: Hardened Condition Observed After {hours_text} Hours")
 
     notes["slurries"] = slurries_payload
     notes["all_notes"] = (
@@ -1111,6 +1110,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "fluid_loss": lab_info.get("api_fl", "-"),
                 "api_fl_collected": lab_info.get("api_fl_collected", "-"),
                 "free_water": lab_info.get("free_water", "-"),
+                "free_water_45": lab_info.get("free_water_45"),
+                "surface_hardened_hours": lab_info.get("surface_hardened_hours"),
                 "comp_test": lab_info.get("comp_test", "-"),
                 "grid": lab_rows,
                 "conventional": conv_rows,

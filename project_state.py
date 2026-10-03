@@ -9,7 +9,8 @@ import pandas as pd
 import materials_db
 from engineering_tools import (require_positive_density, require_positive_pump_rate,
                                format_to_hr_mm, round_half_up, safe_float,
-                               validate_lab_masses, thickening_time_valid, parse_effective_numeric)
+                               validate_lab_masses, thickening_time_valid, parse_effective_numeric,
+                               validate_lab_collection_results)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -220,7 +221,7 @@ def purge_inactive_slurries(state, active):
         stems = [f"{p}_{token}_" for p in ("cemb", "sg", "tank_choice", "dv", "override", "yd_ov", "mw_ov")]
         stems += ["_" + p for p in stems]
         stems += [f"_editor_additives_{token}_", f"_editor_lab_tbl_{token}_", f"_sync_btn_{token}_"]
-        stems += [f"_qc_{p}_in_{token}_" for p in ("bhct", "fl", "fw", "comp", "tt", "tt_endpoint")]
+        stems += [f"_qc_{p}_in_{token}_" for p in ("bhct", "fl", "fw", "fw45", "surface_hours", "comp", "tt", "tt_endpoint")]
         # BUG-15: the phase V/VI editors additionally keep a revision counter
         # and editor_state keeps a "_editor_source_" mirror of every editor
         # key; none of these matched the stems above and survived the purge.
@@ -374,6 +375,12 @@ def refresh_lab_payloads(state):
             state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: Phase VII {exc}; correct the lab mass before Word export.")
             continue
+        try:
+            validate_lab_collection_results(qc)
+        except ValueError as exc:
+            state.pop(f"lab_payload_{slurry}", None)
+            issues.append(f"{slurry}: Phase VII {exc}; review both Free Water measurements and Surface Sample Hours before Word export.")
+            continue
         if not thickening_time_valid(qc.get("thickening_time")):
             state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: Phase VII thickening time must be valid HH:MM, greater than 00:00 and at most 24:00.")
@@ -384,7 +391,7 @@ def refresh_lab_payloads(state):
         if isinstance(api_fl, bool) or not isinstance(api_fl, (int, float)) or not math.isfinite(api_fl):
             issues.append(f"{slurry}: Phase VII api_fl must be a finite numeric value; review the lab QC input.")
             continue
-        bhct = qc.get("bhct", 150)
+        bhct = qc.get("bhct", None if slurry == "Main" else 150)
         bhst = well.get("bhst", state.get("bhst", 200))
         try:
             if isinstance(bhct, bool) or isinstance(bhst, bool):
@@ -404,6 +411,7 @@ def refresh_lab_payloads(state):
             "grid": grid, "bhct": qc.get("bhct", "-"), "bhst": well.get("bhst", state.get("bhst", "-")),
             "api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
             "free_water": qc.get("free_water", "-"), "comp_test": qc.get("comp_test", "-"),
+            "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
             "thickening_time": qc.get("thickening_time", "-"), "thickening_endpoint": qc.get("thickening_endpoint", "Not specified"),
             "bhsp": well.get("bhsp", ""), "base_fluid": p.get("base_fluid_gal_sk", ""),
             "mix_fluid": p.get("mix_fluid_gal_sk", ""), "solution_density": materials_db.SOLUTION_DENSITY_PCF,

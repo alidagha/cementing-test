@@ -128,6 +128,16 @@ def validate_cement_parameters(params):
         require_nonnegative_number(params.get("mix_water"), "Manual mix water")
 
 
+def validate_lab_collection_results(qc):
+    """Require measured collection angles and independent surface-sample hours."""
+    for field, label in (("free_water", "Free Water (90°)"),
+                         ("free_water_45", "Free Water (45°)"),
+                         ("surface_hardened_hours", "Surface Sample Hours")):
+        if isinstance(qc.get(field), bool):
+            raise ValueError(f"{label}: enter a finite nonnegative number")
+        require_nonnegative_number(qc.get(field), label)
+
+
 def validate_lab_masses(grid):
     """Keep unfinished lab masses as drafts; only finite nonnegative masses pass."""
     for number, (_, row) in enumerate(grid.iterrows(), start=1):
@@ -934,6 +944,11 @@ def compute_phase_status(ss) -> dict:
                 continue
             try:
                 validate_lab_masses(grid)
+            except ValueError:
+                missing.append(slurry)
+                continue
+            try:
+                validate_lab_collection_results(qc[slurry])
             except ValueError:
                 missing.append(slurry)
                 continue
