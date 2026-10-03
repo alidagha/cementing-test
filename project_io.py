@@ -108,8 +108,14 @@ def _validate_project(data):
         if "lab_qc_params" in draft:
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params")
-    _check_numeric_fields(data, ("geo_md", "geo_tvd", "geo_gradient", "bhst"), "project")
-    _check_numeric_fields(data.get("well_data", {}), ("geo_md", "geo_tvd", "geo_gradient", "bhst"), "well_data")
+    # Empty well number inputs are valid unfinished drafts, not malformed numbers.
+    for container, path in ((data, "project"), (data.get("well_data", {}), "well_data")):
+        _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst")
+                                               if container.get(field) is not None), path)
+    auto_fields = data.get("well_auto_fields", {})
+    if (not isinstance(auto_fields, dict) or any(field not in ("geo_gradient", "bhsp")
+            or not isinstance(enabled, bool) for field, enabled in auto_fields.items())):
+        raise ValueError("well_auto_fields must contain boolean Gradient/BHSP provenance.")
     for name, params in cfg.get("params", {}).items():
         _check_numeric_fields(params, ("volume",), f"fluids_config.params.{name}")
     for name, params in data.get("cement_params", {}).items():

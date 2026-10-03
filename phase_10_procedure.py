@@ -844,7 +844,7 @@ def synchronize_report_texts():
     params = state.get("cement_params", {})
     additives = state.get("cement_additives_dfs", {})
     hardware = state.get("hardware_table", pd.DataFrame())
-    depth = float(state.get("geo_md", 3000.0))
+    depth = state.get("geo_md")
     preflush = state.get("preflush_calc")
     pump_time = state.get("total_pump_time_min", 0.0)
     placement = state.get("placement_config", {})
@@ -1455,7 +1455,6 @@ def render():
     cement_params = st.session_state.get("cement_params", {})
     additives_dfs = st.session_state.get("cement_additives_dfs", {})
     preflush_calc = st.session_state.get("preflush_calc", {})
-    geo_md = float(st.session_state.get("geo_md", 3000.0))
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
 
     specs = synchronize_report_texts()

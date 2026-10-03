@@ -4,7 +4,7 @@ import pandas as pd
 import math
 import materials_db
 from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth
-from project_state import fingerprint, WELL_DATA_DEFAULTS
+from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -34,27 +34,20 @@ def get_well_data() -> dict:
     Clean Helper/Getter function for Phase X export and external consumers.
     Eliminates redundant state duplication while maintaining full backwards compatibility.
     """
-    return {
-        "mud_type": st.session_state.get("mud_type", "WBM"),
-        "mud_density": st.session_state.get("mud_density", "80.0"),
-        "effective_mud_density": st.session_state.get("effective_mud_density", 80.0),
-        "plastic_viscosity": st.session_state.get("plastic_viscosity", "45"),
-        "effective_pv": st.session_state.get("effective_pv", 45.0),
-        "yield_point": st.session_state.get("yield_point", "15"),
-        "effective_yp": st.session_state.get("effective_yp", 15.0),
-        "geo_md": st.session_state.get("geo_md", 3000.0),
-        "geo_tvd": st.session_state.get("geo_tvd", 3000.0),
-        "bhst": st.session_state.get("bhst", 200),
-        "geo_gradient": st.session_state.get("geo_gradient", 1.25),
-        "bhsp": st.session_state.get("bhsp", "")
-    }
+    return {**{field: st.session_state.get(field, default)
+               for field, default in WELL_DATA_DEFAULTS.items()},
+            **{field: st.session_state.get(field)
+               for field in ("effective_mud_density", "effective_pv", "effective_yp")}}
+
 
 def _commit_well_widget(field):
     """Keep the flat input and export-facing well snapshot in step on blur."""
     st.session_state[field] = st.session_state[f"_w_{field}"]
-    for source, effective, default in (("mud_density", "effective_mud_density", 80.0),
-                                       ("plastic_viscosity", "effective_pv", 45.0),
-                                       ("yield_point", "effective_yp", 15.0)):
+    if field in ("geo_gradient", "bhsp"):
+        st.session_state["well_auto_fields"][field] = False
+    for source, effective, default in (("mud_density", "effective_mud_density", None),
+                                       ("plastic_viscosity", "effective_pv", None),
+                                       ("yield_point", "effective_yp", None)):
         if field == source:
             st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=default)
     st.session_state["well_data"] = get_well_data()
@@ -72,6 +65,10 @@ def render():
     st.markdown("Configure tubular hardware, drilling fluid properties, and geothermal temperature profile.")
     
     # 1. Canonical State Initialization (shadow keys — survive navigation)
+    auto_fields = st.session_state.setdefault("well_auto_fields", {})
+    for field in ("geo_gradient", "bhsp"):
+        # Restored explicit values are manual unless saved provenance says auto.
+        auto_fields.setdefault(field, field not in st.session_state)
     defaults = WELL_DATA_DEFAULTS
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -81,13 +78,18 @@ def render():
                    ("geo_md", "MD (m)", 0.0, False),
                    ("geo_tvd", "TVD (m)", 0.0, False),
                    ("bhst", "BHST (°F)", 0, True),
-                   ("geo_gradient", "Temperature gradient", 0.0, False))]
+                   ("geo_gradient", "Temperature gradient", 0.0, False))
+               if st.session_state.get(field) is not None]
     placement = st.session_state.get("placement_config", {})
     if (placement.get("job_type") == st.session_state.get("job_type")
             and placement.get("target_row") == "__manual__"):
         bounded.append((placement, "manual_depth_m", "Measured target depth (m MD)", 0.0, None, False))
     if repair_invalid_inputs(bounded, f"phase2_{st.session_state.get('last_loaded_hash', 'new')}"):
         return
+    refresh_well_derived(st.session_state)
+    for field in ("geo_gradient", "bhsp"):
+        if auto_fields[field]:
+            st.session_state[f"_w_{field}"] = st.session_state[field]
         
     # 2. Hardware Table Initialization
     # FIX (requested, round 2): the previous fix (below-still-applies) stopped
@@ -165,7 +167,7 @@ def render():
                 help="Joint / single-pipe length in meters (e.g. 12.2). 0 for Open Hole.",
                 format="%.1f",
                 step=0.1,
-                default=0.0,
+                default=12.2,
                 required=False
             ),
             "Weight (ppf)": st.column_config.NumberColumn(
@@ -204,47 +206,6 @@ def render():
         width='stretch'
     )
 
-    # BUG-03: explicit add/delete row controls beside the grid. The built-in
-    # dynamic-row affordance makes empty rows easy to create accidentally and
-    # its delete UX is unclear; these buttons give the operator a deliberate
-    # way to append a defaulted row or remove a specific one by row number.
-    _hw_rev = st.session_state.get(hardware_revision_key, 0)
-    add_col, del_col, pick_col = st.columns([1.1, 1.6, 2.2])
-    with add_col:
-        if st.button("＋ Add Row", key=f"_hw_add_{_hw_rev}",
-                     help="Append one hardware row with sensible defaults."):
-            base = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
-                    else st.session_state["hardware_table"]).copy(deep=True)
-            new_row = {col: "" for col in HARDWARE_COLUMNS}
-            new_row.update({"Description": "Casing", "MD (m)": "0.0", "Size (in)": "",
-                            "ID (in)": 0.0, "Joint (m)": 0.0, "Weight (ppf)": 0.0,
-                            "Grade": "-", "Collapse (psi)": 0.0, "Burst (psi)": 0.0})
-            st.session_state["hardware_editor_draft"] = pd.concat(
-                [base, pd.DataFrame([new_row])], ignore_index=True)
-            st.session_state[hardware_revision_key] = _hw_rev + 1
-            st.rerun()
-    with pick_col:
-        _hw_rows_now = len(hardware_draft) if isinstance(hardware_draft, pd.DataFrame) \
-            else len(st.session_state["hardware_table"])
-        _hw_del_pick = st.number_input(
-            f"Row # to delete (1–{_hw_rows_now})" if _hw_rows_now else "No rows to delete",
-            min_value=0,
-            max_value=max(_hw_rows_now, 0),
-            value=0,
-            step=1,
-            key=f"_hw_del_pick_{_hw_rev}",
-            help="Enter the row number as shown top-to-bottom in the table, then press Delete Row. 0 = none.")
-    with del_col:
-        if st.button("🗑 Delete Row", key=f"_hw_del_{_hw_rev}",
-                     disabled=_hw_del_pick < 1 or _hw_del_pick > _hw_rows_now,
-                     help="Delete the selected row number from the table."):
-            base = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
-                    else st.session_state["hardware_table"]).copy(deep=True)
-            base = base.drop(index=int(_hw_del_pick) - 1).reset_index(drop=True)
-            st.session_state["hardware_editor_draft"] = base
-            st.session_state[hardware_revision_key] = _hw_rev + 1
-            st.rerun()
-    
     pending_rows = edited_df.copy(deep=True)
     cleaned_rows = []
     dimension_warnings = []
@@ -404,8 +365,9 @@ def render():
         # actually resolves to for every downstream calculation. This
         # caption doesn't change behavior at all, just makes the existing
         # parse_effective_numeric() result visible at its own source.
-        _eff_md = parse_effective_numeric(st.session_state["mud_density"], default=80.0)
-        st.caption(f"↳ Used in calculations as: **{_eff_md:.1f} pcf**" + (" (mean of range)" if any(c in st.session_state["mud_density"] for c in "-/") else ""))
+        _eff_md = parse_effective_numeric(st.session_state["mud_density"], default=None)
+        if _eff_md is not None:
+            st.caption(f"↳ Used in calculations as: **{_eff_md:.1f} pcf**" + (" (mean of range)" if any(c in st.session_state["mud_density"] for c in "-/") else ""))
         
     with col_m3:
         _seed("_w_plastic_viscosity", "plastic_viscosity")
@@ -415,8 +377,9 @@ def render():
             help="e.g. 45 or 45-50"
         )
         st.session_state["plastic_viscosity"] = st.session_state["_w_plastic_viscosity"]
-        _eff_pv = parse_effective_numeric(st.session_state["plastic_viscosity"], default=45.0)
-        st.caption(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
+        _eff_pv = parse_effective_numeric(st.session_state["plastic_viscosity"], default=None)
+        if _eff_pv is not None:
+            st.caption(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
         
     with col_m4:
         _seed("_w_yield_point", "yield_point")
@@ -426,13 +389,14 @@ def render():
             help="e.g. 15 or 10-20"
         )
         st.session_state["yield_point"] = st.session_state["_w_yield_point"]
-        _eff_yp = parse_effective_numeric(st.session_state["yield_point"], default=15.0)
-        st.caption(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
+        _eff_yp = parse_effective_numeric(st.session_state["yield_point"], default=None)
+        if _eff_yp is not None:
+            st.caption(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
 
     # Clean bridge for mathematical models downstream
-    st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=80.0)
-    st.session_state["effective_pv"] = parse_effective_numeric(st.session_state["plastic_viscosity"], default=45.0)
-    st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=15.0)
+    st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=None)
+    st.session_state["effective_pv"] = parse_effective_numeric(st.session_state["plastic_viscosity"], default=None)
+    st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=None)
 
     st.markdown("---")
     
@@ -443,19 +407,19 @@ def render():
     col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
     with col_g1:
         _seed("_w_geo_md", "geo_md")
-        st.number_input("MD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md", on_change=_commit_well_widget, args=("geo_md",))
+        st.number_input("MD (m)", value=None, min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md", on_change=_commit_well_widget, args=("geo_md",))
         st.session_state["geo_md"] = st.session_state["_w_geo_md"]
     with col_g2:
         _seed("_w_geo_tvd", "geo_tvd")
-        st.number_input("TVD (m)", min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd", on_change=_commit_well_widget, args=("geo_tvd",))
+        st.number_input("TVD (m)", value=None, min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd", on_change=_commit_well_widget, args=("geo_tvd",))
         st.session_state["geo_tvd"] = st.session_state["_w_geo_tvd"]
     with col_g3:
         _seed("_w_bhst", "bhst")
-        st.number_input("BHST (degF)", min_value=0, step=1, key="_w_bhst", on_change=_commit_well_widget, args=("bhst",))
+        st.number_input("BHST (degF)", value=None, min_value=0, step=1, key="_w_bhst", on_change=_commit_well_widget, args=("bhst",))
         st.session_state["bhst"] = st.session_state["_w_bhst"]
     with col_g4:
         _seed("_w_geo_gradient", "geo_gradient")
-        st.number_input("Gradient (degF/100ft)", min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient", on_change=_commit_well_widget, args=("geo_gradient",))
+        st.number_input("Gradient (degF/100ft)", value=None, min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient", on_change=_commit_well_widget, args=("geo_gradient",))
         st.session_state["geo_gradient"] = st.session_state["_w_geo_gradient"]
     with col_g5:
         _seed("_w_bhsp", "bhsp")
@@ -466,10 +430,11 @@ def render():
         st.session_state["bhsp"] = st.session_state["_w_bhsp"]
 
     # Geothermal & Well Path Guardrails
-    if st.session_state["geo_tvd"] > st.session_state["geo_md"]:
+    if (st.session_state["geo_tvd"] is not None and st.session_state["geo_md"] is not None
+            and st.session_state["geo_tvd"] > st.session_state["geo_md"]):
         st.error(f"✕ **Physical Inconsistency:** TVD ({st.session_state['geo_tvd']:.1f} m) cannot exceed MD ({st.session_state['geo_md']:.1f} m).")
         
-    if st.session_state["bhst"] < 80:
+    if st.session_state["bhst"] is not None and st.session_state["bhst"] < 80:
         st.warning("⚠ **Thermal Alert:** BHST appears unusually low for deep well operations.")
 
     st.session_state["well_data"] = get_well_data()

@@ -526,9 +526,9 @@ def render():
                 # this relationship before. A large gap the other direction
                 # is unusual but not necessarily wrong (schedules vary), so
                 # that case is a caption, not an error.
-                if qc["bhct"] > bhst:
+                if bhst is not None and qc["bhct"] > bhst:
                     st.error(f"✕ BHCT ({qc['bhct']}°F) cannot exceed BHST ({bhst}°F).")
-                elif bhst - qc["bhct"] > 80:
+                elif bhst is not None and bhst - qc["bhct"] > 80:
                     st.caption(f"ℹ️ BHCT is {bhst - qc['bhct']}°F below BHST — verify this matches the actual circulating temperature schedule.")
                 
             with col2:

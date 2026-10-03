@@ -140,7 +140,9 @@ class AuditRegressions(unittest.TestCase):
                     self.assertEqual(app.text_input(key="den_" + name).value, expected)
 
     def configured_app(self, job, additives=False, optional_fluids=False):
-        app = self.app()
+        # Valid export fixtures explicitly supply the former well defaults.
+        app = self.app({"mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
+                        "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "geo_gradient": 1.25})
         app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
         app.text_input(key="_w_client").set_value("Regression Client").run()

@@ -58,15 +58,37 @@ DOC_CONTROL_DEFAULTS.update(checked_phone="+98-916-604-7042", approved_phone="+9
 
 WELL_DATA_DEFAULTS = {
     "mud_type": "WBM",
-    "mud_density": "80.0",
-    "plastic_viscosity": "45",
-    "yield_point": "15",
-    "geo_md": 3000.0,
-    "geo_tvd": 3000.0,
-    "bhst": 200,
-    "geo_gradient": 1.25,
+    "mud_density": "",
+    "plastic_viscosity": "",
+    "yield_point": "",
+    "geo_md": None,
+    "geo_tvd": None,
+    "bhst": None,
+    "geo_gradient": None,
     "bhsp": ""
 }
+
+
+def refresh_well_derived(state):
+    """Update only automatic values, using the same canonical/shadow pattern."""
+    tvd, bhst = safe_float(state.get("geo_tvd"), None), safe_float(state.get("bhst"), None)
+    gradient, pressure = None, ""
+    if tvd is not None and math.isfinite(tvd) and tvd > 0:
+        if bhst is not None and math.isfinite(bhst) and bhst >= 80:
+            gradient = ((bhst - 80) / (tvd * 3.28084)) * 100
+            if not math.isfinite(gradient):
+                gradient = None
+        try:
+            mud_weight = require_positive_density(state.get("mud_density", ""))
+            pressure_value = tvd * mud_weight * 0.02278
+            pressure = str(pressure_value) if math.isfinite(pressure_value) else ""
+        except (TypeError, ValueError, OverflowError):
+            pass  # Invalid/unfinished sources stay empty and block readiness.
+    for field, value in (("geo_gradient", gradient), ("bhsp", pressure)):
+        if state.get("well_auto_fields", {}).get(field, False):
+            state[field] = value
+            if isinstance(state.get("well_data"), dict):
+                state["well_data"][field] = value
 
 
 def restore_canonical_fields(state):
@@ -89,12 +111,13 @@ def restore_canonical_fields(state):
             doc["date"] = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
     well = state.get("well_data", {})
     if isinstance(well, dict):
-        for field, effective, default in (("mud_density", "effective_mud_density", 80.0),
-                                           ("plastic_viscosity", "effective_pv", 45.0),
-                                           ("yield_point", "effective_yp", 15.0)):
+        for field, effective, default in (("mud_density", "effective_mud_density", None),
+                                           ("plastic_viscosity", "effective_pv", None),
+                                           ("yield_point", "effective_yp", None)):
             if field in state:
                 state[effective] = parse_effective_numeric(state[field], default=default)
                 well[effective] = state[effective]
+    refresh_well_derived(state)
 
 
 def _canonical(value):
@@ -398,8 +421,8 @@ def prepare_calculations(state):
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         issues += refresh_lab_payloads(state)
-        md, tvd = float(state.get("geo_md", 3000.0)), float(state.get("geo_tvd", 3000.0))
-        if not math.isfinite(md) or not math.isfinite(tvd):
+        md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
+        if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")
         elif tvd > md:
             issues.append(f"Phase II & III: TVD ({tvd:g} m) cannot exceed MD ({md:g} m); correct the depth before Word export.")
