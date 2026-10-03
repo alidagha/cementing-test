@@ -165,12 +165,15 @@ class AuditRegressions(unittest.TestCase):
             app.checkbox(key="chk_fluid_" + name).check().run()
         for name in app.session_state["fluids_config"]["active"]:
             app.number_input(key="vol_" + name).set_value(50.0).run()
+            if name in ("Main", "Pre Flush"):
+                app.text_input(key="den_" + name).set_value("118.0" if name == "Main" else "80.0").run()
         if additives:
             app.session_state["cement_additives_dfs"] = {"Main": pd.DataFrame([
                 {"Material Type": "Anti Foam", "Name": "Anti Foam", "Physical State": "Liquid",
                  "Mix Method": "In Mix Water", "User Input": 0.01},
             ])}
         self.phase(app, "phase5")
+        next(w for w in app.number_input if w.label == "Dead Vol (bbl) - Main").set_value(31.0).run()
         next(w for w in app.selectbox if w.label == "Top of cement - Main").set_value("Surface").run()
         if optional_fluids:
             app.session_state["spacer_dfs"] = {s: pd.DataFrame([
@@ -606,6 +609,7 @@ class AuditRegressions(unittest.TestCase):
         project.pop("cement_params")  # First Phase V entry for the slurry.
         app = self.app(project)
         self.phase(app, "phase5")
+        next(w for w in app.number_input if w.label == "Dead Vol (bbl) - Main").set_value(31.0).run()
         mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
         self.assertEqual(mode.value, "Not entered")
         self.assertIsNone(app.session_state["cement_params"]["Main"]["top_depth"])

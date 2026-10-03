@@ -45,12 +45,14 @@ def _check_finite(value, path="project"):
             _check_finite(item, f"{path}[{idx}]")
 
 
-def _check_numeric_fields(container, fields, path):
+def _check_numeric_fields(container, fields, path, nullable=()):
     """Reject malformed saved numbers before any session state is replaced."""
     for field in fields:
         if field not in container:
             continue
         value = container[field]
+        if value is None and field in nullable:
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f"{path}.{field} must be a finite number (got {value!r}).")
 
@@ -104,7 +106,8 @@ def _validate_project(data):
                 raise ValueError(f"inactive_slurry_drafts.{slurry}.{field} is missing required columns.")
         if "cement_params" in draft:
             _check_numeric_fields(draft["cement_params"], ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
-                                  f"inactive_slurry_drafts.{slurry}.cement_params")
+                                  f"inactive_slurry_drafts.{slurry}.cement_params",
+                                  nullable=("dead_vol",) if slurry == "Main" else ())
         if "lab_qc_params" in draft:
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params")
@@ -120,7 +123,7 @@ def _validate_project(data):
         _check_numeric_fields(params, ("volume",), f"fluids_config.params.{name}")
     for name, params in data.get("cement_params", {}).items():
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
-                              f"cement_params.{name}")
+                              f"cement_params.{name}", nullable=("dead_vol",) if name == "Main" else ())
     for name, params in data.get("lab_qc_params", {}).items():
         _check_numeric_fields(params, ("api_fl", "free_water", "bhct"), f"lab_qc_params.{name}")
     hardware_columns = {"Description", "MD (m)", "Size (in)", "ID (in)",

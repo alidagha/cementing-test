@@ -133,16 +133,14 @@ def build_ordered_notes(
 
     notes["note_densities"] = counter.next("Densities are Displayed at P=1 atmosphere and T=70 degF.")
 
-    # NOTE: "Safety Factor" pumping-time text — real documents show a value that
-    # does not cleanly derive from total_pump_time_min alone (e.g. 330 min for a
-    # ~240 min pumping schedule). Until the exact safety-factor rule is confirmed
-    # with the engineer, this uses the app's own already-computed total pumping
-    # time directly rather than guessing an unverified multiplier.
-    reported_pump_time = (
-        f"{round_half_up(total_pump_time_min, 0):.0f} min."
-        if total_pump_time_min is not None and total_pump_time_min > 0
-        else ".... min. [PUMP TIME NOT SET IN PHASE IV]"
-    )
+    # Owner-authorized factor applies only to this note, never to the schedule.
+    try:
+        pump_time = clean_number(total_pump_time_min)
+        if pump_time <= 0:
+            raise ValueError("Phase IV pumping time is not set")
+        reported_pump_time = f"{round_half_up(pump_time * 1.25, 0):.0f} min"
+    except (ValueError, TypeError, OverflowError):
+        reported_pump_time = ".... min [PUMP TIME NOT SET IN PHASE IV]"
     notes["note_maxpump"] = counter.next(
         # NOTE: plain "&" here is correct and intentional. It used to be
         # hand-escaped to "&amp;" as a one-off patch (docxtpl silently drops
@@ -150,7 +148,7 @@ def build_ordered_notes(
         # once, globally, for the whole context — see _escape_xml_special_chars()
         # right before build_master_context()'s return. Escaping it again
         # here would double-escape it into "&amp;amp;".
-        f"Pumping time for Slurry & Displacement from the Phase IV schedule is {reported_pump_time}"
+        f"Max Pumping Time for Slurry & Displacement with Safety Factor is {reported_pump_time}"
     )
 
     notes["note_dispvol"] = counter.next("The Volume of Displacement Should Be Calculated at Rig Site.")
@@ -1519,7 +1517,7 @@ def render():
             "Volume (bbl)": f"{vol:.1f}" if vol is not None else "N/A",
             "Sacks": f"{sacks:.1f}" if sacks is not None else "N/A",
             "Mix Water (bbl)": f"{float(p.get('mix_water', 0.0)):.1f}",
-            "Dead Vol (bbl)": f"{float(p.get('dead_vol', 0.0)):.1f}",
+            "Dead Vol (bbl)": f"{float(p['dead_vol']):.1f}" if p.get("dead_vol") is not None else "N/A",
             "Tank": p.get("tank_name", "-")
         })
 

@@ -92,7 +92,7 @@ def render():
             "params": {
                 f: {
                     "volume": 0.0,
-                    "density": "118.0" if "Main" in f or "Tail" in f else "80.0",
+                    "density": "" if f in {"Pre Flush", "Main"} else "118.0" if "Tail" in f else "80.0",
                     "pump_rate": "4.0"
                 } for f in materials_db.FLUID_TYPES if f != "Displacement Fluid"
             }
@@ -207,7 +207,8 @@ def render():
         else:
             # Match the initial configuration, including 80 pcf spacers.
             _default_density = (
-                "118.0" if ("Main" in fluid or "Tail" in fluid)
+                "" if fluid in {"Pre Flush", "Main"}
+                else "118.0" if "Tail" in fluid
                 else "80.0"
             )
             p = cfg["params"].setdefault(

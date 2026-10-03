@@ -120,7 +120,7 @@ def validate_cement_parameters(params):
     sg = require_nonnegative_number(params.get("cmt_sg", 3.20), "Cement SG")
     if not 2.5 <= sg <= 3.5:
         raise ValueError("Cement SG must be within 2.5–3.5")
-    require_nonnegative_number(params.get("dead_vol", 0.0), "Dead volume")
+    require_nonnegative_number(params.get("dead_vol"), "Dead volume")
     if not params.get("auto_calc", True):
         yield_value = require_nonnegative_number(params.get("yield"), "Manual yield")
         if yield_value < 0.001:
