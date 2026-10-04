@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import math
 import materials_db
-from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth
+from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS
 from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
@@ -84,6 +84,9 @@ def render():
     if (placement.get("job_type") == st.session_state.get("job_type")
             and placement.get("target_row") == "__manual__"):
         bounded.append((placement, "manual_depth_m", "Measured target depth (m MD)", 0.0, None, False))
+    if placement.get("job_type") == st.session_state.get("job_type"):
+        bounded.extend((placement, field, label, 0.0, None, False)
+                       for field, label, _ in EXCESS_FIELDS if placement.get(field) is not None)
     if repair_invalid_inputs(bounded, f"phase2_{st.session_state.get('last_loaded_hash', 'new')}"):
         return
     refresh_well_derived(st.session_state)
@@ -327,13 +330,15 @@ def render():
             key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}",
             on_change=_commit_placement, args=("host_row", f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}")
         )
-    placement["volume_basis"] = st.text_input(
-        "Slurry volume basis / excess (if specified)",
-        value=str(placement.get("volume_basis") or ""),
-        key=f"_placement_volume_basis_{load_sig}",
-        on_change=_commit_placement, args=("volume_basis", f"_placement_volume_basis_{load_sig}"),
-        help="Enter the approved job-specific basis. Leave blank to show that it was not supplied."
-    )
+    for field, label, _ in EXCESS_FIELDS:
+        widget_key = f"_placement_{field}_{load_sig}"
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = placement.get(field)
+        placement[field] = st.number_input(
+            label, min_value=0.0, step=0.1, value=None,
+            key=widget_key, on_change=_commit_placement, args=(field, widget_key),
+            help="Enter percentage points (25 means 25%). Leave blank if not supplied."
+        )
     if placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
         st.warning("Enter the actual target depth before citing it in the executive summary.")
 

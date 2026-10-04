@@ -10,6 +10,7 @@ from engineering_tools import compute_phase_status
 from project_state import (is_project_key, invalidate_document, restore_canonical_fields,
                            DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS)
 from project_io import content_signature, decode_project, replace_project_state
+from placement import EXCESS_FIELDS
 
 restore_canonical_fields(st.session_state)
 
@@ -310,6 +311,8 @@ _has_meaningful_data = (
     or any(st.session_state.get(k) not in (None, default) for k, default in
            dict(DOC_CONTROL_DEFAULTS, **WELL_DATA_DEFAULTS, report_date=date.today()).items())
     or any(value for key, value in st.session_state.get("placement_config", {}).items() if key != "job_type")
+    or any(st.session_state.get("placement_config", {}).get(field) is not None
+           for field, _, _ in EXCESS_FIELDS)
     or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
            or str(params.get("pump_rate", "4.0")) not in ("4", "4.0")
            or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")

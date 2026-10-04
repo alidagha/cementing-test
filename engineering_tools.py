@@ -730,7 +730,7 @@ def compute_phase_status(ss) -> dict:
     # float() check tripped on every interval row and flagged the phase with
     # "Complete hardware description, depth, size and ID." forever, which
     # disabled the Phase X Build button. Use the same parser here.
-    from placement import measured_depth
+    from placement import measured_depth, EXCESS_FIELDS, excess_percentage
 
     def _positive_md(value):
         try:
@@ -789,6 +789,14 @@ def compute_phase_status(ss) -> dict:
             status["phase2_3"] = {"level": "warning", "message": "Select the existing casing or liner host for tie-back."}
         else:
             status["phase2_3"] = {"level": "ok", "message": f"{hw_rows} hardware row(s); placement target selected."}
+
+    placement = ss.get("placement_config", {})
+    if placement.get("job_type") == ss.get("job_type"):
+        try:
+            for field, _, _ in EXCESS_FIELDS:
+                excess_percentage(placement, field)
+        except ValueError as exc:
+            status["phase2_3"] = {"level": "warning", "message": str(exc)}
 
     # Phase IV: Fluids Sequence
     if len(active) <= 1:

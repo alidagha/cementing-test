@@ -113,7 +113,7 @@ def _seed_session():
         "lab_payload_Tail": {"surface_hardened_hours": 8.0, "free_water_45": 0.0},
         "total_pump_time_min": 210.0,
         "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": TARGET_ROW,
-                             "volume_basis": "Caliper + 30% excess"},
+                             "excess_csg_oh_pct": 30.0, "excess_csg_csg_pct": 10.5},
     }
     for key, value in seed.items():
         st.session_state[key] = value
@@ -163,7 +163,7 @@ def _seed_wz217_apptest(at):
                             "nacl_multiplier": 126.0, "wash_multiplier": 3.0},
         "total_pump_time_min": 210.0,
         "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": TARGET_ROW,
-                             "volume_basis": "Caliper + 30% excess"},
+                             "excess_csg_oh_pct": 30.0, "excess_csg_csg_pct": 10.5},
     }
     for k, v in seed.items():
         at.session_state[k] = v
@@ -301,11 +301,12 @@ def test_serialize_numpy_and_nat():
 
 
 def test_blank_volume_basis_exports_as_na():
-    """Owner critique round: blank Volume Basis must not block Word export."""
+    """Optional placement percentages remain N/A when neither is supplied."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
     cfg = dict(state["placement_config"])
-    cfg["volume_basis"] = ""
+    cfg["excess_csg_oh_pct"] = None
+    cfg["excess_csg_csg_pct"] = None
     state["placement_config"] = cfg
     ctx = build_master_context(calculations_prepared=True)
     assert ctx["slurries"], "no slurry payload built"

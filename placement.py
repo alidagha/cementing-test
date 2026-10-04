@@ -7,6 +7,18 @@ from engineering_tools import require_nonnegative_number
 
 _MD = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:[-–]\s*(\d+(?:\.\d+)?)\s*)?$")
 HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner", "Liner"}
+EXCESS_FIELDS = (("excess_csg_oh_pct", "Excess CSG-OH %", "excess_oh"),
+                ("excess_csg_csg_pct", "Excess CSG-CSG %", "excess_csg"))
+
+
+def excess_percentage(config, field):
+    """Optional percentage points; zero is supplied, None is not supplied."""
+    value = config.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"placement_config.{field} must be a finite nonnegative number or null.")
+    return require_nonnegative_number(value, f"placement_config.{field}")
 
 
 def measured_depth(value):

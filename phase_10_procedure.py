@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from placement import target_depth, host_label, slurry_intervals
+from placement import target_depth, host_label, slurry_intervals, EXCESS_FIELDS, excess_percentage
 from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
@@ -202,30 +202,27 @@ def parse_shoe_depth_from_hardware(hw_df, default_md=None, job_type="", placemen
     return target_depth(hw_df, job_type, placement_config or {})
 
 
-def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None):
-    """BUG-04: populate the four placement keys the Word template's per-slurry
-    placement block reads via s.get('top'/'bottom'/'excess_oh'/'excess_csg',
-    '....'). top/bottom come from the same validated intervals as the summary,
-    using the selected target and Phase V tops, and
-    the two excess cells share the placement volume basis (dedicated per-side
-    excess fields remain future work once Phase II/III captures them).
+def _placement_excess_values(config, job_type):
+    """Share optional percent display between the summary and placement cells."""
+    values = {}
+    for field, _, report_key in EXCESS_FIELDS:
+        try:
+            value = excess_percentage(config, field) if config.get("job_type") == job_type else None
+            values[report_key] = "N/A" if value is None else str(value).removesuffix(".0") + "%"
+        except ValueError:
+            values[report_key] = "...."  # Existing placement gate blocks invalid input.
+    return values
 
-    Owner critique round (2026-09-28): the Volume Basis input documents itself
-    as optional ("Leave blank to show that it was not supplied"), so a blank
-    basis renders the honest 'N/A' marker in the two excess cells and must NOT
-    block Word export. top/bottom keep the '....' fallback, which stays
-    export-blocking through the build_master_context guard because a report
-    without a real target depth would be misleading, not merely incomplete."""
+
+def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None):
+    """Use shared intervals and independent global excess values in Word."""
     if interval is None:
         interval = slurry_intervals(hw_df, job_type, placement_config or {},
                                     [payload["name"]], {payload["name"]: slurry_params})[payload["name"]]
     bottom_depth = interval["bottom_depth"]
     payload["top"] = interval["top"] if interval["top_depth"] is not None else "...."
     payload["bottom"] = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
-    basis = (str(placement_config.get("volume_basis") or "").strip()
-             if placement_config.get("job_type") == job_type else "")
-    payload["excess_oh"] = basis or "N/A"
-    payload["excess_csg"] = basis or "N/A"
+    payload.update(_placement_excess_values(placement_config, job_type))
     return payload
 
 def separate_lab_tables(lab_grid_df: pd.DataFrame):
@@ -374,12 +371,8 @@ def generate_executive_summary(
     placement_config = placement_config or {}
     shoe_depth = parse_shoe_depth_from_hardware(hw_df, job_type=job_type, placement_config=placement_config)
     shoe_str = f"{shoe_depth:.1f} m MD" if shoe_depth is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
-    # Placement details belong to the job under which they were entered.
-    # Phase X can be opened immediately after changing Job Type in Phase I,
-    # before Phase II/III has had a chance to clear the previous job's basis.
-    basis = (str(placement_config.get("volume_basis") or "").strip()
-             if placement_config.get("job_type") == job_type else "")
-    basis = basis or "[VOLUME BASIS NOT SET IN PHASE II/III]"
+    excess = _placement_excess_values(placement_config, job_type)
+    excess_statement = f"CSG-OH excess: {excess['excess_oh']}; CSG-CSG excess: {excess['excess_csg']}"
 
     slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
     active_slurries = [
@@ -430,18 +423,18 @@ def generate_executive_summary(
         top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
         p3 = (f"Cement plug target depth is {shoe_str}. {design_str} for cement placement inside casing / open hole; "
               f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top}. "
-              f"{volume_statement}; basis: {basis}.")
+              f"{volume_statement}; {excess_statement}.")
     elif "SQUEEZE" in job_upper:
         p3 = (f"{job_type} treatment depth is {shoe_str}. {design_str} for this zone; "
               f"{primary_den} {primary.lower()} cement slurry is planned at {shoe_str}. "
-              f"{volume_statement}; basis: {basis}.")
+              f"{volume_statement}; {excess_statement}.")
     elif "TIE BACK" in job_upper:
         top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
         host = parse_tieback_host_label(hw_df, job_type=job_type, placement_config=placement_config)
         host = host or "[HOST NOT SELECTED IN PHASE II/III]"
         p3 = (f"{job_type} target depth is {shoe_str}. {design_str} for this tie back; "
               f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top} "
-              f"inside {host}. {volume_statement}; basis: {basis}.")
+              f"inside {host}. {volume_statement}; {excess_statement}.")
     else:
         kind = "Liner" if "LNR" in job_upper else "Casing"
         placement_parts = []
@@ -453,7 +446,7 @@ def generate_executive_summary(
         intervals = "; ".join(placement_parts) if placement_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
         volumes = "; ".join(volume_parts) if volume_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
         p3 = (f"{job_type} {kind.lower()} target depth is {shoe_str}. {design_str} for this {kind.lower()}; "
-              f"planned placement: {intervals}. Planned slurry volumes: {volumes}; basis: {basis}.")
+              f"planned placement: {intervals}. Planned slurry volumes: {volumes}; {excess_statement}.")
 
     return f"{p1}\n\n{p2}\n\n{p3}"
 
@@ -1296,6 +1289,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         _proc_all_lines = _proc_all_lines[1:]
     procedure_steps = _proc_all_lines
 
+    gradient = safe_float(well_data.get("geo_gradient"), None)
     context = {
         "job_type": doc_ctrl.get("job_type", ""),
         "hole_size": doc_ctrl.get("hole_size", ""),
@@ -1321,7 +1315,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "revision_no": doc_ctrl.get("revision_no", "0"),
 
         "hardware": hardware_list,
-        "well_data": well_data,
+        "well_data": dict(well_data, geo_gradient=(
+            f"{gradient:.2f}" if gradient is not None else well_data.get("geo_gradient"))),
         
         "fluids_train": fluids_train,
         "total_pump_time_min": st.session_state.get("total_pump_time_min", 0.0),

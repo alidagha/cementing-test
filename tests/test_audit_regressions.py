@@ -396,7 +396,8 @@ class AuditRegressions(unittest.TestCase):
                 app.text_input(key="_w_yield_point").set_value("16-18")
                 app.text_input(key="_w_bhsp").set_value("7300+1000")
                 next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(2850.0)
-                next(w for w in app.text_input if w.label.startswith("Slurry volume basis")).set_value("Approved field basis")
+                next(w for w in app.number_input if w.label == "Excess CSG-OH %").set_value(25.0)
+                next(w for w in app.number_input if w.label == "Excess CSG-CSG %").set_value(10.5)
                 if "TIE BACK" in job:
                     next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1)
                 app.radio(key="_app_mode_key").set_value("phase4").run()
@@ -409,7 +410,8 @@ class AuditRegressions(unittest.TestCase):
                 self.assertEqual(well["bhsp"], "7300+1000")
                 placement = app.session_state["placement_config"]
                 self.assertEqual(placement["manual_depth_m"], 2850.0)
-                self.assertEqual(placement["volume_basis"], "Approved field basis")
+                self.assertEqual(placement["excess_csg_oh_pct"], 25.0)
+                self.assertEqual(placement["excess_csg_csg_pct"], 10.5)
                 saved = round_trip(app.session_state.to_dict())
                 self.assertEqual(saved["well_name"], name)
                 self.assertEqual(saved["doc_control"]["job_type"], job)

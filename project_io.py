@@ -5,6 +5,7 @@ import math
 import pandas as pd
 import materials_db
 from project_state import SLURRIES, is_project_key, restore_canonical_fields
+from placement import EXCESS_FIELDS, excess_percentage
 
 
 def content_signature(raw_bytes):
@@ -83,6 +84,8 @@ def _validate_project(data):
     for key, expected in schemas.items():
         if key in data and not isinstance(data[key], expected):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
+    for field, _, _ in EXCESS_FIELDS:
+        excess_percentage(data.get("placement_config", {}), field)
     cfg = data.get("fluids_config", {})
     if cfg and (not isinstance(cfg.get("active", []), list)
                 or not all(isinstance(x, str) for x in cfg.get("active", []))
