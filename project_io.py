@@ -66,6 +66,9 @@ def _validate_project(data):
             raise ValueError(f"{key} must be text.")
     if "job_type" in data and data["job_type"] not in materials_db.JOB_TYPES:
         raise ValueError("job_type is not supported by this application.")
+    for field in ("request_description_customized", "revision_description_customized"):
+        if field in data and not isinstance(data[field], bool):
+            raise ValueError(f"{field} must be a boolean.")
     schemas = {
         "doc_control": dict, "well_data": dict, "fluids_config": dict,
         "fluid_data": dict, "cement_params": dict, "cement_additives_dfs": dict,

@@ -29,6 +29,16 @@ DOCUMENT_DETAIL_FIELDS = (
     ("Revision Description", "revision_description"),
 )
 
+
+def request_description_for_job(job_type):
+    """Format catalog job families; retain future job names unchanged."""
+    if job_type in materials_db.JOB_TYPES:
+        for prefix in ("TIE BACK LNR ", "CSG ", "LNR "):
+            if job_type.startswith(prefix):
+                return f"{job_type[len(prefix):]} {prefix.strip()} Cementing"
+    return f"{job_type} Cementing"
+
+
 DOC_CONTROL_DEFAULTS = {
     "job_type": "CSG 20\"",
     "hole_size": "26\"",
@@ -56,6 +66,8 @@ DOC_CONTROL_DEFAULTS = {
 
 DOC_CONTROL_DEFAULTS.update({key: "" for _, key in DOCUMENT_DETAIL_FIELDS})
 DOC_CONTROL_DEFAULTS.update(checked_phone="+98-916-604-7042", approved_phone="+98-917-142-1265")
+DOC_CONTROL_DEFAULTS["request_description"] = request_description_for_job(DOC_CONTROL_DEFAULTS["job_type"])
+DOC_CONTROL_DEFAULTS["revision_description"] = DOC_CONTROL_DEFAULTS["request_description"]
 
 WELL_DATA_DEFAULTS = {
     "mud_type": "WBM",

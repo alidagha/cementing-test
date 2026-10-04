@@ -2,9 +2,9 @@
 import streamlit as st
 import materials_db
 from datetime import date, datetime
-from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS
+from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS, request_description_for_job
 
-DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "approved_date", "revision_date")
+DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approved_date", "revision_date")
 
 # FIX (real bug, confirmed pre-existing — not introduced by any earlier update):
 # Streamlit deletes a widget's session_state entry whenever that widget is not
@@ -48,6 +48,20 @@ def _commit_doc_widget(field):
     if field == "report_date":
         value = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
     st.session_state.setdefault("doc_control", {})["date" if field == "report_date" else field] = value
+    if field in ("request_description", "revision_description"):
+        st.session_state[field + "_customized"] = True
+        _sync_document_descriptions()
+
+
+def _sync_document_descriptions():
+    """Update untouched descriptions in dependency order before widgets mount."""
+    for field in ("request_description", "revision_description"):
+        if not st.session_state.get(field + "_customized", False):
+            value = (request_description_for_job(st.session_state["job_type"])
+                     if field == "request_description" else st.session_state["request_description"])
+            st.session_state[field] = value
+            st.session_state["_w_" + field] = value
+            st.session_state.setdefault("doc_control", {})[field] = value
 
 
 def on_job_type_change():
@@ -76,6 +90,7 @@ def on_job_type_change():
         st.session_state["hole_size"] = new_hole
         st.session_state["_w_hole_size"] = new_hole
         _commit_doc_widget("hole_size")
+    _sync_document_descriptions()
 
 def _mark_hole_size_customized():
     st.session_state["hole_size_customized"] = True
@@ -106,6 +121,10 @@ def render():
     for key, val in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+    for field in ("request_description", "revision_description"):
+        st.session_state.setdefault(field + "_customized", False)
+    _sync_document_descriptions()
 
     if "hole_size_customized" not in st.session_state:
         st.session_state["hole_size_customized"] = (
