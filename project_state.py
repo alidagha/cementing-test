@@ -10,7 +10,7 @@ import materials_db
 from engineering_tools import (require_positive_density, require_positive_pump_rate,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, thickening_time_valid, parse_effective_numeric,
-                               validate_lab_collection_results)
+                               validate_lab_collection_results, LAB_THICKENING_ENDPOINT)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -403,7 +403,7 @@ def refresh_lab_payloads(state):
         if isinstance(api_fl, bool) or not isinstance(api_fl, (int, float)) or not math.isfinite(api_fl):
             issues.append(f"{slurry}: Phase VII api_fl must be a finite numeric value; review the lab QC input.")
             continue
-        bhct = qc.get("bhct", None if slurry == "Main" else 150)
+        bhct = qc.get("bhct")
         bhst = well.get("bhst", state.get("bhst", 200))
         try:
             if isinstance(bhct, bool) or isinstance(bhst, bool):
@@ -424,7 +424,7 @@ def refresh_lab_payloads(state):
             "api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
             "free_water": qc.get("free_water", "-"), "comp_test": qc.get("comp_test", "-"),
             "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
-            "thickening_time": qc.get("thickening_time", "-"), "thickening_endpoint": qc.get("thickening_endpoint", "Not specified"),
+            "thickening_time": qc.get("thickening_time", "-"), "thickening_endpoint": LAB_THICKENING_ENDPOINT,
             "bhsp": well.get("bhsp", ""), "base_fluid": p.get("base_fluid_gal_sk", ""),
             "mix_fluid": p.get("mix_fluid_gal_sk", ""), "solution_density": materials_db.SOLUTION_DENSITY_PCF,
         }

@@ -191,6 +191,7 @@ class AuditRegressions(unittest.TestCase):
                              ("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
             next(w for w in app.number_input if w.label == label).set_value(value).run()
+        next(w for w in app.text_input if w.label == "Thickening Time (HH:MM) - Main").set_value("03:30").run()
         next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
         self.healthy(app)
         return app
@@ -765,7 +766,7 @@ class AuditRegressions(unittest.TestCase):
                         project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=depths[slurry], top_job_type=job)
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
-                            bhct=150, free_water_45=0.0, surface_hardened_hours=8.0)
+                            bhct=150, thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0)
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
                         self.phase(app, phase)

@@ -5,13 +5,14 @@ import io
 import hashlib
 import os
 import re
+from collections import deque
 from pathlib import Path
 from placement import target_depth, host_label, slurry_intervals, EXCESS_FIELDS, excess_percentage
 from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, safe_float,
-                               parse_effective_numeric, require_nonnegative_number)
+                               parse_effective_numeric, require_nonnegative_number, LAB_THICKENING_ENDPOINT)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -221,7 +222,7 @@ def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_
     payload.update(_placement_excess_values(placement_config, job_type))
     return payload
 
-def separate_lab_tables(lab_grid_df: pd.DataFrame):
+def separate_lab_tables(lab_grid_df: pd.DataFrame, phase5_df: pd.DataFrame = None):
     """
     Separates Phase VII lab grid into:
     1. lab_conventional: Cement (100% BWOB) + Dry Blend Powders + Total mass row
@@ -229,6 +230,16 @@ def separate_lab_tables(lab_grid_df: pd.DataFrame):
     """
     if lab_grid_df is None or not isinstance(lab_grid_df, pd.DataFrame) or lab_grid_df.empty:
         return [], []
+
+    # Match repeated display names in occurrence order, as Phase VII does.
+    material_types = {}
+    if isinstance(phase5_df, pd.DataFrame):
+        for _, row in phase5_df.iterrows():
+            kind = str(row.get("Material Type", "") or "").strip()
+            name = str(row.get("Name", "") or "").strip()
+            display_name = name if name and name.upper() != "OTHER (CUSTOM)" else kind
+            if display_name and kind:
+                material_types.setdefault(display_name.casefold(), deque()).append(kind)
     
     conv_rows = []
     adds_rows = []
@@ -256,8 +267,14 @@ def separate_lab_tables(lab_grid_df: pd.DataFrame):
             unit == "BWOB"
         )
         
+        material_type = "Cement" if "cement" in mat_lower or "delijan" in mat_lower else mat
+        if material_type != "Cement" and mat_lower != "base water":
+            occurrences = material_types.get(mat.casefold())
+            known = materials_db.resolve_known_material(mat)
+            material_type = occurrences.popleft() if occurrences else (known[1] if known else mat)
+
         row_dict = {
-            "Material Type": "Cement" if "cement" in mat.lower() or "delijan" in mat.lower() else mat,
+            "Material Type": material_type,
             "Name": mat,
             "Code": mat,
             "Lot Number": lot if lot and lot != "-" else "-",
@@ -1042,7 +1059,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         lab_info = st.session_state.get(f"lab_payload_{s}", {})
         lab_grid_df = lab_info.get("grid", pd.DataFrame())
         lab_rows = lab_grid_df.to_dict(orient="records") if isinstance(lab_grid_df, pd.DataFrame) and not lab_grid_df.empty else []
-        conv_rows, lab_adds_rows = separate_lab_tables(lab_grid_df)
+        conv_rows, lab_adds_rows = separate_lab_tables(
+            lab_grid_df, st.session_state.get("cement_additives_dfs", {}).get(s))
 
         # Compressive Strength: pre-resolve which test (UCA vs CRUSH) is active
         # here in Python rather than with a Jinja {% if %} in the Word template.
@@ -1086,17 +1104,16 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             "solution": p.get("solution", ""),
             "blends": blend_rows,
             "additives": adds_rows,
-            "lab_conventional": conv_rows,
-            "lab_additives": lab_adds_rows,
+            # The locked template's Material Type cells use .Name; .Code
+            # retains the material name. Nested lab rows keep both semantics.
+            "lab_conventional": [dict(row, Name=row["Material Type"]) for row in conv_rows],
+            "lab_additives": [dict(row, Name=row["Material Type"]) for row in lab_adds_rows],
             "lab": {
                 "bhct": lab_info.get("bhct", "-"),
                 "bhst": lab_info.get("bhst", "-"),
                 "thickening_time": lab_info.get("thickening_time", "-"),
-                "thickening_endpoint": lab_info.get("thickening_endpoint", "Not specified"),
-                "thickening_endpoint_label": (
-                    lab_info.get("thickening_endpoint")
-                    if lab_info.get("thickening_endpoint") in ("70 Bc", "100 Bc") else "Reported"
-                ),
+                "thickening_endpoint": LAB_THICKENING_ENDPOINT,
+                "thickening_endpoint_label": LAB_THICKENING_ENDPOINT,
                 "fluid_loss": lab_info.get("api_fl", "-"),
                 "api_fl_collected": lab_info.get("api_fl_collected", "-"),
                 "free_water": lab_info.get("free_water", "-"),

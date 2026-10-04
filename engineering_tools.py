@@ -11,11 +11,14 @@ from decimal import Decimal, ROUND_HALF_UP
 import materials_db
 
 
+LAB_THICKENING_ENDPOINT = "70 Bc"
+
+
 def lab_review_signature(qc, grid):
     """Identify precisely the QC readings and lab rows confirmed by an operator."""
     from project_state import fingerprint
     return fingerprint({"qc": {key: value for key, value in qc.items()
-                               if key not in ("reviewed", "review_signature")},
+                               if key not in ("reviewed", "review_signature", "thickening_endpoint")},
                         "grid": grid})
 
 

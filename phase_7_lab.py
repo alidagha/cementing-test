@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import materials_db
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid, validate_lab_collection_results
+from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid, validate_lab_collection_results, LAB_THICKENING_ENDPOINT
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 # IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
@@ -338,7 +338,7 @@ def render():
             ("surface_hardened_hours", "Surface Sample Hours", 0.0, None, False),
         ):
             if field in qc and not (qc[field] is None and
-                    (field in ("free_water_45", "surface_hardened_hours") or field == "bhct" and slurry == "Main")):
+                    field in ("free_water_45", "surface_hardened_hours", "bhct")):
                 bounded.append((qc, field, f"{label} - {slurry}", low, high, integer))
     if repair_invalid_inputs(bounded, f"phase7_{load_sig}"):
         return
@@ -350,15 +350,15 @@ def render():
             
             qc = st.session_state["lab_qc_params"].setdefault(
                 slurry, {
-                    "bhct": None if slurry == "Main" else 150,
+                    "bhct": None,
                     "api_fl": 0.0,
                     "free_water": 0.0,
                     "comp_test": "CRUSH",
-                    "thickening_time": "03:30"
+                    "thickening_time": ""
                 }
             )
             
-            qc.setdefault("bhct", None if slurry == "Main" else 150)
+            qc.setdefault("bhct", None)
             qc.setdefault("free_water_45", None)
             qc.setdefault("surface_hardened_hours", None)
 
@@ -489,13 +489,13 @@ def render():
             
             with col1:
                 bhct_key = f"_qc_bhct_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                if slurry == "Main" and bhct_key not in st.session_state:
+                if bhct_key not in st.session_state:
                     st.session_state[bhct_key] = int(qc["bhct"]) if qc["bhct"] is not None else None
                 qc["bhct"] = st.number_input(
                     f"BHCT (°F) - {slurry}",
                     min_value=60,
                     max_value=400,
-                    value=None if slurry == "Main" else int(qc["bhct"]),
+                    value=None,
                     step=5,
                     key=bhct_key,
                     on_change=_commit_lab_qc,
@@ -602,23 +602,11 @@ def render():
                 tt_key = f"_qc_tt_{get_slurry_key(slurry, 'in')}_{load_sig}"
                 qc["thickening_time"] = st.text_input(
                     f"Thickening Time (HH:MM) - {slurry}",
-                    value=str(qc.get("thickening_time", "03:30")),
+                    value=str(qc.get("thickening_time", "")),
                     key=tt_key,
                     on_change=_commit_lab_qc,
                     args=(slurry, "thickening_time", tt_key),
-                    help="Reported thickening time. Select its measured endpoint below."
-                )
-                endpoint_options = ["Not specified", "70 Bc", "100 Bc"]
-                endpoint = qc.get("thickening_endpoint", "Not specified")
-                tte_key = f"_qc_tt_endpoint_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                qc["thickening_endpoint"] = st.selectbox(
-                    f"Thickening Time Endpoint - {slurry}",
-                    endpoint_options,
-                    index=endpoint_options.index(endpoint) if endpoint in endpoint_options else 0,
-                    key=tte_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "thickening_endpoint", tte_key),
-                    help="For an older project, leave Not specified unless the test endpoint is known."
+                    help=f"Reported thickening time at {LAB_THICKENING_ENDPOINT}."
                 )
                 # FIX (requested, Level 2 #8): this is free text with no
                 # format enforcement (deliberately — see the design-decisions
@@ -695,7 +683,7 @@ def render():
                 "surface_hardened_hours": qc["surface_hardened_hours"],
                 "comp_test": qc["comp_test"],
                 "thickening_time": qc["thickening_time"],
-                "thickening_endpoint": qc["thickening_endpoint"],
+                "thickening_endpoint": LAB_THICKENING_ENDPOINT,
                 "bhsp": well_data.get("bhsp", ""),
                 "base_fluid": slurry_cement_params.get("base_fluid_gal_sk", ""),
                 "mix_fluid": slurry_cement_params.get("mix_fluid_gal_sk", ""),

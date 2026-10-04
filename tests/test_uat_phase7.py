@@ -37,7 +37,7 @@ class Phase7UAT(unittest.TestCase):
         app = self.lab(("Main", "Lead", "Lead #1", "Lead #2", "Tail"))
         self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
         for s in ("Lead", "Lead #1", "Lead #2", "Tail"):
-            self.assertEqual(self.input(app, "BHCT (°F) - " + s).value, 150)
+            self.assertIsNone(self.input(app, "BHCT (°F) - " + s).value)
         self.phase(app, "phase1")
         self.phase(app, "phase7")
         self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
@@ -123,6 +123,7 @@ class Phase7UAT(unittest.TestCase):
         self.phase(app, "phase7")
         self.assertEqual(self.input(app, "Surface Sample Hours - Main").value, 8.25)
         tt = next(w for w in app.text_input if w.label == "Thickening Time (HH:MM) - Main")
+        tt.set_value("03:30").run()  # Explicit measured setup, no implicit lab time.
         self.assertEqual(tt.value, "03:30")
         tt.set_value("04:45").run()
         self.assertEqual(self.input(app, "Surface Sample Hours - Main").value, 8.25)
@@ -226,7 +227,8 @@ class Phase7UAT(unittest.TestCase):
                                      ("Free Water Collected (45° angle) (ml) - Main", 2.5),
                                      ("Surface Sample Hours - Main", 8.0)):
                     self.input(app, label).set_value(value).run()
-                next(w for w in app.selectbox if w.label == "Thickening Time Endpoint - Main").set_value("100 Bc").run()
+                app.session_state["lab_qc_params"]["Main"]["thickening_endpoint"] = "100 Bc"
+                app.run()  # Obsolete state cannot choose the report endpoint.
                 next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
                 restored = self.app(audit.round_trip(app.session_state.to_dict()))
                 for phase in ("phase2_3", "phase4", "phase5", "phase7"):
@@ -239,7 +241,8 @@ class Phase7UAT(unittest.TestCase):
                 self.assertIn("Surface Sample: Hardened Condition Observed After 8 Hours", text)
                 self.assertNotIn("Reported thickening time endpoint:", text)
                 self.assertIn("03:30", text)
-                self.assertIn("100 Bc", text)
+                self.assertIn("70 Bc", text)
+                self.assertNotIn("100 Bc", text)
                 found = {}
                 for table in doc.tables:
                     for row in table.rows:
