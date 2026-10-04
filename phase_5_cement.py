@@ -345,7 +345,7 @@ def render():
             ("cmt_sg", "Cement SG", 2.5, 3.5),
             ("dead_vol", "Dead volume (bbl)", 0.0, None),
         ):
-            if field in params and not (field == "dead_vol" and slurry == "Main" and params[field] is None):
+            if field in params and not (field == "dead_vol" and params[field] is None):
                 bounded.append((params, field, f"{label} - {slurry}", low, high, False))
         if not params.get("auto_calc", True):
             for field, label, low in (("yield", "Manual yield", 0.001),
@@ -410,12 +410,11 @@ def render():
                 st.button(f"→ Fix {slurry} density in Phase IV", key=f"fix_den_{slurry}",
                           on_click=_go_to_fluid_configuration)
             
-            default_dead_vol = None if slurry == "Main" else 31.0
             p = st.session_state["cement_params"].setdefault(
                 slurry, {
                     "yield": 1.180, 
                     "mix_water": 119.0, 
-                    "dead_vol": default_dead_vol,
+                    "dead_vol": None,
                     "tank_name": default_tank,
                     "last_job_type": job_type,
                     "base_cement": "Cement G Delijan",
@@ -424,7 +423,7 @@ def render():
                     "auto_calc": True
                 }
             )
-            p.setdefault("dead_vol", default_dead_vol)
+            p.setdefault("dead_vol", None)
             p.setdefault("tank_name", default_tank)
             p.setdefault("base_cement", "Cement G Delijan")
             p.setdefault("cmt_sg", 3.20)
@@ -488,13 +487,13 @@ def render():
                 p["tank_name"] = selected_tank
             with col_t4:
                 dv_key = f"_{get_slurry_key(slurry, 'dv')}_{load_sig}"
-                if slurry == "Main" and dv_key not in st.session_state:
+                if dv_key not in st.session_state:
                     st.session_state[dv_key] = p["dead_vol"]
                 p["dead_vol"] = st.number_input(
                     f"Dead Vol (bbl) - {slurry}",
                     min_value=0.0,
                     step=1.0,
-                    value=None if slurry == "Main" else float(p["dead_vol"]),
+                    value=None,
                     key=dv_key,
                     on_change=_commit_cement_param,
                     args=(slurry, "dead_vol", dv_key),

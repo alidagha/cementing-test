@@ -31,6 +31,9 @@ class Phase45UAT(unittest.TestCase):
                 if not seeded:
                     for name in ("Pre Flush", "Main", "Lead", "Tail", "Spacer"):
                         app.checkbox(key="chk_fluid_" + name).check().run()
+                if not seeded:
+                    for name, value in (("Lead", "80.0"), ("Tail", "118.0"), ("Spacer", "80.0")):
+                        app.text_input(key="den_" + name).set_value(value).run()
                 for name in ("Pre Flush", "Main"):
                     self.assertEqual(app.text_input(key="den_" + name).value, "")
                     self.assertEqual(app.session_state["fluids_config"]["params"][name]["density"], "")
@@ -80,6 +83,8 @@ class Phase45UAT(unittest.TestCase):
         for name in ("Main", "Lead", "Tail"):
             app.checkbox(key="chk_fluid_" + name).check().run()
         self.phase(app, "phase5")
+        for name in ("Lead", "Tail"):
+            next(w for w in app.number_input if w.label == "Dead Vol (bbl) - " + name).set_value(31.0).run()
         values = {w.label: w.value for w in app.number_input}
         self.assertIsNone(values["Dead Vol (bbl) - Main"])
         for name in ("Lead", "Tail"):
@@ -141,7 +146,7 @@ class Phase45UAT(unittest.TestCase):
                 params = {"dead_vol": None}
                 data = {key: {"Main": params if key == "cement_params" else {"cement_params": params}}, "job_type": 'CSG 20"'}
                 self.assertIn(key, audit.round_trip(data))
-        for slurry, value in (("Lead", None), ("Main", ""), ("Main", "bad"), ("Main", True)):
+        for slurry, value in (("Lead", "bad"), ("Main", ""), ("Main", "bad"), ("Main", True)):
             with self.subTest(slurry=slurry, value=value):
                 with self.assertRaises(ValueError):
                     decode_project(json.dumps({"job_type": 'CSG 20"', "cement_params": {slurry: {"dead_vol": value}}}).encode(), audit.namespace["deserialize_item"])

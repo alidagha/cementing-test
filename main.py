@@ -314,7 +314,7 @@ _has_meaningful_data = (
     or any(st.session_state.get("placement_config", {}).get(field) is not None
            for field, _, _ in EXCESS_FIELDS)
     or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
-           or str(params.get("pump_rate", "4.0")) not in ("4", "4.0")
+           or str(params.get("pump_rate", "")).strip() != ""
            or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
            for name, params in st.session_state.get("fluid_data", {}).items())
     or bool(st.session_state.get("hole_size_customized"))

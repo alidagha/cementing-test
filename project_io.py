@@ -113,7 +113,7 @@ def _validate_project(data):
         if "cement_params" in draft:
             _check_numeric_fields(draft["cement_params"], ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
-                                  nullable=("dead_vol",) if slurry == "Main" else ())
+                                  nullable=("dead_vol",))
         if "lab_qc_params" in draft:
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params",
@@ -130,7 +130,7 @@ def _validate_project(data):
         _check_numeric_fields(params, ("volume",), f"fluids_config.params.{name}")
     for name, params in data.get("cement_params", {}).items():
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
-                              f"cement_params.{name}", nullable=("dead_vol",) if name == "Main" else ())
+                              f"cement_params.{name}", nullable=("dead_vol",))
     for name, params in data.get("lab_qc_params", {}).items():
         _check_numeric_fields(params, ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",
                               nullable=("free_water_45", "surface_hardened_hours", "bhct") if name == "Main" else ("free_water_45", "surface_hardened_hours"))

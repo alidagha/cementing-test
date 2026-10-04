@@ -135,6 +135,10 @@ class AuditRegressions(unittest.TestCase):
                 if params is None:
                     for name in spacers:
                         app.checkbox(key="chk_fluid_" + name).check().run()
+                # This scenario supplies the formerly implicit spacer density explicitly.
+                if expected == "80.0":
+                    for name in spacers:
+                        app.text_input(key="den_" + name).set_value("80.0").run()
                 self.healthy(app)
                 for name in spacers:
                     self.assertEqual(app.text_input(key="den_" + name).value, expected)
@@ -165,7 +169,9 @@ class AuditRegressions(unittest.TestCase):
             app.checkbox(key="chk_fluid_" + name).check().run()
         for name in app.session_state["fluids_config"]["active"]:
             app.number_input(key="vol_" + name).set_value(50.0).run()
-            if name in ("Main", "Pre Flush"):
+            # Valid export fixtures supply every operational input explicitly.
+            app.text_input(key="rate_" + name).set_value("4.0").run()
+            if name != "Displacement Fluid":
                 app.text_input(key="den_" + name).set_value("118.0" if name == "Main" else "80.0").run()
         if additives:
             app.session_state["cement_additives_dfs"] = {"Main": pd.DataFrame([

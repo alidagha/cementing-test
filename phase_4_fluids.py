@@ -92,8 +92,8 @@ def render():
             "params": {
                 f: {
                     "volume": 0.0,
-                    "density": "" if f in {"Pre Flush", "Main"} else "118.0" if "Tail" in f else "80.0",
-                    "pump_rate": "4.0"
+                    "density": "",
+                    "pump_rate": ""
                 } for f in materials_db.FLUID_TYPES if f != "Displacement Fluid"
             }
         }
@@ -201,22 +201,16 @@ def render():
         st.markdown(f"**{fluid}**")
         
         if fluid == "Displacement Fluid":
-            p = cfg["params"].setdefault(fluid, {"volume": 0.0, "pump_rate": "4.0"})
+            p = cfg["params"].setdefault(fluid, {"volume": 0.0, "pump_rate": ""})
             disp_density_text = live_mud_density_display
             disp_effective_density = live_effective_mud_density
         else:
-            # Match the initial configuration, including 80 pcf spacers.
-            _default_density = (
-                "" if fluid in {"Pre Flush", "Main"}
-                else "118.0" if "Tail" in fluid
-                else "80.0"
-            )
             p = cfg["params"].setdefault(
                 fluid,
                 {
                     "volume": 0.0,
-                    "density": _default_density,
-                    "pump_rate": "4.0"
+                    "density": "",
+                    "pump_rate": ""
                 }
             )
             disp_density_text = str(p.get("density", ""))
@@ -309,7 +303,7 @@ def render():
         with col3:
             p["pump_rate"] = st.text_input(
                 f"Rate (bpm) - {fluid}",
-                value=str(p.get("pump_rate", "4.0")),
+                value=str(p.get("pump_rate", "")),
                 help="Single value (e.g. 4.0) or range (e.g. 3-5). Calculations use minimum value.",
                 key=f"rate_{fluid}",
                 on_change=_commit_fluid_widget,
