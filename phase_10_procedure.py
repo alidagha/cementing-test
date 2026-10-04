@@ -26,6 +26,7 @@ from project_state import (fingerprint, prepare_calculations, sync_report_text,
 TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
 
 SLURRY_ARCHETYPES = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
 
 def active_slurry_names(active_fluids):
     """Slurry members of the active fluid train (case/space-insensitive
@@ -166,11 +167,6 @@ def build_ordered_notes(
         tank = s.get("mixing_tank") or "Mud Reserve Tanks"
         total_water = s.get("total_water_bbl", 0.0)
         mix_note = f"Mix above Additives in {total_water:.1f} bbl Fresh Water at {tank}."
-        dry_blends = [str(row.get("Name", "")).strip() for row in s.get("blends", [])
-                      if str(row.get("Material Type", "")).strip().casefold() != "cement"
-                      and str(row.get("Name", "")).strip()]
-        if dry_blends:
-            mix_note += f" (Note: {', '.join(dry_blends)} pre-blended dry with bulk cement)."
         s["note_mix"] = counter.next(mix_note)
 
     # --- Per slurry (same order): Fresh Water / Rheology / Thickening Time ---
@@ -1027,7 +1023,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     placements = slurry_intervals(hw_df, job_type, st.session_state.get("placement_config", {}),
                                  active_slurries, st.session_state.get("cement_params", {}))
 
-    for s in placements:
+    # Document order is independent of the deepest-first placement traversal.
+    for s in (name for name in REPORT_SLURRY_ORDER if name in placements):
         p = st.session_state.get("cement_params", {}).get(s, {})
         vol = float(fluid_data.get(s, {}).get("volume", 0.0))
         yd = float(p.get("yield", 1.18))

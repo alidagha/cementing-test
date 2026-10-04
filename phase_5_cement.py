@@ -207,7 +207,6 @@ def build_cement_tables(p, edited_df, calc_res):
 
     # Table 2: Cement Slurry Additives Data
     adds_rows = []
-    dry_blend_names = []
 
     for _, row in edited_df.iterrows():
         mat_type = str(row.get("Material Type") or "").strip()
@@ -236,7 +235,6 @@ def build_cement_tables(p, edited_df, calc_res):
             continue
 
         if is_dry_blend:
-            dry_blend_names.append(display_name)
             conc_lbs_sk = round_half_up(user_val * 1.1, 3)
             tot_lbs = round_half_up(conc_lbs_sk * total_sacks, 1)
 
@@ -291,9 +289,6 @@ def build_cement_tables(p, edited_df, calc_res):
     adds_df = pd.DataFrame(adds_rows)
     total_water_note = round_half_up(total_tank_water, 1)
     note_text = f"Mix above Additives in **{total_water_note:.1f} bbl** Fresh Water at **{p['tank_name']}**."
-    if dry_blend_names:
-        dry_list = ", ".join(f"**{m}**" for m in dry_blend_names)
-        note_text += f" (Note: {dry_list} pre-blended dry with bulk cement)."
     return blend_df, adds_df, note_text
 
 

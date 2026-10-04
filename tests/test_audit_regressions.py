@@ -789,7 +789,10 @@ class AuditRegressions(unittest.TestCase):
                     # Chained upper bottoms use a top label, without the MD suffix.
                     summary = [(name.title(), float(bottom), float(top)) for name, bottom, top in re.findall(
                         r"(main|lead(?: #\d)?) cement slurry from ([\d.]+) m(?: MD)? to ([\d.]+) m", context["exec_summary"])]
-                    self.assertEqual(payload, expected)
+                    # Report sections follow presentation order; the summary
+                    # keeps its established deepest-first engineering chain.
+                    expected_report = [next(row for row in expected if row[0] == name) for name in slurries]
+                    self.assertEqual(payload, expected_report)
                     self.assertEqual(summary, expected)
                     self.assertIn("target depth is 3000.0 m MD", context["exec_summary"])
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
@@ -800,7 +803,7 @@ class AuditRegressions(unittest.TestCase):
                             row = next(r for r in table.rows if r.cells[0].text == "Bottom")
                             word.append((title.removesuffix(" Cement Slurry Data"),
                                          float(row.cells[1].text.split()[0]), float(row.cells[3].text.split()[0])))
-                    self.assertEqual(word, expected)
+                    self.assertEqual(word, expected_report)
                     # A top below the previous slurry's top must fail both gates.
                     invalid = round_trip(app.session_state.to_dict())
                     invalid["cement_params"][slurries[0]]["top_depth"] = 2500.0
