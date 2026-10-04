@@ -10,6 +10,7 @@ from engineering_tools import (
     validate_cement_parameters,
     calculate_slurry_from_components,
     resolve_additive_density,
+    default_additive_density_gcm3,
     resolve_physical_state,
     normalize_additive_mix,
     is_salt_additive,
@@ -20,6 +21,39 @@ from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 
 REQUIRED_ADDITIVE_COLUMNS = ["Material Type", "Name", "Physical State", "Mix Method", "User Input"]
+
+
+def _normalize_additive_rows(data: pd.DataFrame, previous=None) -> pd.DataFrame:
+    """Use the existing Name auto-lock and seed/reset density in the same commit."""
+    edited_df = data.copy(deep=True).reset_index(drop=True)
+    for column in REQUIRED_ADDITIVE_COLUMNS + ["Density"]:
+        if column not in edited_df.columns:
+            edited_df[column] = 0.0 if column == "User Input" else None if column == "Density" else ""
+    edited_df["User Input"] = pd.to_numeric(edited_df["User Input"], errors="coerce").astype(float)
+    for idx in edited_df.index:
+        name_val = str(edited_df.at[idx, "Name"]).strip()
+        mat_val = str(edited_df.at[idx, "Material Type"]).strip()
+
+        match = materials_db.resolve_known_material(name_val)
+        if not match and (not name_val or name_val == "Other (Custom)"):
+            match = materials_db.resolve_known_material(mat_val)
+
+        if match:
+            canonical_name, mat_type, state = match
+            edited_df.at[idx, "Name"] = canonical_name
+            edited_df.at[idx, "Material Type"] = mat_type
+            edited_df.at[idx, "Physical State"] = state
+            previous_name = (str(previous.at[idx, "Name"]).strip()
+                             if previous is not None and idx in previous.index else canonical_name)
+            density = edited_df.at[idx, "Density"]
+            if pd.isna(density) or density == "" or previous_name.casefold() != canonical_name.casefold():
+                edited_df.at[idx, "Density"] = default_additive_density_gcm3(canonical_name, state)
+        else:
+            alias = materials_db.LEGACY_MATERIAL_TYPE_ALIASES.get(mat_val.lower())
+            if alias:
+                edited_df.at[idx, "Material Type"] = alias
+
+    return edited_df
 
 
 def _go_to_fluid_configuration():
@@ -552,15 +586,16 @@ def render():
                 st.session_state["cement_initialized_slurries"].append(slurry)
 
             current_df = st.session_state["cement_additives_dfs"].get(slurry, pd.DataFrame(columns=REQUIRED_ADDITIVE_COLUMNS))
-            if "Density" not in current_df.columns:
-                current_df = current_df.copy()
-                current_df["Density"] = None
+            current_df = _normalize_additive_rows(current_df)
+            st.session_state["cement_additives_dfs"][slurry] = current_df
             revision_key = f"_editor_additives_{get_slurry_key(slurry, 'slurry')}_revision"
             editor_key = f"_editor_{get_slurry_key(slurry, 'additives')}_{load_sig}_{st.session_state.get(revision_key, 0)}"
             
             edited_df = persistent_data_editor(
                 current_df,
                 persist_to=("cement_additives_dfs", slurry),
+                normalize=_normalize_additive_rows,
+                column_order=REQUIRED_ADDITIVE_COLUMNS + ["Density"],
                 column_config={
                     "Material Type": st.column_config.SelectboxColumn(
                         "Material Type",
@@ -599,9 +634,9 @@ def render():
                         required=True
                     ),
                     "Density": st.column_config.NumberColumn(
-                        "Measured density (pcf powder / ppg liquid)",
-                        help="Required for Other (Custom) and materials absent from the density database; check the product data sheet.",
-                        min_value=0.001, format="%.3f"
+                        "Measured Density (g/cm³)",
+                        help="Catalog density fills automatically. Edit to use a measured override; required for Other (Custom).",
+                        min_value=0.0, format="%.2f"
                     ),
                 },
                 num_rows="dynamic",
@@ -609,62 +644,12 @@ def render():
                 width='stretch'
             )
             
-            if edited_df is None:
-                edited_df = pd.DataFrame(columns=REQUIRED_ADDITIVE_COLUMNS)
-            else:
-                for col_name in REQUIRED_ADDITIVE_COLUMNS:
-                    if col_name not in edited_df.columns:
-                        edited_df[col_name] = 0.0 if col_name == "User Input" else ""
-            
-            edited_df["User Input"] = pd.to_numeric(edited_df["User Input"], errors="coerce").astype(float)
-
-            # Auto-lock Material Type + Physical State from a recognized Name.
-            # st.data_editor cannot show per-row conditional dropdown options
-            # (a Name list restricted to the currently-selected Material Type),
-            # so instead the full brand list is offered in Name and, whenever
-            # it matches a known brand, Material Type/Physical State are
-            # corrected here to the canonical pair — this is what actually
-            # prevents a brand being filed under the wrong category, since a
-            # cascading dropdown isn't something the Streamlit grid supports.
-            # FIX: also self-heals projects saved before this taxonomy update:
-            # the lookup is case-insensitive (old "O-UNIFLC5" -> canonical
-            # "O-uniFLC5"), and if Name is blank/"Other (Custom)" it also
-            # tries Material Type itself (the old design sometimes put a
-            # brand/blend name like "Silica Flour" directly there with no
-            # separate Name) before falling back to a plain relabeling of a
-            # renamed category (e.g. old "F.L.Controller" -> "F.L. Controller").
-            corrected_material = False
-            for idx in edited_df.index:
-                name_val = str(edited_df.at[idx, "Name"]).strip()
-                mat_val = str(edited_df.at[idx, "Material Type"]).strip()
-
-                match = materials_db.resolve_known_material(name_val)
-                if not match and (not name_val or name_val == "Other (Custom)"):
-                    match = materials_db.resolve_known_material(mat_val)
-
-                if match:
-                    canonical_name, mat_type, state = match
-                    if (edited_df.at[idx, "Name"] != canonical_name
-                            or edited_df.at[idx, "Material Type"] != mat_type
-                            or edited_df.at[idx, "Physical State"] != state):
-                        corrected_material = True
-                    edited_df.at[idx, "Name"] = canonical_name
-                    edited_df.at[idx, "Material Type"] = mat_type
-                    edited_df.at[idx, "Physical State"] = state
-                else:
-                    alias = materials_db.LEGACY_MATERIAL_TYPE_ALIASES.get(mat_val.lower())
-                    if alias:
-                        if edited_df.at[idx, "Material Type"] != alias:
-                            corrected_material = True
-                        edited_df.at[idx, "Material Type"] = alias
-
-            st.session_state["cement_additives_dfs"][slurry] = edited_df
-            if corrected_material:
-                # The canonical classification must be visible in the grid.
-                # Remount from the saved corrected row only when auto-lock
-                # really changed it; ordinary edits keep the same identity.
+            normalized = st.session_state["cement_additives_dfs"][slurry]
+            if not normalized.equals(edited_df):
+                # Show the corrected Name/classification/default in the same row.
                 st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
                 st.rerun()
+            edited_df = normalized
 
             # FIX (requested, Level 2 #6): normalize_additive_mix() (used
             # both here and by the mass-balance engine right below) silently

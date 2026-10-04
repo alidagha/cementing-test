@@ -488,31 +488,38 @@ def normalize_additive_mix(physical_state: str, mix_method: str, material_name: 
     return method_clean, (method_clean == "Dry Blend")
 
 
+def default_additive_density_gcm3(mat_name: str, physical_state: str = "Powder") -> float:
+    """Expose the existing catalog property in the formulation editor's unit."""
+    density = resolve_additive_density(mat_name, physical_state)
+    return density[0] / 8.342 if str(physical_state).strip().lower() == "liquid" else density / 62.4
+
+
 def resolve_additive_density(mat_name: str, physical_state: str = "Powder", explicit_density=None,
                              require_measured: bool = False):
-    """Use exact catalog density or an explicit measured value, never a guess."""
-    name_clean = str(mat_name).strip().lower()
-    table = DEFAULT_LIQUID_PROPERTIES if str(physical_state).strip().lower() == "liquid" else DEFAULT_POWDER_DENSITIES_PCF
-
-    match = table.get(name_clean)
+    """Resolve a g/cm³ cell to exact catalog properties or converted overrides."""
+    liquid = str(physical_state).strip().lower() == "liquid"
+    table = DEFAULT_LIQUID_PROPERTIES if liquid else DEFAULT_POWDER_DENSITIES_PCF
+    match = table.get(str(mat_name).strip().lower())
     if isinstance(explicit_density, Real) and math.isnan(float(explicit_density)):
         explicit_density = None
-    if require_measured and (explicit_density is None or not str(explicit_density).strip()):
-        unit = "ppg" if str(physical_state).strip().lower() == "liquid" else "pcf"
-        raise ValueError(f"{mat_name}: enter the measured density ({unit}) for Other (Custom) in Phase V")
-    if (match is None or require_measured) and explicit_density not in (None, ""):
+    missing = explicit_density is None or not str(explicit_density).strip()
+    if require_measured and missing:
+        raise ValueError(f"{mat_name}: enter the measured density (g/cm³) for Other (Custom) in Phase V")
+    if not missing:
         density = clean_number(explicit_density)
         if density <= 0:
             raise ValueError(f"{mat_name}: density must be positive")
-        return (density, density / 109.9) if str(physical_state).strip().lower() == "liquid" else density
+        factor = 8.342 if liquid else 62.4
+        catalog_density = match["density_ppg"] if liquid and match is not None else match
+        # Display precision must not round-trip untouched catalog properties.
+        if require_measured or match is None or density != catalog_density / factor:
+            internal = density * factor
+            if not math.isfinite(internal):
+                raise ValueError(f"{mat_name}: density must be finite")
+            return (internal, internal / 109.9) if liquid else internal
     if match is None:
-        unit = "ppg" if str(physical_state).strip().lower() == "liquid" else "pcf"
-        raise ValueError(f"{mat_name}: no exact material density found. Enter its measured density ({unit}) in Phase V.")
-
-    if str(physical_state).strip().lower() == "liquid":
-        return match["density_ppg"], match["lab_factor"]
-    else:
-        return match
+        raise ValueError(f"{mat_name}: no exact material density found. Enter its measured density (g/cm³) in Phase V.")
+    return (match["density_ppg"], match["lab_factor"]) if liquid else match
 
 
 # ==============================================================================

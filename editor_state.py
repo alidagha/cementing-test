@@ -17,17 +17,21 @@ def persistent_data_editor(data: pd.DataFrame, *, key: str, **kwargs) -> pd.Data
     A changed key (for an explicit lab sync or project load) starts fresh.
     """
     persist_to = kwargs.pop("persist_to", None)
+    normalize = kwargs.pop("normalize", None)
     source_key = f"_editor_source_{key}"
     if key not in st.session_state or source_key not in st.session_state:
         st.session_state[source_key] = data.copy(deep=True)
-    return st.data_editor(
+    result = st.data_editor(
         st.session_state[source_key], key=key,
         on_change=_commit_editor_change,
-        args=(key, source_key, persist_to), **kwargs
+        args=(key, source_key, persist_to, normalize), **kwargs
     )
+    if normalize is not None:
+        _commit_editor_change(key, source_key, persist_to, normalize)
+    return result
 
 
-def _commit_editor_change(key: str, source_key: str, persist_to: tuple[str, str | None] | None) -> None:
+def _commit_editor_change(key: str, source_key: str, persist_to: tuple[str, str | None] | None, normalize=None) -> None:
     """Save the editor's pending changes before Streamlit selects the next page.
 
     An on_change callback runs before the main script. Without it a click on a
@@ -56,6 +60,14 @@ def _commit_editor_change(key: str, source_key: str, persist_to: tuple[str, str 
     if added:
         saved = pd.concat([saved, pd.DataFrame(added).reindex(columns=saved.columns)], ignore_index=True)
     saved = saved.reset_index(drop=True)
+
+    if normalize is not None:
+        # Align the previous Names with surviving rows before resetting a
+        # changed material's density. Added rows have no previous material.
+        previous = source.reset_index(drop=True).drop(
+            index=[index for index in deleted if index in source.reset_index(drop=True).index]
+        ).reset_index(drop=True)
+        saved = normalize(saved, previous)
 
     state_key, item_key = persist_to
     if item_key is None:
