@@ -5,6 +5,7 @@ import materials_db
 from input_guard import repair_invalid_inputs
 from engineering_tools import round_half_up, clean_number, safe_float
 from editor_state import persistent_data_editor
+from phase_4_fluids import render_preflush_material_name
 
 REQUIRED_SPACER_COLS = ["Chemical", "User Input (% or gal)", "Weighting Agent Type"]
 
@@ -138,6 +139,7 @@ def render():
     # -------------------------------------------------------------
     if has_preflush:
         st.subheader("Pre-flush Formulation")
+        render_preflush_material_name()
         pf_info = fluid_data.get("Pre Flush", {})
         pf_vol = float(pf_info.get("volume", 0.0))
         pf_density_str = str(pf_info.get("density", "80.0"))

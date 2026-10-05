@@ -238,6 +238,13 @@ def _positive_density_values(value):
     return numbers
 
 
+def require_preflush_material_name(value) -> str:
+    """A Custom selector is unfinished until an actual fluid name is entered."""
+    if not isinstance(value, str) or not value.strip() or value.strip() == "Custom":
+        raise ValueError("Phase IV: Pre Flush: enter a material name in Phase IV or Phase VI before export")
+    return value
+
+
 def require_positive_density(value) -> float:
     """Reject a malformed or negative density rather than substituting 80 pcf."""
     numbers = _positive_density_values(value)
@@ -834,6 +841,8 @@ def compute_phase_status(ss) -> dict:
             density = (ss.get("mud_density") or ss.get("well_data", {}).get("mud_density")
                        if fluid == "Displacement Fluid" else source.get("density"))
             try:
+                if fluid == "Pre Flush":
+                    require_preflush_material_name(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
                 require_positive_density(density)
                 require_positive_pump_rate(source.get("pump_rate"))
             except (TypeError, ValueError, OverflowError):

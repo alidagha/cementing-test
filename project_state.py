@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import materials_db
 from engineering_tools import (require_positive_density, require_bhsp_density, require_positive_pump_rate,
+                               require_preflush_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, thickening_time_valid, parse_effective_numeric,
                                validate_lab_collection_results, LAB_THICKENING_ENDPOINT)
@@ -303,10 +304,13 @@ def refresh_fluids(state):
         if not math.isfinite(volume) or volume <= 0:
             raise ValueError(f"Phase IV: {name}: active fluid volume must be positive; "
                              "enter a volume or deselect the fluid")
+        material_name = source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, ""))
+        if name == "Pre Flush":
+            require_preflush_material_name(material_name)
         duration = volume / minimum
         cumulative += duration
         result[name] = {
-            "name": name, "material_name": str(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, ""))),
+            "name": name, "material_name": str(material_name),
             "volume": volume, "density": density, "effective_density": effective,
             "pump_rate": rate, "min_rate": minimum, "duration_min": duration,
             "duration_str": format_to_hr_mm(duration), "cumul_time_min": cumulative,

@@ -252,8 +252,15 @@ def get_state_for_material_type(mat_type: str) -> str:
 # Pre-flush & Spacer Database
 PREFLUSH_CHEMICALS = ["NaCl", "Wash", "Water"]
 
+# Descriptive Pre-flush fluid names, independent of formulation components.
+PREFLUSH_MATERIAL_NAMES = [
+    "Fresh Water", "Salt Saturated Water",
+    "Fresh Water Mix with Chemical Wash",
+    "Salt Saturated Water Mix with Chemical Wash", "Custom"
+]
+
 SPACER_CHEMICALS = [
-    "NaCl", "Spacer", "Surfactant", "Anti Foam", "Weighting Agent"
+    "NaCl", "Spacer", "Surfactant", "Anti Foam", "Weighting Agent", "Mud", "Magneset Thinner"
 ]
 
 WEIGHTING_AGENTS = ["Barite", "Limestone", "Ferobar"]

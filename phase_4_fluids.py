@@ -4,7 +4,7 @@ from typing import Dict, Any
 import materials_db
 from project_state import purge_inactive_slurries
 from input_guard import repair_invalid_inputs
-from engineering_tools import parse_effective_numeric, require_positive_density, require_positive_pump_rate, format_to_hr_mm
+from engineering_tools import parse_effective_numeric, require_positive_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
 
 # Strict API & Well Execution Sequence for Fluid Train Sorting
 HYDRAULIC_EXECUTION_ORDER = [
@@ -69,6 +69,34 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
         record[field] = value
         if field == "density":
             record["effective_density"] = parse_effective_numeric(value, default=0.0)
+
+def _commit_preflush_name(widget_key: str, selector: bool = False) -> None:
+    value = st.session_state[widget_key]
+    st.session_state["fluids_config"]["params"]["Pre Flush"]["material_name"] = (
+        "" if selector and value == "Custom" else value
+    )
+
+
+def render_preflush_material_name() -> None:
+    """Both phases edit the same canonical name; selector mode is transient."""
+    params = st.session_state["fluids_config"].setdefault("params", {}).setdefault("Pre Flush", {})
+    name = params.setdefault("material_name", materials_db.DEFAULT_MATERIAL_NAMES["Pre Flush"])
+    options = materials_db.PREFLUSH_MATERIAL_NAMES
+    mode = name if name in options[:-1] else "Custom"
+    choice_key, text_key = "_w_preflush_name_choice", "_w_preflush_name_custom"
+    # Callbacks commit before rerouting; seed from canonical state before mount.
+    st.session_state[choice_key] = mode
+    st.selectbox("Material Name - Pre Flush", options, key=choice_key,
+                 on_change=_commit_preflush_name, args=(choice_key, True))
+    if mode == "Custom":
+        st.session_state[text_key] = name if isinstance(name, str) and name != "Custom" else ""
+        st.text_input("Custom Material Name - Pre Flush", key=text_key,
+                      on_change=_commit_preflush_name, args=(text_key,))
+    try:
+        require_preflush_material_name(name)
+    except ValueError as exc:
+        st.warning(str(exc))
+
 
 def render():
     st.header("Phase IV: Fluids Sequence")
@@ -219,14 +247,17 @@ def render():
         # Slurry", "Salt Saturated Water", "Mud"), distinct from the "Type" column
         # (the stage label, e.g. "Lead #1"). Prefilled from materials_db defaults,
         # editable since a rig may use a different base fluid for a given stage.
-        p["material_name"] = st.text_input(
-            f"Material Name - {fluid}",
-            value=str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))),
-            help="Descriptive fluid name shown in the 'Name' column (e.g. 'Cement Slurry', 'Salt Saturated Water', 'Mud').",
-            key=f"matname_{fluid}",
-            on_change=_commit_fluid_widget,
-            args=(fluid, "material_name", f"matname_{fluid}")
-        )
+        if fluid == "Pre Flush":
+            render_preflush_material_name()
+        else:
+            p["material_name"] = st.text_input(
+                f"Material Name - {fluid}",
+                value=str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))),
+                help="Descriptive fluid name shown in the 'Name' column (e.g. 'Cement Slurry', 'Salt Saturated Water', 'Mud').",
+                key=f"matname_{fluid}",
+                on_change=_commit_fluid_widget,
+                args=(fluid, "material_name", f"matname_{fluid}")
+            )
 
         col1, col2, col3, col4, col5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
         

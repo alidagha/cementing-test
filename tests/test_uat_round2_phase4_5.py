@@ -46,7 +46,9 @@ class Round2Phase45UAT(unittest.TestCase):
                         if fluid != 'Displacement Fluid':
                             self.assertEqual(app.text_input(key='den_' + fluid).value, '')
                             self.assertEqual(params['density'], '')
-                        self.assertEqual(app.text_input(key='matname_' + fluid).value, materials_db.DEFAULT_MATERIAL_NAMES[fluid])
+                        material = (app.selectbox(key='_w_preflush_name_choice') if fluid == 'Pre Flush'
+                                    else app.text_input(key='matname_' + fluid))
+                        self.assertEqual(material.value, materials_db.DEFAULT_MATERIAL_NAMES[fluid])
                         self.assertEqual(params['volume'], 0.0)
                         record = app.session_state['fluid_data'][fluid]
                         self.assertEqual(record['duration_str'], 'INVALID RATE')
