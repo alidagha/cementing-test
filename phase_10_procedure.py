@@ -232,14 +232,14 @@ def separate_lab_tables(lab_grid_df: pd.DataFrame, phase5_df: pd.DataFrame = Non
         return [], []
 
     # Match repeated display names in occurrence order, as Phase VII does.
-    material_types = {}
+    material_rows = {}
     if isinstance(phase5_df, pd.DataFrame):
         for _, row in phase5_df.iterrows():
             kind = str(row.get("Material Type", "") or "").strip()
             name = str(row.get("Name", "") or "").strip()
             display_name = name if name and name.upper() != "OTHER (CUSTOM)" else kind
             if display_name and kind:
-                material_types.setdefault(display_name.casefold(), deque()).append(kind)
+                material_rows.setdefault(display_name.casefold(), deque()).append(row)
     
     conv_rows = []
     adds_rows = []
@@ -268,10 +268,15 @@ def separate_lab_tables(lab_grid_df: pd.DataFrame, phase5_df: pd.DataFrame = Non
         )
         
         material_type = "Cement" if "cement" in mat_lower or "delijan" in mat_lower else mat
-        if material_type != "Cement" and mat_lower != "base water":
-            occurrences = material_types.get(mat.casefold())
-            known = materials_db.resolve_known_material(mat)
-            material_type = occurrences.popleft() if occurrences else (known[1] if known else mat)
+        occurrences = material_rows.get(mat.casefold())
+        source = occurrences.popleft() if occurrences else None
+        known = materials_db.resolve_known_material(mat)
+        if source is not None and known is None and mat_lower != "base water":
+            material_type = str(source["Material Type"]).strip()
+            state = resolve_physical_state(material_type, source.get("Physical State"))
+            _, is_conventional = normalize_additive_mix(state, source.get("Mix Method"), mat, material_type)
+        elif material_type != "Cement" and mat_lower != "base water":
+            material_type = str(source["Material Type"]).strip() if source is not None else (known[1] if known else mat)
 
         row_dict = {
             "Material Type": material_type,

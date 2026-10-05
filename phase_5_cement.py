@@ -10,6 +10,7 @@ from engineering_tools import (
     validate_cement_parameters,
     calculate_slurry_from_components,
     resolve_additive_density,
+    require_additive_identity,
     default_additive_density_gcm3,
     resolve_physical_state,
     normalize_additive_mix,
@@ -35,8 +36,6 @@ def _normalize_additive_rows(data: pd.DataFrame, previous=None) -> pd.DataFrame:
         mat_val = str(edited_df.at[idx, "Material Type"]).strip()
 
         match = materials_db.resolve_known_material(name_val)
-        if not match and (not name_val or name_val == "Other (Custom)"):
-            match = materials_db.resolve_known_material(mat_val)
 
         if match:
             canonical_name, mat_type, state = match
@@ -54,6 +53,15 @@ def _normalize_additive_rows(data: pd.DataFrame, previous=None) -> pd.DataFrame:
                 edited_df.at[idx, "Material Type"] = alias
 
     return edited_df
+
+
+def _commit_custom_identity(slurry: str, row_index: int, field: str, widget_key: str,
+                            revision_key: str) -> None:
+    table = st.session_state["cement_additives_dfs"][slurry].copy(deep=True)
+    table.at[row_index, field] = st.session_state[widget_key].strip()
+    st.session_state["cement_additives_dfs"][slurry] = _normalize_additive_rows(table)
+    # Reuse the editor revision so its old source/deltas cannot undo this edit.
+    st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
 
 
 def _go_to_fluid_configuration():
@@ -111,14 +119,8 @@ def build_components(edited_df):
     salt_pct_for_calc = 0.0
 
     for _, row in edited_df.iterrows():
-        m_type = str(row.get("Material Type") or "").strip()
-        m_name = str(row.get("Name") or "").strip()
-        d_name = m_name if m_name and m_name != "Other (Custom)" else m_type
-        if not m_type or m_type in ["None", "nan"]:
-            continue
+        m_type, d_name = require_additive_identity(row)
         u_val = require_nonnegative_number(row.get("User Input"), d_name)
-        if m_type == "Other (Custom)" and not m_name and u_val == 0.0:
-            continue
         if m_type.strip().casefold() == "cement":
             raise ValueError(f"{d_name}: cement entered as an additive needs an explicit blend design; remove this row and review the base cement")
 
@@ -137,7 +139,7 @@ def build_components(edited_df):
             salt_pct_for_calc += u_val
         elif p_state == "Powder" or is_dry_blend:
             den_pcf = resolve_additive_density(d_name, "Powder", row.get("Density"),
-                                               require_measured=m_name.casefold() == "other (custom)")
+                                               require_measured=materials_db.resolve_known_material(d_name) is None)
             powders_for_calc.append({
                 "name": d_name,
                 "percent": u_val,
@@ -146,7 +148,7 @@ def build_components(edited_df):
             })
         else:
             den_ppg, l_fac = resolve_additive_density(d_name, "Liquid", row.get("Density"),
-                                                      require_measured=m_name.casefold() == "other (custom)")
+                                                      require_measured=materials_db.resolve_known_material(d_name) is None)
             liquids_for_calc.append({
                 "name": d_name,
                 "gal_per_sk": u_val,
@@ -209,15 +211,8 @@ def build_cement_tables(p, edited_df, calc_res):
     adds_rows = []
 
     for _, row in edited_df.iterrows():
-        mat_type = str(row.get("Material Type") or "").strip()
-        name = str(row.get("Name") or "").strip()
-        display_name = name if name and name != "Other (Custom)" else mat_type
-
-        if not mat_type or mat_type in ["None", "nan"]:
-            continue
+        mat_type, display_name = require_additive_identity(row)
         user_val = require_nonnegative_number(row.get("User Input"), display_name)
-        if mat_type == "Other (Custom)" and not name and user_val == 0.0:
-            continue
 
         state = resolve_physical_state(mat_type, row.get("Physical State"))
         # FIX: same shared classifier as the mass-balance loop above, instead
@@ -585,6 +580,9 @@ def render():
             st.session_state["cement_additives_dfs"][slurry] = current_df
             revision_key = f"_editor_additives_{get_slurry_key(slurry, 'slurry')}_revision"
             editor_key = f"_editor_{get_slurry_key(slurry, 'additives')}_{load_sig}_{st.session_state.get(revision_key, 0)}"
+            # Keep options stable with the mounted editor's source frame.
+            option_df = (st.session_state.get(f"_editor_source_{editor_key}", current_df)
+                         if editor_key in st.session_state else current_df)
             
             edited_df = persistent_data_editor(
                 current_df,
@@ -594,14 +592,14 @@ def render():
                 column_config={
                     "Material Type": st.column_config.SelectboxColumn(
                         "Material Type",
-                        options=all_mats,
+                        options=list(dict.fromkeys(all_mats + option_df["Material Type"].dropna().tolist())),
                         default="Other (Custom)",
                         help="Auto-set from Name for recognized brands. Only meaningful on its own for 'Other (Custom)' rows.",
                         required=True
                     ),
                     "Name": st.column_config.SelectboxColumn(
                         "Name / Commercial Brand",
-                        options=all_names,
+                        options=list(dict.fromkeys(all_names + option_df["Name"].dropna().tolist())),
                         default="Other (Custom)",
                         help="Pick a listed brand to auto-lock Material Type & Physical State, or 'Other (Custom)' for a material not on the master list.",
                         required=True
@@ -630,7 +628,7 @@ def render():
                     ),
                     "Density": st.column_config.NumberColumn(
                         "Measured Density (g/cm³)",
-                        help="Catalog density fills automatically. Edit to use a measured override; required for Other (Custom).",
+                        help="Catalog density fills automatically. Edit to use a measured override; required for every custom material. This is the material SG input.",
                         min_value=0.0, format="%.2f"
                     ),
                 },
@@ -645,6 +643,16 @@ def render():
                 st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
                 st.rerun()
             edited_df = normalized
+            for idx, row in edited_df.iterrows():
+                for field, catalog in (("Material Type", all_mats), ("Name", all_names)):
+                    value = str(row.get(field) or "").strip()
+                    if value == "Other (Custom)" or value not in catalog:
+                        key = f"_custom_{get_slurry_key(slurry, 'additives')}_{field}_{idx}_{load_sig}_{st.session_state.get(revision_key, 0)}_{fingerprint(value)}"
+                        if key not in st.session_state:
+                            st.session_state[key] = "" if value == "Other (Custom)" else value
+                        st.text_input(f"Custom {field} - {slurry} row {idx + 1}", key=key,
+                                      on_change=_commit_custom_identity,
+                                      args=(slurry, idx, field, key, revision_key))
 
             # FIX (requested, Level 2 #6): normalize_additive_mix() (used
             # both here and by the mass-balance engine right below) silently

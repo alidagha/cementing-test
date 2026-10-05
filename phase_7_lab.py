@@ -18,6 +18,7 @@ from engineering_tools import (
     validate_lab_masses,
     calculate_slurry_from_components,
     resolve_additive_density,
+    require_additive_identity,
     resolve_physical_state,
     normalize_additive_mix,
     is_salt_additive
@@ -143,14 +144,7 @@ def build_lab_df_from_phase5(
 
     if phase5_df is not None and isinstance(phase5_df, pd.DataFrame) and not phase5_df.empty:
         for _, row in phase5_df.iterrows():
-            mat_type = str(row.get("Material Type", "") or "").strip()
-            name = str(row.get("Name", "") or "").strip()
-            display_name = name if name and name.upper() != "OTHER (CUSTOM)" else mat_type
-            
-            if not display_name or display_name in ["None", "nan"]:
-                continue
-            if mat_type.upper() == "OTHER (CUSTOM)" and not name and clean_number(row.get("User Input")) == 0.0:
-                continue
+            mat_type, display_name = require_additive_identity(row)
                 
             state = resolve_physical_state(mat_type, row.get("Physical State"))
             # FIX: resolved through normalize_additive_mix (engineering_tools.py) —
@@ -169,7 +163,7 @@ def build_lab_df_from_phase5(
                 salt_pct += user_val
             elif state.lower() == "powder" or is_dry_blend:
                 den = resolve_additive_density(display_name, "Powder", row.get("Density"),
-                                               require_measured=name.casefold() == "other (custom)")
+                                               require_measured=materials_db.resolve_known_material(display_name) is None)
                 powders.append({
                     "name": display_name.upper(),
                     "percent": user_val,
@@ -178,7 +172,7 @@ def build_lab_df_from_phase5(
                 })
             else:
                 den_ppg, fac = resolve_additive_density(display_name, "Liquid", row.get("Density"),
-                                                        require_measured=name.casefold() == "other (custom)")
+                                                        require_measured=materials_db.resolve_known_material(display_name) is None)
                 liquids.append({
                     "name": display_name.upper(),
                     "gal_per_sk": user_val,
@@ -225,14 +219,7 @@ def build_lab_df_from_phase5(
     # 2. Additives from Phase V formulation
     if phase5_df is not None and isinstance(phase5_df, pd.DataFrame) and not phase5_df.empty:
         for _, row in phase5_df.iterrows():
-            mat_type = str(row.get("Material Type", "") or "").strip()
-            name = str(row.get("Name", "") or "").strip()
-            display_name = name if name and name.upper() != "OTHER (CUSTOM)" else mat_type
-            
-            if not display_name or display_name in ["None", "nan"]:
-                continue
-            if mat_type.upper() == "OTHER (CUSTOM)" and not name and clean_number(row.get("User Input")) == 0.0:
-                continue
+            mat_type, display_name = require_additive_identity(row)
                 
             state = resolve_physical_state(mat_type, row.get("Physical State"))
             # FIX: same shared classifier as above, so the "% BWOC vs gal/sk" unit

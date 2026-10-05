@@ -509,6 +509,14 @@ def normalize_additive_mix(physical_state: str, mix_method: str, material_name: 
     return method_clean, (method_clean == "Dry Blend")
 
 
+def require_additive_identity(row) -> tuple:
+    """A selected formulation row needs its actual type and commercial name."""
+    values = tuple(str(row.get(field) or "").strip() for field in ("Material Type", "Name"))
+    if any(value.casefold() in ("", "none", "nan", "<na>", "other (custom)") for value in values):
+        raise ValueError("Enter the actual Material Type and Name for each additive row in Phase V")
+    return values
+
+
 def default_additive_density_gcm3(mat_name: str, physical_state: str = "Powder") -> float:
     """Expose the existing catalog property in the formulation editor's unit."""
     density = resolve_additive_density(mat_name, physical_state)
@@ -525,7 +533,7 @@ def resolve_additive_density(mat_name: str, physical_state: str = "Powder", expl
         explicit_density = None
     missing = explicit_density is None or not str(explicit_density).strip()
     if require_measured and missing:
-        raise ValueError(f"{mat_name}: enter the measured density (g/cm³) for Other (Custom) in Phase V")
+        raise ValueError(f"{mat_name}: enter the measured density (g/cm³) for the custom material in Phase V")
     if not missing:
         density = clean_number(explicit_density)
         if density <= 0:
@@ -876,8 +884,10 @@ def compute_phase_status(ss) -> dict:
                 # The same density resolution as Phase V's mass-balance engine
                 # must succeed before the sidebar can show a completed slurry.
                 # In particular, a custom material requires its measured value.
-                name = str(row.get("Name") or "").strip()
-                display_name = name if name and name != "Other (Custom)" else material
+                try:
+                    material, display_name = require_additive_identity(row)
+                except ValueError:
+                    return False
                 if material.casefold() == "cement":
                     return False
                 if not is_salt_additive(material, display_name):
@@ -885,7 +895,7 @@ def compute_phase_status(ss) -> dict:
                     try:
                         resolve_additive_density(
                             display_name, state, row.get("Density"),
-                            require_measured=name.casefold() == "other (custom)"
+                            require_measured=materials_db.resolve_known_material(display_name) is None
                         )
                     except (TypeError, ValueError, OverflowError):
                         return False

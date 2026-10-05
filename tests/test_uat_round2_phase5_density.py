@@ -107,8 +107,11 @@ class Round2DensityUAT(unittest.TestCase):
                     build_lab_df_from_phase5(default, recalculate_mass=True)))
                 custom = edited.copy(); custom.at[0, 'Name'] = 'Other (Custom)'
                 custom.at[0, 'Material Type'] = 'Other (Custom)'
-                self.assertEqual(build_components(custom), (powders if not powders else [dict(powders[0], name='Other (Custom)')],
-                    liquids if not liquids else [dict(liquids[0], name='Other (Custom)')], salt))
+                with self.assertRaises(ValueError): build_components(custom)
+                custom.at[0, 'Name'] = 'FIELD-X'
+                custom.at[0, 'Material Type'] = 'Local Material'
+                self.assertEqual(build_components(custom), (powders if not powders else [dict(powders[0], name='FIELD-X')],
+                    liquids if not liquids else [dict(liquids[0], name='FIELD-X')], salt))
                 a = build_lab_df_from_phase5(edited, recalculate_mass=True)
                 b = build_lab_df_from_phase5(custom, recalculate_mass=True)
                 self.assertEqual(a['Mass'].tolist(), b['Mass'].tolist())
@@ -170,7 +173,7 @@ class Round2DensityUAT(unittest.TestCase):
         for state in ('Powder', 'Liquid'):
             for value in (None, '', 0, -1, float('nan'), float('inf'), 'broken'):
                 with self.subTest(state=state, value=value):
-                    df = pd.DataFrame([{'Material Type': 'Other (Custom)', 'Name': 'Other (Custom)',
+                    df = pd.DataFrame([{'Material Type': 'Local Material', 'Name': 'FIELD-X',
                         'Physical State': state, 'Mix Method': 'In Mix Water', 'User Input': .1, 'Density': value}])
                     with self.assertRaises(ValueError): build_components(df)
                     with self.assertRaises(ValueError): build_lab_df_from_phase5(df, recalculate_mass=True)
