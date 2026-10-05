@@ -14,20 +14,12 @@ HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)"
 MUD_TYPES = ["WBM", "OBM"]
 
 def _seed(widget_key, shadow_key):
+    """Send the committed value on every mount, including correction reruns.
+
+    Callbacks commit edits before render. Seeding only an absent key leaves
+    nullable controls with a blank frontend default on subsequent remounts.
     """
-    Seed a widget-only key from its shadow, only if the widget key is
-    currently absent (first render, or just restored after navigation).
-    FIX: mud_type/mud_density/plastic_viscosity/yield_point/geo_md/geo_tvd/
-    bhst/geo_gradient used to be bound directly via key= with no separate
-    shadow, so Streamlit's "delete a widget's session_state entry when the
-    widget isn't rendered this run" behavior silently reset every one of
-    them to its hardcoded default whenever the user left this phase and came
-    back — confirmed with streamlit.testing.v1.AppTest before this fix, same
-    root cause as the Phase I fix. The hardware table has its own canonical
-    session_state entry and a separate, transient editor widget key.
-    """
-    if widget_key not in st.session_state:
-        st.session_state[widget_key] = st.session_state[shadow_key]
+    st.session_state[widget_key] = st.session_state[shadow_key]
 
 def get_well_data() -> dict:
     """
