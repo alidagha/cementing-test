@@ -928,6 +928,8 @@ class AuditRegressions(unittest.TestCase):
                     project["fluids_config"]["params"][slurry] = deepcopy(saved["fluids_config"]["params"]["Main"])
                     for key in ("cement_params", "cement_additives_dfs", "lab_qc_params"):
                         project[key][slurry] = deepcopy(saved[key]["Main"])
+                    if slurry == "Tail":
+                        project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=2800.0)
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
                         self.phase(app, phase)

@@ -20,6 +20,7 @@ from engineering_tools import (
 from project_state import fingerprint
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
+from placement import target_depth, top_label
 
 REQUIRED_ADDITIVE_COLUMNS = ["Material Type", "Name", "Physical State", "Mix Method", "User Input"]
 
@@ -526,8 +527,12 @@ def render():
 
             st.markdown("#### Slurry Placement")
             st.caption("Enter the approved top of cement for this slurry. Select Surface only when the planned top is the surface; an unknown top remains explicitly unreported.")
-            top_options = ["Not entered", "Depth (m MD)", "Surface"]
+            top_options = ["Not entered", "Depth (m MD)"]
+            if slurry != "Tail":
+                top_options.append("Surface")
             top_mode = p.get("top_mode")
+            if slurry == "Tail" and top_mode == "Surface":
+                top_mode = "Not entered"
             if top_mode not in top_options:
                 top_mode = "Depth (m MD)" if p.get("top_depth") not in (None, "", 0) else "Not entered"
             if p.get("top_job_type") not in (None, job_type):
@@ -542,16 +547,28 @@ def render():
                                          args=(slurry, "top_mode", mode_key))
             if p["top_mode"] == "Depth (m MD)":
                 initial_depth = p.get("top_depth") or p.get("draft_top_depth") or 0.0
+                if slurry == "Tail":
+                    initial_depth = None
+                    for value in (p.get("top_depth"), p.get("draft_top_depth")):
+                        _, depth = top_label({"top_mode": "Depth (m MD)", "top_depth": value})
+                        if depth is not None:
+                            initial_depth = depth
+                            break
+                    else:
+                        target = target_depth(st.session_state.get("hardware_table"), job_type,
+                                              st.session_state.get("placement_config", {}))
+                        if target is not None and target > 150.0:
+                            initial_depth = target - 150.0
                 topd_key = f"_top_depth_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
                 p["top_depth"] = st.number_input(
                     f"Top of cement depth (m MD) - {slurry}",
-                    min_value=0.0, step=1.0, value=float(initial_depth),
+                    min_value=0.0, step=1.0, value=float(initial_depth) if initial_depth is not None else None,
                     key=topd_key,
                     on_change=_commit_cement_param,
                     args=(slurry, "top_depth", topd_key),
                     help="0 means the depth has not yet been entered."
                 )
-                if p["top_depth"] > 0.0:
+                if p["top_depth"] is not None and p["top_depth"] > 0.0:
                     p["draft_top_depth"] = p["top_depth"]
                     p["draft_top_job_type"] = job_type
                 else:
