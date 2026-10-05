@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pandas as pd
 import materials_db
-from engineering_tools import (require_positive_density, require_positive_pump_rate,
+from engineering_tools import (require_positive_density, require_bhsp_density, require_positive_pump_rate,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, thickening_time_valid, parse_effective_numeric,
                                validate_lab_collection_results, LAB_THICKENING_ENDPOINT)
@@ -92,7 +92,7 @@ def refresh_well_derived(state):
             if not math.isfinite(gradient):
                 gradient = None
         try:
-            mud_weight = require_positive_density(state.get("mud_density", ""))
+            mud_weight = require_bhsp_density(state.get("mud_density", ""))
             pressure_value = tvd * mud_weight * 0.02278
             pressure = str(pressure_value) if math.isfinite(pressure_value) else ""
         except (TypeError, ValueError, OverflowError):

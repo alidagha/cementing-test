@@ -226,8 +226,8 @@ def safe_float(value, default: float = 0.0):
         return default
 
 
-def require_positive_density(value) -> float:
-    """Reject a malformed or negative density rather than substituting 80 pcf."""
+def _positive_density_values(value):
+    """Validate every density component before choosing a calculation basis."""
     raw = normalize_digits(value).strip()
     pattern = r'(?:\d+(?:\.\d*)?|\.\d+)(?:\s*[-/]\s*(?:\d+(?:\.\d*)?|\.\d+))*'
     if not re.fullmatch(pattern, raw):
@@ -235,7 +235,18 @@ def require_positive_density(value) -> float:
     numbers = [float(part.strip()) for part in re.split(r'[-/]', raw)]
     if not all(math.isfinite(n) and n > 0 for n in numbers):
         raise ValueError(f"Invalid density {value!r}; every density must be positive and finite")
+    return numbers
+
+
+def require_positive_density(value) -> float:
+    """Reject a malformed or negative density rather than substituting 80 pcf."""
+    numbers = _positive_density_values(value)
     return sum(numbers) / len(numbers)
+
+
+def require_bhsp_density(value) -> float:
+    """Use the upper density only for automatic hydrostatic pressure."""
+    return max(_positive_density_values(value))
 
 def parse_fractional_size(size_str: str) -> float:
     """Converts API tubular sizes like '9 5/8' or '13 3/8' to decimal float for geometric checks."""

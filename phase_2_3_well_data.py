@@ -8,7 +8,7 @@ from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
-from engineering_tools import parse_effective_numeric, parse_fractional_size
+from engineering_tools import parse_effective_numeric, parse_fractional_size, require_bhsp_density
 
 HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
 MUD_TYPES = ["WBM", "OBM"]
@@ -363,16 +363,19 @@ def render():
             help="Single density (e.g. 82.0) or range (e.g. 80-82)"
         )
         st.session_state["mud_density"] = st.session_state["_w_mud_density"]
-        # FIX (requested, Level 1 #4): range-style text inputs like this one
-        # are correct and intentional (they mirror how real well reports
-        # write density — see the design-decisions note this app follows),
-        # but nothing on screen ever showed which single number the range
-        # actually resolves to for every downstream calculation. This
-        # caption doesn't change behavior at all, just makes the existing
-        # parse_effective_numeric() result visible at its own source.
+        # General density keeps its mean; only automatic BHSP uses the upper end.
         _eff_md = parse_effective_numeric(st.session_state["mud_density"], default=None)
         if _eff_md is not None:
-            st.caption(f"↳ Used in calculations as: **{_eff_md:.1f} pcf**" + (" (mean of range)" if any(c in st.session_state["mud_density"] for c in "-/") else ""))
+            is_range = any(c in st.session_state["mud_density"] for c in "-/")
+            density_caption = f"↳ General effective density: **{_eff_md:.1f} pcf**" + (" (mean of range)" if is_range else "")
+            if is_range:
+                try:
+                    bhsp_density = require_bhsp_density(st.session_state["mud_density"])
+                except ValueError:
+                    pass  # Invalid ranges have no valid BHSP basis to display.
+                else:
+                    density_caption += f"; ↳ BHSP density basis: **{bhsp_density:.1f} pcf** (upper end of range)"
+            st.caption(density_caption)
         
     with col_m3:
         _seed("_w_plastic_viscosity", "plastic_viscosity")
