@@ -11,6 +11,14 @@ from decimal import Decimal, ROUND_HALF_UP
 import materials_db
 
 
+CEMENT_SACK_LB = 110.0
+WATER_DENSITY_PCF = 62.4
+GAL_PER_CUFT = 7.48051945
+BBL_GAL = 42.0
+BBL_TO_CUFT = BBL_GAL / GAL_PER_CUFT
+WATER_LB_PER_GAL = WATER_DENSITY_PCF / GAL_PER_CUFT
+LAB_SCALE = 1058.0
+
 LAB_THICKENING_ENDPOINT = "70 Bc"
 
 
@@ -396,26 +404,25 @@ DEFAULT_POWDER_DENSITIES_PCF = {
     "ferobar": 5.00 * 62.4           # 312.000 pcf
 }
 
-# Standard liquid additive density (lb/gal) and API lab scale factor (for 600 mL slurry cup)
-# Base factor for SG = 1.00 is 3785.41 / (110 * 453.592) = 0.075867
+# Liquid density and lab mass factor share the water-density/unit basis.
 DEFAULT_LIQUID_PROPERTIES = {
     # Anti Foam (SG = 1.00, generic for all brands)
-    "anti foam": {"density_ppg": 1.00 * 8.342, "lab_factor": 0.0759},
-    "defoamer": {"density_ppg": 1.00 * 8.342, "lab_factor": 0.0759},
-    "ta-47": {"density_ppg": 1.00 * 8.342, "lab_factor": 0.0759},
+    "anti foam": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "defoamer": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "ta-47": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
 
     # Anti Gas Migration (SG = 1.05, generic for all brands)
-    "anti gas migration": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797}, # 8.759 ppg
-    "anti gas mig.": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
-    "o-gas block": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
-    "pk-gas7": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
-    "jp-620l": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
-    "se-g10": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
-    "pk-gas8": {"density_ppg": 1.05 * 8.342, "lab_factor": 0.0797},
+    "anti gas migration": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB}, # 8.759 ppg
+    "anti gas mig.": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "o-gas block": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "pk-gas7": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "jp-620l": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "se-g10": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    "pk-gas8": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
 
     # Micro Block / Liquid Extender (SG = 1.32)
-    "micro block": {"density_ppg": 1.32 * 8.342, "lab_factor": 0.1001},         # 11.011 ppg
-    "liquid extender": {"density_ppg": 1.32 * 8.342, "lab_factor": 0.1001}
+    "micro block": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB},         # 11.011 ppg
+    "liquid extender": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB}
 }
 
 def is_salt_additive(material_type: str = "", material_name: str = "") -> bool:
@@ -436,16 +443,40 @@ def resolve_physical_state(material_type: str, user_state) -> str:
     return materials_db.get_state_for_material_type(material_type)
 
 
+# Nelson & Guillot, Well Cementing: dissolved NaCl absolute volume at
+# reference conditions. Concentration is % BWOW, not weight % of brine.
+DISSOLVED_NACL_GAL_PER_LB = (
+    (2.0, 0.0371), (4.0, 0.0378), (6.0, 0.0384), (8.0, 0.0390),
+    (10.0, 0.0394), (12.0, 0.0399), (14.0, 0.0403), (16.0, 0.0407),
+    (18.0, 0.0412), (20.0, 0.0416), (22.0, 0.0420), (24.0, 0.0424),
+    (26.0, 0.0428), (28.0, 0.0430), (30.0, 0.0433), (32.0, 0.0436),
+    (34.0, 0.0439), (37.2, 0.0442),
+)
+
+
+def dissolved_nacl_gal_per_lb(salt_pct_bwow: float) -> float:
+    """Validate the supported BWOW domain and interpolate published nodes."""
+    pct = clean_number(salt_pct_bwow)
+    if pct == 0.0:
+        return 0.0
+    if pct < 2.0:
+        raise ValueError("NaCl must be 0% or at least 2% BWOW; no dissolved-salt data is supported below 2%")
+    if pct > 37.2:
+        raise ValueError("NaCl exceeds the supported saturation limit of 37.2% BWOW")
+    for index, (upper, volume) in enumerate(DISSOLVED_NACL_GAL_PER_LB):
+        if pct == upper:
+            return volume
+        if pct < upper:
+            lower, previous = DISSOLVED_NACL_GAL_PER_LB[index - 1]
+            return previous + (volume - previous) * (pct - lower) / (upper - lower)
+    raise ValueError("Unsupported NaCl concentration")
+
+
 def calculate_salt_field_amounts(salt_pct_bwow: float, mix_water_bbl: float,
                                  total_sacks: float, dead_vol_bbl: float = 0.0) -> dict:
-    """NaCl quantities on the same water basis as the existing field engine.
-
-    Retain its conversion convention: water_bbl * 3.5035 * pct * 0.454 kg,
-    then 2.2 lb/kg. Pass unrounded engine water/sacks in automatic mode and
-    the selected water/sacks in manual mode. Round only for presentation.
-    Dead volume is additional fresh water at the same salt concentration.
-    """
-    lbs_per_bbl = salt_pct_bwow * 3.5035 * 0.454 * 2.2
+    """Salt is BWOW of pure Fresh Water; dead volume is operational water."""
+    dissolved_nacl_gal_per_lb(salt_pct_bwow)
+    lbs_per_bbl = WATER_DENSITY_PCF * BBL_TO_CUFT * clean_number(salt_pct_bwow) / 100.0
     base_lb = mix_water_bbl * lbs_per_bbl
     return {
         "base_lb": base_lb,
@@ -520,7 +551,7 @@ def require_additive_identity(row) -> tuple:
 def default_additive_density_gcm3(mat_name: str, physical_state: str = "Powder") -> float:
     """Expose the existing catalog property in the formulation editor's unit."""
     density = resolve_additive_density(mat_name, physical_state)
-    return density[0] / 8.342 if str(physical_state).strip().lower() == "liquid" else density / 62.4
+    return density[0] / WATER_LB_PER_GAL if str(physical_state).strip().lower() == "liquid" else density / 62.4
 
 
 def resolve_additive_density(mat_name: str, physical_state: str = "Powder", explicit_density=None,
@@ -538,14 +569,14 @@ def resolve_additive_density(mat_name: str, physical_state: str = "Powder", expl
         density = clean_number(explicit_density)
         if density <= 0:
             raise ValueError(f"{mat_name}: density must be positive")
-        factor = 8.342 if liquid else 62.4
+        factor = WATER_LB_PER_GAL if liquid else 62.4
         catalog_density = match["density_ppg"] if liquid and match is not None else match
         # Display precision must not round-trip untouched catalog properties.
         if require_measured or match is None or density != catalog_density / factor:
             internal = density * factor
             if not math.isfinite(internal):
                 raise ValueError(f"{mat_name}: density must be finite")
-            return (internal, internal / 109.9) if liquid else internal
+            return (internal, internal / CEMENT_SACK_LB) if liquid else internal
     if match is None:
         raise ValueError(f"{mat_name}: no exact material density found. Enter its measured density (g/cm³) in Phase V.")
     return (match["density_ppg"], match["lab_factor"]) if liquid else match
@@ -559,177 +590,86 @@ def calculate_slurry_from_components(
     slurry_weight_pcf: float,
     slurry_volume_bbl: float,
     cmt_sg: float = 3.2,
-    water_density_pcf: float = 62.4,
+    water_density_pcf: float = WATER_DENSITY_PCF,
     salt_pct: float = 0.0,
     powders: list = None,
     liquids: list = None
 ) -> dict:
-    """
-    Universal component-based mass balance calculator compliant with NIDC CMT Calculator.
-    Accepts arbitrary lists of powders and liquids:
-    - powders: list of dicts with keys: 'name', 'percent' (% BWOC), 'density_pcf', 'in_solution' (bool)
-    - liquids: list of dicts with keys: 'name', 'gal_per_sk', 'density_ppg', 'lab_factor'
-    """
+    """Unrounded per-sack mass balance shared by field and lab calculations."""
     slurry_weight_pcf = clean_number(slurry_weight_pcf)
     slurry_volume_bbl = clean_number(slurry_volume_bbl)
     cmt_sg = max(clean_number(cmt_sg), 0.1)
     water_density_pcf = max(clean_number(water_density_pcf), 1.0)
     salt_pct = clean_number(salt_pct)
-
-    # BUG-13: reject implausible slurry densities BEFORE the mass balance can
-    # produce negative mix water / yield. Below fresh water's ~62.4 pcf the
-    # formula denominator flips sign and the screen shows negative water,
-    # negative yield and negative lab gram rows (e.g. a 55 pcf typo or a mud
-    # density pasted into the slurry field). 75-180 pcf is the realistic
-    # conventional cement-slurry range; every caller reports the ValueError
-    # gracefully instead of rendering nonsense quantities.
+    salt_av_gal_lb = dissolved_nacl_gal_per_lb(salt_pct)
     if not (75.0 <= slurry_weight_pcf <= 180.0):
         raise ValueError(
             f"Slurry weight {slurry_weight_pcf:.1f} pcf is outside the realistic "
             "75-180 pcf range for a cement slurry; review the slurry density "
             "before building quantities")
-
     powders = powders or []
     liquids = liquids or []
-
-    # 1. Cell V3: ma_additives (lb/sk)
-    sum_powder_pct = sum(clean_number(p.get("percent", 0.0)) for p in powders)
-    ma_liquids = sum(
-        clean_number(l.get("gal_per_sk", 0.0)) * clean_number(l.get("density_ppg", 8.342))
-        for l in liquids
-    )
-    ma_additives = 1.1 * sum_powder_pct + ma_liquids
-
-    # 2. Cell V4: va_additives (ft3/sk)
-    va_powders = sum(
-        clean_number(p.get("percent", 0.0)) / max(clean_number(p.get("density_pcf", 84.864)), 1.0)
-        for p in powders
-    )
-    va_liquids = sum(clean_number(l.get("gal_per_sk", 0.0)) for l in liquids) / 7.48
-    va_additives = 1.1 * va_powders + va_liquids
-
-    # 3. Cell V5: Vw (water volume per sack, ft3/sk)
-    num = (
-        110.0 + ma_additives -
-        1.763 * slurry_weight_pcf / cmt_sg -
-        slurry_weight_pcf * va_additives
-    )
-    den = (
-        slurry_weight_pcf +
-        slurry_weight_pcf * water_density_pcf * salt_pct / 18600.0 -
-        water_density_pcf -
-        water_density_pcf * salt_pct / 100.0
-    )
-    if not math.isfinite(den) or abs(den) < 1e-6:
+    powder_masses = [clean_number(p.get("percent", 0.0)) * CEMENT_SACK_LB / 100.0 for p in powders]
+    powder_densities = [max(clean_number(p.get("density_pcf", 84.864)), 1.0) for p in powders]
+    powder_volumes = [mass / density for mass, density in zip(powder_masses, powder_densities)]
+    liquid_gallons = [clean_number(l.get("gal_per_sk", 0.0)) for l in liquids]
+    liquid_masses = [gallons * clean_number(l.get("density_ppg", WATER_LB_PER_GAL))
+                     for gallons, l in zip(liquid_gallons, liquids)]
+    ma_additives = sum(powder_masses) + sum(liquid_masses)
+    va_additives = sum(powder_volumes) + sum(liquid_gallons) / GAL_PER_CUFT
+    cement_volume = CEMENT_SACK_LB / (cmt_sg * water_density_pcf)
+    salt_mass_per_water_ft3 = water_density_pcf * salt_pct / 100.0
+    salt_volume_per_water_ft3 = salt_mass_per_water_ft3 * salt_av_gal_lb / GAL_PER_CUFT
+    numerator = CEMENT_SACK_LB + ma_additives - slurry_weight_pcf * (cement_volume + va_additives)
+    denominator = slurry_weight_pcf * (1.0 + salt_volume_per_water_ft3) - water_density_pcf - salt_mass_per_water_ft3
+    if not math.isfinite(denominator) or abs(denominator) < 1e-6:
         raise ValueError("Slurry mass balance is undefined near mix-water density; review slurry density and formulation")
-    water_vol_per_sack = num / den
+    water_vol_per_sack = numerator / denominator
     if not math.isfinite(water_vol_per_sack):
         raise ValueError("Slurry mass balance produced invalid mix water; review slurry density and formulation")
     if water_vol_per_sack > 20.0:
         raise ValueError("Slurry mass balance requires more than 20 ft3/sk of mix water; review slurry density and formulation")
-
-    # 4. Cell O3: Yield (ft3/sk)
-    yield_ft3_per_sk = (
-        1.763 / cmt_sg +
-        va_additives +
-        water_vol_per_sack * (1.0 + water_density_pcf * salt_pct / 18600.0)
-    )
-
+    water_mass = water_vol_per_sack * water_density_pcf
+    salt_mass = water_mass * salt_pct / 100.0
+    salt_volume = salt_mass * salt_av_gal_lb / GAL_PER_CUFT
+    yield_ft3_per_sk = cement_volume + va_additives + water_vol_per_sack + salt_volume
     if not math.isfinite(yield_ft3_per_sk):
         raise ValueError("Slurry mass balance produced an invalid yield; review slurry density and formulation")
-
-    # 5. Cell O4 & O5: Field Sacks & Field Water
-    field_sacks = (slurry_volume_bbl * 5.6146 / yield_ft3_per_sk) if yield_ft3_per_sk > 0 else 0.0
-    field_water_bbl = (water_vol_per_sack / 5.6146 * field_sacks) if field_sacks > 0 else 0.0
-    if not all(math.isfinite(value) for value in (field_sacks, field_water_bbl)):
+    field_sacks = slurry_volume_bbl * BBL_TO_CUFT / yield_ft3_per_sk if yield_ft3_per_sk > 0 else 0.0
+    field_water_bbl = water_vol_per_sack * field_sacks / BBL_TO_CUFT
+    base_fluid_gal_sk = water_vol_per_sack * GAL_PER_CUFT
+    mix_water_gal_sk = base_fluid_gal_sk + salt_volume * GAL_PER_CUFT
+    wet_powder_volume = sum(volume for p, volume in zip(powders, powder_volumes) if p.get("in_solution", True))
+    mix_fluid_gal_sk = mix_water_gal_sk + wet_powder_volume * GAL_PER_CUFT + sum(liquid_gallons)
+    field_solution_bbl = mix_fluid_gal_sk * field_sacks / BBL_GAL
+    if not all(math.isfinite(value) for value in (field_sacks, field_water_bbl, field_solution_bbl)):
         raise ValueError("Slurry mass balance produced nonfinite field quantities; review the formulation")
-
-    # Field additive breakdowns
-    field_powders = []
-    sol_powders_ft3 = 0.0
-    for p in powders:
-        pct = clean_number(p.get("percent", 0.0))
-        den_pcf = max(clean_number(p.get("density_pcf", 84.864)), 1.0)
-        tot_lb = pct * field_sacks * 1.1
-        field_powders.append({
-            "name": p.get("name", ""),
-            "percent": pct,
-            "density_pcf": den_pcf,
-            "field_lb": tot_lb,
-            "lbs_per_sk": round_half_up(pct * 1.1, 3)
-        })
-        if p.get("in_solution", True):
-            sol_powders_ft3 += tot_lb / den_pcf
-
-    salt_field_kg = field_water_bbl * 3.5035 * salt_pct * 0.454
-    salt_sol_ft3 = (salt_field_kg * 2.2 / 185.0) if salt_pct > 0 else 0.0
-
-    field_liquids = []
-    sol_liquids_gal = 0.0
-    for l in liquids:
-        gps = clean_number(l.get("gal_per_sk", 0.0))
-        tot_gal = gps * field_sacks
-        field_liquids.append({
-            "name": l.get("name", ""),
-            "gal_per_sk": gps,
-            "field_gal": tot_gal
-        })
-        sol_liquids_gal += tot_gal
-
-    # Cell O6: Solution Volume (bbl)
-    field_solution_bbl = field_water_bbl + (sol_powders_ft3 + salt_sol_ft3) / 5.6146 + (sol_liquids_gal / 42.0)
-
-    # 6. API Lab quantities (Cell O7, O8, O9 for standard 600 mL cup)
-    lab_cmt_gr = (1058.0 / yield_ft3_per_sk) if yield_ft3_per_sk > 0 else 0.0
-    lab_water_gr = (0.051 * lab_cmt_gr * field_water_bbl * water_density_pcf / field_sacks) if field_sacks > 0 else 0.0
-
-    lab_powders = []
-    for p in powders:
-        pct = clean_number(p.get("percent", 0.0))
-        gr = lab_cmt_gr * pct / 100.0
-        lab_powders.append({
-            "name": p.get("name", ""),
-            "percent": pct,
-            "lab_gr": gr
-        })
-
+    field_powders = [{"name": p.get("name", ""), "percent": clean_number(p.get("percent", 0.0)),
+                      "density_pcf": density, "field_lb": mass * field_sacks, "lbs_per_sk": mass}
+                     for p, mass, density in zip(powders, powder_masses, powder_densities)]
+    field_liquids = [{"name": l.get("name", ""), "gal_per_sk": gallons, "field_gal": gallons * field_sacks}
+                    for l, gallons in zip(liquids, liquid_gallons)]
+    lab_cmt_gr = LAB_SCALE / yield_ft3_per_sk if yield_ft3_per_sk > 0 else 0.0
+    lab_water_gr = lab_cmt_gr * water_mass / CEMENT_SACK_LB
+    lab_powders = [{"name": p.get("name", ""), "percent": clean_number(p.get("percent", 0.0)),
+                    "lab_gr": lab_cmt_gr * mass / CEMENT_SACK_LB} for p, mass in zip(powders, powder_masses)]
+    lab_liquids = [{"name": l.get("name", ""), "gal_per_sk": gallons,
+                    "lab_gr": lab_cmt_gr * mass / CEMENT_SACK_LB}
+                   for l, gallons, mass in zip(liquids, liquid_gallons, liquid_masses)]
     salt_lab_gr = lab_water_gr * salt_pct / 100.0
-
-    lab_liquids = []
-    for l in liquids:
-        gps = clean_number(l.get("gal_per_sk", 0.0))
-        factor = clean_number(l.get("lab_factor", 0.0759))
-        gr = factor * gps * lab_cmt_gr
-        lab_liquids.append({
-            "name": l.get("name", ""),
-            "gal_per_sk": gps,
-            "lab_gr": gr
-        })
-
-    lab_solution_gr = (
-        lab_water_gr +
-        sum(lab["lab_gr"] for p, lab in zip(powders, lab_powders) if p.get("in_solution", True)) +
-        salt_lab_gr +
-        sum(l["lab_gr"] for l in lab_liquids)
-    )
-
+    lab_solution_gr = (lab_water_gr + salt_lab_gr
+                       + sum(lab["lab_gr"] for p, lab in zip(powders, lab_powders) if p.get("in_solution", True))
+                       + sum(lab["lab_gr"] for lab in lab_liquids))
     return {
-        "ma_additives": ma_additives,
-        "va_additives": va_additives,
-        "water_vol_per_sack": water_vol_per_sack,
-        "yield_ft3_per_sk": yield_ft3_per_sk,
-        "field_sacks": field_sacks,
-        "field_water_bbl": field_water_bbl,
-        "field_solution_bbl": field_solution_bbl,
-        "lab_cmt_gr": lab_cmt_gr,
-        "lab_water_gr": lab_water_gr,
-        "lab_solution_gr": lab_solution_gr,
-        "field_powders": field_powders,
-        "field_liquids": field_liquids,
-        "lab_powders": lab_powders,
-        "lab_liquids": lab_liquids,
-        "salt_field_kg": salt_field_kg,
-        "salt_lab_gr": salt_lab_gr
+        "ma_additives": ma_additives, "va_additives": va_additives,
+        "water_vol_per_sack": water_vol_per_sack, "yield_ft3_per_sk": yield_ft3_per_sk,
+        "base_fluid_gal_sk": base_fluid_gal_sk, "mix_water_gal_sk": mix_water_gal_sk,
+        "mix_fluid_gal_sk": mix_fluid_gal_sk, "field_sacks": field_sacks,
+        "field_water_bbl": field_water_bbl, "field_solution_bbl": field_solution_bbl,
+        "field_powders": field_powders, "field_liquids": field_liquids,
+        "salt_field_lb": salt_mass * field_sacks, "salt_lab_gr": salt_lab_gr,
+        "lab_cmt_gr": lab_cmt_gr, "lab_water_gr": lab_water_gr, "lab_solution_gr": lab_solution_gr,
+        "lab_powders": lab_powders, "lab_liquids": lab_liquids,
     }
 
 

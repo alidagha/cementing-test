@@ -15,7 +15,8 @@ from engineering_tools import (
     resolve_physical_state,
     normalize_additive_mix,
     is_salt_additive,
-    calculate_salt_field_amounts
+    calculate_salt_field_amounts,
+    BBL_TO_CUFT, WATER_DENSITY_PCF
 )
 from project_state import fingerprint
 from input_guard import repair_invalid_inputs
@@ -165,26 +166,16 @@ def calculate_base_results(p, vol, effective_density, powders_for_calc, liquids_
         slurry_weight_pcf=effective_density,
         slurry_volume_bbl=vol,
         cmt_sg=float(p.get("cmt_sg", 3.20)),
-        water_density_pcf=62.4,
+        water_density_pcf=WATER_DENSITY_PCF,
         salt_pct=salt_pct_for_calc,
         powders=powders_for_calc,
         liquids=liquids_for_calc
     )
 
-    # Persist Solution + lab-basis Base Fluid / Mix Fluid — computed here
-    # unconditionally (not just in auto_calc mode) since calc_res above
-    # always reflects the current formulation regardless of whether the
-    # engineer has manually overridden Yield/Mix Water for rig purposes.
-    # Base Fluid (gal/sk) = pure water requirement per sack (Cell V5 x 7.48).
-    # Mix Fluid (gal/sk) = Base Fluid + the liquid additives' own volume,
-    # since liquid additives are added directly to the mix water in the
-    # lab (powders are not, they're weighed dry) — verified against the
-    # real CSG 9-5/8" Lead#1 reference (computed 22.696 vs real 22.750).
+    # Derived formulation metrics do not change manual field Yield/Fresh Water.
     p["solution"] = round_half_up(calc_res["field_solution_bbl"], 1)
-    base_fluid_gal_sk = calc_res["water_vol_per_sack"] * 7.48
-    liquid_gal_sum = sum(clean_number(l.get("gal_per_sk", 0.0)) for l in liquids_for_calc)
-    p["base_fluid_gal_sk"] = round_half_up(base_fluid_gal_sk, 3)
-    p["mix_fluid_gal_sk"] = round_half_up(base_fluid_gal_sk + liquid_gal_sum, 3)
+    for metric in ("base_fluid_gal_sk", "mix_water_gal_sk", "mix_fluid_gal_sk"):
+        p[metric] = round_half_up(calc_res[metric], 3)
     return calc_res
 
 
@@ -317,7 +308,7 @@ def refresh_cement_calculations(state):
                 p["mix_water"] = round_half_up(result["field_water_bbl"], 1)
                 p["total_sacks"] = round_half_up(result["field_sacks"], 1)
             else:
-                p["total_sacks"] = round_half_up(volume * 5.6146 / p["yield"], 1) if p["yield"] > 0 else 0.0
+                p["total_sacks"] = round_half_up(volume * BBL_TO_CUFT / p["yield"], 1) if p["yield"] > 0 else 0.0
             blend, adds, note = build_cement_tables(p, df, result)
             state["cement_params"][slurry] = p
             state[f"cement_blend_{slurry}"] = blend
@@ -737,8 +728,8 @@ def render():
             # result with no other warning anywhere (e.g. "350" typed instead
             # of "35" for % BWOC). Thresholds are deliberately generous
             # (no legitimate single powder additive is known to exceed 100%
-            # BWOC, no legitimate liquid additive exceeds ~10 gal/sk, and
-            # NaCl saturation in water is ~26% by weight) so this only fires
+            # BWOC and no legitimate liquid additive exceeds ~10 gal/sk),
+            # so this only fires
             # on values that are implausible for ANY additive category, not
             # just unusual for one.
             for pw in powders_for_calc:
@@ -751,10 +742,6 @@ def render():
                     st.warning(f"⚠ **Data Check:** {lq['name']} has a negative dosage ({lq['gal_per_sk']:.3f} gal/sk) — likely from a loaded project file bypassing normal entry limits.")
                 elif lq["gal_per_sk"] > 10.0:
                     st.warning(f"⚠ **Plausibility Check:** {lq['name']} is set to {lq['gal_per_sk']:.2f} gal/sk — this is unusually high for a liquid additive. Please verify this isn't a typo.")
-            if salt_pct_for_calc < 0:
-                st.warning(f"⚠ **Data Check:** Salt (NaCl) concentration is negative ({salt_pct_for_calc:.2f}% BWOW) — likely from a loaded project file bypassing normal entry limits.")
-            elif salt_pct_for_calc > 26.0:
-                st.warning(f"⚠ **Plausibility Check:** Salt (NaCl) concentration is {salt_pct_for_calc:.1f}% BWOW — this is above the approximate saturation point of NaCl in water (~26%). Please verify this isn't a decimal/digit typo.")
 
             try:
                 calc_res = calculate_base_results(p, vol, effective_density, powders_for_calc, liquids_for_calc, salt_pct_for_calc)
@@ -772,7 +759,7 @@ def render():
                     "Manual Override (Custom Yield/Water)",
                     value=not p.get("auto_calc", True),
                     key=f"_{get_slurry_key(slurry, 'override')}_{load_sig}",
-                    help="Check to manually type custom Yield and Mix Water instead of the CMT Calculator engine."
+                    help="Check to manually type custom Yield and Fresh Water (bbl) instead of the CMT Calculator engine."
                 )
                 was_auto = p.get("auto_calc", True)
                 p["auto_calc"] = not manual_override
@@ -801,8 +788,12 @@ def render():
                 c_met1, c_met2, c_met3, c_met4 = st.columns(4)
                 c_met1.metric("Calculated Yield", f"{p['yield']:.3f} cuft/sk", help="From CMT Calculator equation (Cell O3)")
                 c_met2.metric("Total Sacks", f"{p['total_sacks']:.1f} sks", f"~{p['total_sacks']*0.05:.1f} MT")
-                c_met3.metric("Mix Water", f"{p['mix_water']:.1f} bbl", help="Pure water required without additives (Cell O5)")
+                c_met3.metric("Fresh Water", f"{p['mix_water']:.1f} bbl", help="Pure Fresh Water required for the field slurry, bbl; excludes Dead Volume")
                 c_met4.metric("Total Solution", f"{calc_res['field_solution_bbl']:.1f} bbl", help="Total fluid volume including dissolved chemicals (Cell O6)")
+                c_base, c_water, c_fluid = st.columns(3)
+                c_base.metric("Base Fluid", f"{p['base_fluid_gal_sk']:.3f} gal/sk", help="Pure Fresh Water per sack")
+                c_water.metric("Mix Water", f"{p['mix_water_gal_sk']:.3f} gal/sk", help="Base Fluid plus dissolved NaCl absolute volume per sack")
+                c_fluid.metric("Mix. Fluid", f"{p['mix_fluid_gal_sk']:.3f} gal/sk", help="Mix Water plus In-Mix-Water powder absolute volume and liquid additives per sack; excludes Dead Volume")
             else:
                 # Manual entry fields if user overrides
                 col_ov1, col_ov2, col_ov3 = st.columns(3)
@@ -821,16 +812,17 @@ def render():
                 with col_ov2:
                     mw_ov_key = f"_{get_slurry_key(slurry, 'mw_ov')}_{load_sig}"
                     p["mix_water"] = st.number_input(
-                        f"Custom Mix Water (bbl)",
+                        f"Custom Fresh Water (bbl)",
                         min_value=0.0,
                         step=1.0,
                         value=float(p.get("mix_water", 119.0)),
+                        help="Operational Fresh Water override in bbl; excludes Dead Volume and preserves the entered value",
                         key=mw_ov_key,
                         on_change=_commit_manual_override,
                         args=(slurry, "mix_water", mw_ov_key)
                     )
                 with col_ov3:
-                    total_sacks_manual = round_half_up((vol * 5.6146) / p["yield"], 1) if p["yield"] > 0 else 0.0
+                    total_sacks_manual = round_half_up((vol * BBL_TO_CUFT) / p["yield"], 1) if p["yield"] > 0 else 0.0
                     p["total_sacks"] = total_sacks_manual
                     st.metric("Total Sacks", f"{p['total_sacks']:.1f} sks", f"~{p['total_sacks']*0.05:.1f} MT")
                 p["manual_yield"] = p["yield"]

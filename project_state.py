@@ -350,7 +350,7 @@ def lab_source_signature(state, slurry):
     fluid = state.get("fluid_data", {}).get(slurry, {})
     # Cup masses do not depend on field volume, tank or manual field water.
     well = state.get("well_data", {})
-    return fingerprint({"schema": 2, "base_cement": p.get("base_cement", "Cement G Delijan"),
+    return fingerprint({"schema": 3, "base_cement": p.get("base_cement", "Cement G Delijan"),
                         "cmt_sg": p.get("cmt_sg", 3.20), "density": fluid.get("density", "118.0"),
                         "effective_density": fluid.get("effective_density"),
                         "bhst": well.get("bhst", state.get("bhst", "-")), "bhsp": well.get("bhsp", ""),
@@ -430,6 +430,7 @@ def refresh_lab_payloads(state):
             "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
             "thickening_time": qc.get("thickening_time", "-"), "thickening_endpoint": LAB_THICKENING_ENDPOINT,
             "bhsp": well.get("bhsp", ""), "base_fluid": p.get("base_fluid_gal_sk", ""),
+            "mix_water": p.get("mix_water_gal_sk", ""),
             "mix_fluid": p.get("mix_fluid_gal_sk", ""), "solution_density": materials_db.SOLUTION_DENSITY_PCF,
         }
     return issues

@@ -200,7 +200,7 @@ class Round2ReportUAT(unittest.TestCase):
             powders, liquids, _ = build_components(df)
             self.assertEqual(powders[0]['density_pcf'], 2.3 * 62.4)
             self.assertEqual(powders[1]['density_pcf'], 1.5 * 62.4)
-            self.assertEqual(liquids[0]['density_ppg'], 1.2 * 8.342)
+            self.assertEqual(liquids[0]['density_ppg'], 1.2 * (62.4 / 7.48051945))
             expected = build_lab_df_from_phase5(df, base_cement=before[s]['base_cement'],
                 slurry_weight_pcf=118., slurry_volume_bbl=50., cmt_sg=3.2, recalculate_mass=True)
             pd.testing.assert_frame_equal(expected, state['lab_grid_dfs'][s])

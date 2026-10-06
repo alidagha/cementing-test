@@ -32,7 +32,7 @@ class TrueCustomUAT(unittest.TestCase):
     edit_rows = density_tests.Round2DensityUAT.edit_rows
 
     def test_sg_engine_characterization_and_sensitivity(self):
-        for state, values, factor in [('Powder', (2.1, 2.5), 62.4), ('Liquid', (1.1, 1.2), 8.342)]:
+        for state, values, factor in [('Powder', (2.1, 2.5), 62.4), ('Liquid', (1.1, 1.2), (62.4 / 7.48051945))]:
             for mix in ('In Mix Water', 'Dry Blend'):
                 with self.subTest(state=state, mix=mix):
                     results = []; labs = []
@@ -42,7 +42,7 @@ class TrueCustomUAT(unittest.TestCase):
                         component = (powders or liquids)[0]
                         self.assertAlmostEqual(component['density_pcf' if powders else 'density_ppg'], sg * factor)
                         if liquids:
-                            self.assertAlmostEqual(component['lab_factor'], sg * 8.342 / 109.9)
+                            self.assertAlmostEqual(component['lab_factor'], sg * (62.4 / 7.48051945) / 110.0)
                         results.append(calculate_slurry_from_components(118, 50, powders=powders, liquids=liquids, salt_pct=salt))
                         labs.append(build_lab_df_from_phase5(frame, recalculate_mass=True))
                     self.assertNotEqual(results[0]['field_water_bbl'], results[1]['field_water_bbl'])

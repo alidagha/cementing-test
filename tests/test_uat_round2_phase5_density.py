@@ -19,7 +19,7 @@ from project_state import lab_source_signature
 def row(name, method='In Mix Water', density=None):
     _, kind, state = materials_db.resolve_known_material(name)
     return {'Material Type': kind, 'Name': name, 'Physical State': state,
-            'Mix Method': method, 'User Input': .1 if state == 'Liquid' else .5,
+            'Mix Method': method, 'User Input': 2.0 if name == 'SALT' else .1 if state == 'Liquid' else .5,
             'Density': density}
 
 
@@ -49,7 +49,7 @@ class Round2DensityUAT(unittest.TestCase):
                 liquid = source['Physical State'] == 'Liquid'
                 table = DEFAULT_LIQUID_PROPERTIES if liquid else DEFAULT_POWDER_DENSITIES_PCF
                 prop = table[name.casefold()]
-                expected = prop['density_ppg'] / 8.342 if liquid else prop / 62.4
+                expected = prop['density_ppg'] / (62.4 / 7.48051945) if liquid else prop / 62.4
                 for method in ('In Mix Water', 'Dry Blend'):
                     source['Mix Method'] = method
                     result = _normalize_additive_rows(pd.DataFrame([source]))
@@ -94,8 +94,8 @@ class Round2DensityUAT(unittest.TestCase):
                 self.assertEqual(edited.at[0, 'Density'], density)
                 powders, liquids, salt = build_components(edited)
                 if liquids:
-                    self.assertEqual(liquids[0]['density_ppg'], density * 8.342)
-                    self.assertEqual(liquids[0]['lab_factor'], density * 8.342 / 109.9)
+                    self.assertEqual(liquids[0]['density_ppg'], density * (62.4 / 7.48051945))
+                    self.assertEqual(liquids[0]['lab_factor'], density * (62.4 / 7.48051945) / 110.0)
                 else:
                     self.assertEqual(powders[0]['density_pcf'], density * 62.4)
                 expected = calculate_slurry_from_components(118, 50, powders=powders, liquids=liquids, salt_pct=salt)

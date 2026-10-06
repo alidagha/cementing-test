@@ -673,6 +673,7 @@ def render():
                 "thickening_endpoint": LAB_THICKENING_ENDPOINT,
                 "bhsp": well_data.get("bhsp", ""),
                 "base_fluid": slurry_cement_params.get("base_fluid_gal_sk", ""),
+                "mix_water": slurry_cement_params.get("mix_water_gal_sk", ""),
                 "mix_fluid": slurry_cement_params.get("mix_fluid_gal_sk", ""),
                 "solution_density": materials_db.SOLUTION_DENSITY_PCF
             }
