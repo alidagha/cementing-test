@@ -16,9 +16,9 @@ from engineering_tools import (
     normalize_additive_mix,
     is_salt_additive,
     calculate_salt_field_amounts,
-    BBL_TO_CUFT, WATER_DENSITY_PCF
+    BBL_TO_CUFT, WATER_DENSITY_PCF, catalog_cement_sg, resolve_cement_sg
 )
-from project_state import fingerprint
+from project_state import fingerprint, migrate_material_properties
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from placement import target_depth, top_label
@@ -78,9 +78,14 @@ def _commit_cement_param(slurry: str, field: str, widget_key: str) -> None:
     rerouting, so an edit blurred by a navigation click still reaches the
     canonical dict even though this phase's render() never executes again."""
     value = st.session_state[widget_key]
+    migrate_material_properties(st.session_state)
     entry = st.session_state.get("cement_params", {}).get(slurry)
     if isinstance(entry, dict):
         entry[field] = value
+        if field == "cmt_sg":
+            entry["cmt_sg_source"] = "manual"
+        elif field == "base_cement" and entry.get("cmt_sg_source") == "catalog":
+            entry["cmt_sg"] = catalog_cement_sg(value)
 
 
 def _commit_manual_override(slurry: str, field: str, widget_key: str) -> None:
@@ -165,13 +170,15 @@ def calculate_base_results(p, vol, effective_density, powders_for_calc, liquids_
     calc_res = calculate_slurry_from_components(
         slurry_weight_pcf=effective_density,
         slurry_volume_bbl=vol,
-        cmt_sg=float(p.get("cmt_sg", 3.20)),
+        cmt_sg=float(resolve_cement_sg(p)),
         water_density_pcf=WATER_DENSITY_PCF,
         salt_pct=salt_pct_for_calc,
         powders=powders_for_calc,
         liquids=liquids_for_calc
     )
 
+    if p.get("cmt_sg_source") == "catalog":
+        p["cmt_sg"] = resolve_cement_sg(p)
     # Derived formulation metrics do not change manual field Yield/Fresh Water.
     p["solution"] = round_half_up(calc_res["field_solution_bbl"], 1)
     for metric in ("base_fluid_gal_sk", "mix_water_gal_sk", "mix_fluid_gal_sk"):
@@ -434,7 +441,8 @@ def render():
                     "tank_name": default_tank,
                     "last_job_type": job_type,
                     "base_cement": "Cement G Delijan",
-                    "cmt_sg": 3.20,
+                    "cmt_sg": catalog_cement_sg(),
+                    "cmt_sg_source": "catalog",
                     "total_sacks": 0.0,
                     "auto_calc": True
                 }
@@ -442,7 +450,9 @@ def render():
             p.setdefault("dead_vol", None)
             p.setdefault("tank_name", default_tank)
             p.setdefault("base_cement", "Cement G Delijan")
-            p.setdefault("cmt_sg", 3.20)
+            p.setdefault("cmt_sg", catalog_cement_sg(p["base_cement"]))
+            p.setdefault("cmt_sg_source", "catalog")
+            p["cmt_sg"] = resolve_cement_sg(p)
             p.setdefault("auto_calc", True)
 
             # --- TOP LEVEL PARAMETERS: Cement, Tank, Dead Vol ---
@@ -472,7 +482,9 @@ def render():
             with col_t2:
                 sg_ref = materials_db.CEMENT_SG_REFERENCE
                 sg_ref_text = " | ".join(f"{k}: {v:.2f}" for k, v in sg_ref.items())
-                sg_key = f"_{get_slurry_key(slurry, 'sg')}_{load_sig}"
+                sg_key = (f"_{get_slurry_key(slurry, 'sg')}_{load_sig}_"
+                          f"{st.session_state['material_property_schema']}_{fingerprint(p['base_cement'])[:10]}_"
+                          f"{st.session_state.get('_' + get_slurry_key(slurry, 'cmt_sg_revision'), 0)}")
                 p["cmt_sg"] = st.number_input(
                     f"Cement SG - {slurry}",
                     min_value=2.5,

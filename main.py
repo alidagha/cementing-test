@@ -8,11 +8,12 @@ import pandas as pd
 from datetime import date, datetime
 from engineering_tools import compute_phase_status
 from project_state import (is_project_key, invalidate_document, restore_canonical_fields,
-                           DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS)
+                           DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS, migrate_material_properties)
 from project_io import content_signature, decode_project, replace_project_state
 from placement import EXCESS_FIELDS
 
 restore_canonical_fields(st.session_state)
+migrate_material_properties(st.session_state)
 
 st.set_page_config(page_title="Cementing Report Engine", layout="wide", page_icon="🛢️")
 

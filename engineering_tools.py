@@ -308,7 +308,7 @@ def format_to_hr_mm(total_minutes: float) -> str:
 # 2. PHYSICAL CONSTANTS & ADDITIVE PROPERTY LOOKUPS (CUSTOM SG DATABASE)
 # ==============================================================================
 
-# Standard additive powder densities in lb/ft3 (pcf) calculated from SG * 62.4.
+# Exact catalog powder densities in lb/ft3 (pcf); SG is derived for display.
 # Keys are lowercased Material Type / brand Name strings from the master
 # taxonomy (materials_db.MATERIAL_TAXONOMY). Every brand under the same
 # Material Type shares that category's generic SG UNLESS called out below as
@@ -316,80 +316,80 @@ def format_to_hr_mm(total_minutes: float) -> str:
 # vs Micro Max) — per confirmed material-list update.
 DEFAULT_POWDER_DENSITIES_PCF = {
     # Cement (brand-specific SG, per confirmed material-list update)
-    "cement g delijan": 3.20 * 62.4,   # 199.680 pcf
+    "cement g delijan": 199.7695007,
     "cement d delijan": 3.16 * 62.4,   # 197.184 pcf
-    "cement": 3.20 * 62.4,
+    "cement": 199.7695007,
 
-    # F.L. Controller (SG = 1.36, generic for all brands)
-    "flc": 1.36 * 62.4,             # 84.864 pcf
-    "f.l. controller": 1.36 * 62.4,
-    "f.l.controller": 1.36 * 62.4,  # legacy spelling (pre master-list update), kept for old saved projects
-    "o-uniflc5": 1.36 * 62.4,
-    "j-flc 320": 1.36 * 62.4,
-    "pk-fl 8": 1.36 * 62.4,
-    "loloss-169": 1.36 * 62.4,
-    "phs-c32": 1.36 * 62.4,
-    "cfl-109": 1.36 * 62.4,
-    "pk-fl7": 1.36 * 62.4,
-    "se-f04": 1.36 * 62.4,
+    # F.L. Controller: exact D059, generic for all listed brands.
+    "flc": 84.90203857,
+    "f.l. controller": 84.90203857,
+    "f.l.controller": 84.90203857,
+    "o-uniflc5": 84.90203857,
+    "j-flc 320": 84.90203857,
+    "pk-fl 8": 84.90203857,
+    "loloss-169": 84.90203857,
+    "phs-c32": 84.90203857,
+    "cfl-109": 84.90203857,
+    "pk-fl7": 84.90203857,
+    "se-f04": 84.90203857,
 
-    # Dispersant (SG = 1.43, generic for all brands)
-    "dispersant": 1.43 * 62.4,       # 89.232 pcf
-    "o-cfr2": 1.43 * 62.4,
-    "o-cfr4": 1.43 * 62.4,
-    "o-cfr8": 1.43 * 62.4,
-    "o-cfr3": 1.43 * 62.4,
-    "jp-450": 1.43 * 62.4,
-    "psh-c21": 1.43 * 62.4,
-    "jp-cf410s": 1.43 * 62.4,
-    "j-d 220": 1.43 * 62.4,
-    "se-d01": 1.43 * 62.4,
-    "pk-dis2": 1.43 * 62.4,
+    # Dispersant: exact D065, generic for all listed brands.
+    "dispersant": 89.27199554,
+    "o-cfr2": 89.27199554,
+    "o-cfr4": 89.27199554,
+    "o-cfr8": 89.27199554,
+    "o-cfr3": 89.27199554,
+    "jp-450": 89.27199554,
+    "psh-c21": 89.27199554,
+    "jp-cf410s": 89.27199554,
+    "j-d 220": 89.27199554,
+    "se-d01": 89.27199554,
+    "pk-dis2": 89.27199554,
 
-    # L.T. / H.T. Retarder (SG = 1.23, generic for all brands)
-    "retarder": 1.23 * 62.4,         # 76.752 pcf
-    "l.t. retarder": 1.23 * 62.4,
-    "h.t. retarder": 1.23 * 62.4,
-    "l.t.retarder": 1.23 * 62.4,     # legacy spelling (pre master-list update), kept for old saved projects
-    "h.t.retarder": 1.23 * 62.4,     # legacy spelling (pre master-list update), kept for old saved projects
-    "o-r12": 1.23 * 62.4,
-    "o-r5": 1.23 * 62.4,
-    "j-r120": 1.23 * 62.4,
-    "se-r02": 1.23 * 62.4,
-    "pk-ret 5": 1.23 * 62.4,
+    # L.T. / H.T. Retarder: exact D013, generic for all listed brands.
+    "retarder": 76.78639984,
+    "l.t. retarder": 76.78639984,
+    "h.t. retarder": 76.78639984,
+    "l.t.retarder": 76.78639984,
+    "h.t.retarder": 76.78639984,
+    "o-r12": 76.78639984,
+    "o-r5": 76.78639984,
+    "j-r120": 76.78639984,
+    "se-r02": 76.78639984,
+    "pk-ret 5": 76.78639984,
 
     # Boric Acid / Retarder Aid (SG = 1.43)
     "boric acid": 1.43 * 62.4,       # 89.232 pcf
     "retarder aid": 1.43 * 62.4,
 
-    # Accelerator / Cacl2 (SG = 1.75)
-    "cacl2": 1.75 * 62.4,            # 109.200 pcf
-    "cacl": 1.75 * 62.4,
-    "accelerator": 1.75 * 62.4,
+    # Accelerator / Cacl2: exact S001.
+    "cacl2": 109.2489471,
+    "cacl": 109.2489471,
+    "accelerator": 109.2489471,
 
-    # Anti Settling (SG = 2.53)
-    "anti settling": 2.53 * 62.4,    # 157.872 pcf
-    "anti-settling": 2.53 * 62.4,
-    "sas": 2.53 * 62.4,
+    # Anti Settling: exact D153.
+    "anti settling": 157.9427643,
+    "anti-settling": 157.9427643,
+    "sas": 157.9427643,
 
-    # CS Stabilizer / Silica Flour (SG = 2.65)
-    "silica flour": 2.65 * 62.4,     # 165.360 pcf
-    "cs stabilizer": 2.65 * 62.4,
+    # CS Stabilizer / Silica Flour: exact CEMCADE silica density.
+    "silica flour": 165.4341278,
+    "cs stabilizer": 165.4341278,
 
     # Extender: Bentonite (SG = 2.65) vs Micro Silica (SG = 2.20) — distinct, confirmed exception
     "bentonite": 2.65 * 62.4,        # 165.360 pcf
     "bentonite (wet)": 2.65 * 62.4,
-    "micro silica": 2.20 * 62.4,     # 137.280 pcf
+    "micro silica": 137.3415375,
 
     # Weighting Agent: Hidense (SG = 5.20) vs Micro Max (SG = 4.80) — distinct, confirmed exception
     "hidense": 5.20 * 62.4,          # 324.480 pcf
     "micro max": 4.80 * 62.4,        # 299.520 pcf
     "micromax": 4.80 * 62.4,
 
-    # Light Weight (SG = 0.75, generic for Light Weight & Cenosphere)
-    "light weight": 0.75 * 62.4,     # 46.800 pcf
-    "lightweight": 0.75 * 62.4,
-    "cenosphere": 0.75 * 62.4,
+    # Light Weight / Cenosphere: exact approved catalog density.
+    "light weight": 46.82097626,
+    "lightweight": 46.82097626,
+    "cenosphere": 46.82097626,
 
     # Nacl / Salt (SG = 2.16)
     "nacl": 2.16 * 62.4,             # 134.784 pcf
@@ -406,10 +406,10 @@ DEFAULT_POWDER_DENSITIES_PCF = {
 
 # Liquid density and lab mass factor share the water-density/unit basis.
 DEFAULT_LIQUID_PROPERTIES = {
-    # Anti Foam (SG = 1.00, generic for all brands)
-    "anti foam": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
-    "defoamer": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
-    "ta-47": {"density_ppg": 1.00 * WATER_LB_PER_GAL, "lab_factor": 1.00 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+    # Anti Foam: exact D047 converted through the shared unit basis.
+    "anti foam": {"density_ppg": 62.17825699 / GAL_PER_CUFT, "lab_factor": 62.17825699 / GAL_PER_CUFT / CEMENT_SACK_LB},
+    "defoamer": {"density_ppg": 62.17825699 / GAL_PER_CUFT, "lab_factor": 62.17825699 / GAL_PER_CUFT / CEMENT_SACK_LB},
+    "ta-47": {"density_ppg": 62.17825699 / GAL_PER_CUFT, "lab_factor": 62.17825699 / GAL_PER_CUFT / CEMENT_SACK_LB},
 
     # Anti Gas Migration (SG = 1.05, generic for all brands)
     "anti gas migration": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB}, # 8.759 ppg
@@ -424,6 +424,36 @@ DEFAULT_LIQUID_PROPERTIES = {
     "micro block": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB},         # 11.011 ppg
     "liquid extender": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB}
 }
+
+
+MATERIAL_PROPERTY_SCHEMA = 1
+
+# Historical editor defaults are used ONLY by the one-time project migration.
+LEGACY_ADDITIVE_SG = {
+    **{name: 1.36 for name in materials_db.MATERIAL_TAXONOMY["F.L. Controller"]["names"]},
+    **{name: 1.43 for name in materials_db.MATERIAL_TAXONOMY["Dispersant"]["names"]},
+    **{name: 1.23 for kind in ("L.T. Retarder", "H.T. Retarder")
+       for name in materials_db.MATERIAL_TAXONOMY[kind]["names"]},
+    "Cacl2": 1.75, "Anti Settling": 2.53, "Micro Silica": 2.20,
+    "Silica Flour": 2.65, "Light Weight": 0.75, "Cenosphere": 0.75,
+    "Anti Foam": 1.00, "Defoamer": 1.00, "TA-47": 1.00,
+}
+
+
+def catalog_cement_sg(name="Cement G Delijan"):
+    """Exact catalog authority; the editable SG reference is presentation only."""
+    match = materials_db.resolve_known_material(name)
+    if match is None or match[1] != "Cement":
+        raise ValueError(f"Unsupported base cement: {name}")
+    return DEFAULT_POWDER_DENSITIES_PCF[match[0].lower()] / WATER_DENSITY_PCF
+
+
+def resolve_cement_sg(params):
+    """Explicit provenance decides authority, never numeric equality."""
+    if params.get("cmt_sg_source") == "catalog" or "cmt_sg" not in params:
+        return catalog_cement_sg(params.get("base_cement", "Cement G Delijan"))
+    return params["cmt_sg"]
+
 
 def is_salt_additive(material_type: str = "", material_name: str = "") -> bool:
     """Recognize the app's NaCl/SALT entries, without substring guesses.

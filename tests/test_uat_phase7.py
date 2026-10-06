@@ -148,6 +148,7 @@ class Phase7UAT(unittest.TestCase):
                 project = ({"inactive_slurry_drafts": {"Main": {"lab_qc_params": qc}}} if archived
                            else {"lab_qc_params": {"Main": qc}})
                 project["job_type"] = 'CSG 20"'
+                project["material_property_schema"] = 1
                 self.assertEqual(audit.round_trip(project), project)
         for field in ("bhct", "free_water_45", "surface_hardened_hours"):
             with self.subTest(field=field):

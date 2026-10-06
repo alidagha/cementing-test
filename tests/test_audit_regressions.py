@@ -179,6 +179,8 @@ class AuditRegressions(unittest.TestCase):
                  "Mix Method": "In Mix Water", "User Input": 0.01},
             ])}
         self.phase(app, "phase5")
+        # This existing export fixture uses an explicitly measured SG 3.20.
+        next(w for w in app.number_input if w.label == "Cement SG - Main").set_value(3.20).run()
         next(w for w in app.number_input if w.label == "Dead Vol (bbl) - Main").set_value(31.0).run()
         next(w for w in app.selectbox if w.label == "Top of cement - Main").set_value("Surface").run()
         if optional_fluids:
@@ -622,6 +624,8 @@ class AuditRegressions(unittest.TestCase):
         project.pop("cement_params")  # First Phase V entry for the slurry.
         app = self.app(project)
         self.phase(app, "phase5")
+        # Keep this placement fixture's already-reviewed measured Cement SG.
+        next(w for w in app.number_input if w.label == "Cement SG - Main").set_value(3.20).run()
         next(w for w in app.number_input if w.label == "Dead Vol (bbl) - Main").set_value(31.0).run()
         mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
         self.assertEqual(mode.value, "Not entered")

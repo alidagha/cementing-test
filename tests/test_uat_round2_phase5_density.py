@@ -128,7 +128,7 @@ class Round2DensityUAT(unittest.TestCase):
         same = _normalize_additive_rows(before, before)
         self.assertEqual(same.at[0, 'Density'], 2.3)
         blank = before.copy(); blank.at[0, 'Density'] = None
-        self.assertEqual(_normalize_additive_rows(blank, before).at[0, 'Density'], 2.2)
+        self.assertEqual(_normalize_additive_rows(blank, before).at[0, 'Density'], 137.3415375 / 62.4)
 
     def test_callback_commits_resets_before_navigation_and_aligns_deleted_rows(self):
         source = _normalize_additive_rows(pd.DataFrame([row('Micro Silica'), row('O-uniFLC5')]))

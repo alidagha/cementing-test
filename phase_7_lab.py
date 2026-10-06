@@ -18,6 +18,7 @@ from engineering_tools import (
     validate_lab_masses,
     calculate_slurry_from_components,
     resolve_additive_density,
+    resolve_cement_sg,
     require_additive_identity,
     resolve_physical_state,
     normalize_additive_mix,
@@ -352,7 +353,7 @@ def render():
             # Fetch parameters from Phase V and Phase IV
             p_cement = st.session_state.get("cement_params", {}).get(slurry, {}).get("base_cement", "Cement G Delijan")
             try:
-                p_cmt_sg = clean_number(st.session_state.get("cement_params", {}).get(slurry, {}).get("cmt_sg", 3.20)) or 3.20
+                p_cmt_sg = clean_number(resolve_cement_sg(st.session_state.get("cement_params", {}).get(slurry, {})))
                 slurry_vol = clean_number(fluid_data.get(slurry, {}).get("volume"))
                 if slurry_vol <= 0:
                     raise ValueError("Phase IV slurry volume must be positive")

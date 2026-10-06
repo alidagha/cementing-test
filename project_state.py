@@ -11,7 +11,9 @@ from engineering_tools import (require_positive_density, require_bhsp_density, r
                                require_preflush_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, thickening_time_valid, parse_effective_numeric,
-                               validate_lab_collection_results, LAB_THICKENING_ENDPOINT)
+                               validate_lab_collection_results, LAB_THICKENING_ENDPOINT,
+                               MATERIAL_PROPERTY_SCHEMA, LEGACY_ADDITIVE_SG,
+                               catalog_cement_sg, resolve_cement_sg, default_additive_density_gcm3)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -190,6 +192,73 @@ def invalidate_document(state):
         state.pop(key, None)
 
 
+def validate_material_properties(state):
+    """Current property provenance is explicit; only version zero is historical."""
+    version = state.get("material_property_schema", 0)
+    if type(version) is not int or version not in (0, MATERIAL_PROPERTY_SCHEMA):
+        raise ValueError("Unsupported material_property_schema")
+    if version == MATERIAL_PROPERTY_SCHEMA:
+        records = list(state.get("cement_params", {}).values())
+        records += [draft["cement_params"] for draft in state.get("inactive_slurry_drafts", {}).values()
+                    if "cement_params" in draft]
+        for params in records:
+            if params.get("cmt_sg_source") not in ("catalog", "manual"):
+                raise ValueError("cmt_sg_source must be catalog or manual")
+            if "cmt_sg" not in params:
+                raise ValueError("Current cement parameters require cmt_sg")
+
+
+def migrate_material_properties(state):
+    """Migrate active and archived catalog defaults once, before any consumer."""
+    validate_material_properties(state)
+    if state.get("material_property_schema", 0) == MATERIAL_PROPERTY_SCHEMA:
+        return False
+    params = deepcopy(state.get("cement_params", {}))
+    additives = deepcopy(state.get("cement_additives_dfs", {}))
+    drafts = deepcopy(state.get("inactive_slurry_drafts", {}))
+
+    def migrate_record(p, df):
+        if p is not None:
+            name = p.get("base_cement", "Cement G Delijan")
+            known = materials_db.resolve_known_material(name)
+            name = known[0] if known is not None else name
+            sg = p.get("cmt_sg", 3.20)
+            catalog = ("cmt_sg" not in p or (name == "Cement G Delijan" and sg == 3.20)
+                       or (name == "Cement D Delijan" and sg == 3.16))
+            p["cmt_sg_source"] = "catalog" if catalog else "manual"
+            p["cmt_sg"] = catalog_cement_sg(name) if catalog else sg
+        if isinstance(df, pd.DataFrame):
+            if "Density" not in df:
+                df["Density"] = None
+            for index, row in df.iterrows():
+                match = materials_db.resolve_known_material(row.get("Name"))
+                if match is None or match[0] not in LEGACY_ADDITIVE_SG:
+                    continue
+                name, _, physical = match
+                value = row.get("Density")
+                if pd.isna(value) or value == "" or value == LEGACY_ADDITIVE_SG[name]:
+                    df.at[index, "Density"] = default_additive_density_gcm3(name, physical)
+
+    for slurry in params.keys() | additives.keys():
+        migrate_record(params.get(slurry), additives.get(slurry))
+    for draft in drafts.values():
+        migrate_record(draft.get("cement_params"), draft.get("cement_additives_dfs"))
+    # Publish only after every record has migrated successfully.
+    for key, value in (("cement_params", params), ("cement_additives_dfs", additives),
+                       ("inactive_slurry_drafts", drafts)):
+        if key in state:
+            state[key] = value
+    for slurry in params.keys() | additives.keys():
+        token = "".join(c if c.isalnum() else "_" for c in slurry).lower()
+        key = f"_editor_additives_slurry_{token}_revision"
+        state[key] = state.get(key, 0) + 1
+        key = f"_cmt_sg_revision_{token}"
+        state[key] = state.get(key, 0) + 1
+    state["material_property_schema"] = MATERIAL_PROPERTY_SCHEMA
+    invalidate_document(state)
+    return True
+
+
 def purge_inactive_slurries(state, active):
     saved_fields = ("cement_additives_dfs", "cement_params", "lab_grid_dfs", "lab_qc_params")
     for key in (*saved_fields, "lab_source_signatures"):
@@ -350,8 +419,10 @@ def lab_source_signature(state, slurry):
     fluid = state.get("fluid_data", {}).get(slurry, {})
     # Cup masses do not depend on field volume, tank or manual field water.
     well = state.get("well_data", {})
-    return fingerprint({"schema": 3, "base_cement": p.get("base_cement", "Cement G Delijan"),
-                        "cmt_sg": p.get("cmt_sg", 3.20), "density": fluid.get("density", "118.0"),
+    return fingerprint({"schema": 3, "material_property_schema": state.get("material_property_schema", 0),
+                        "base_cement": p.get("base_cement", "Cement G Delijan"),
+                        "cmt_sg": resolve_cement_sg(p),
+                        "density": fluid.get("density", "118.0"),
                         "effective_density": fluid.get("effective_density"),
                         "bhst": well.get("bhst", state.get("bhst", "-")), "bhsp": well.get("bhsp", ""),
                         "additives": state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame())})
@@ -439,6 +510,7 @@ def refresh_lab_payloads(state):
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
     try:
+        migrate_material_properties(state)
         purge_inactive_slurries(state, state.get("fluids_config", {}).get("active", []))
         refresh_fluids(state)
         issues = (["Phase II & III: review pending hardware edits before Word export."]

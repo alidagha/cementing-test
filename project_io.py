@@ -4,7 +4,8 @@ import json
 import math
 import pandas as pd
 import materials_db
-from project_state import SLURRIES, is_project_key, restore_canonical_fields
+from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
+                           migrate_material_properties, validate_material_properties)
 from placement import EXCESS_FIELDS, excess_percentage
 
 
@@ -140,6 +141,7 @@ def _validate_project(data):
         hardware = data.get(key)
         if hardware is not None and not hardware_columns.issubset(hardware.columns):
             raise ValueError(f"{key} is missing required columns.")
+    validate_material_properties(data)
 
 
 # F-03 (system audit 2026-09-29, owner-approved): the Phase VII lab grid is
@@ -213,6 +215,7 @@ def decode_project(raw_bytes, deserialize_item):
     _validate_project(project)
     for key in ("hardware_table", "hardware_editor_draft"):
         normalize_hardware_text_columns(project.get(key))
+    migrate_material_properties(project)
     return project
 
 

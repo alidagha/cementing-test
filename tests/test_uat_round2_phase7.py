@@ -73,7 +73,7 @@ class Round2LabUAT(unittest.TestCase):
             for inactive in (False, True):
                 with self.subTest(slurry=s, inactive=inactive):
                     qc={'bhct':None,'thickening_time':''}
-                    p={'job_type':audit.BATCH1_JOBS[0]}
+                    p={'job_type':audit.BATCH1_JOBS[0], 'material_property_schema':1}
                     if inactive:p['inactive_slurry_drafts']={s:{'lab_qc_params':qc}}
                     else:p['lab_qc_params']={s:qc}
                     self.assertEqual(audit.round_trip(p),p)

@@ -130,7 +130,7 @@ class Round4MassBalance(unittest.TestCase):
         self.assertEqual(eng.GAL_PER_CUFT, GAL)
         self.assertEqual(eng.BBL_TO_CUFT, BBL)
         self.assertEqual(eng.LAB_SCALE, 1058.)
-        for name, sg in [('O-GAS BLOCK', 1.05), ('TA-47', 1.)]:
+        for name, sg in [('O-GAS BLOCK', 1.05), ('TA-47', (62.17825699 / GAL) / eng.WATER_LB_PER_GAL)]:
             default = eng.resolve_additive_density(name, 'Liquid')
             override = eng.resolve_additive_density('FIELD-X', 'Liquid', sg, require_measured=True)
             self.assertEqual(default, override)

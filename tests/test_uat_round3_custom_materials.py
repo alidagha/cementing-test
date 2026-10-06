@@ -67,7 +67,7 @@ class TrueCustomUAT(unittest.TestCase):
         frame = pd.DataFrame([custom(name='Micro Silica', kind='Local Extender', state='Liquid', sg=None)])
         frame = _normalize_additive_rows(frame)
         self.assertEqual(frame.iloc[0][['Material Type','Name','Physical State','Density']].tolist(),
-                         ['Extender','Micro Silica','Powder',2.2])
+                         ['Extender','Micro Silica','Powder',137.3415375 / 62.4])
         frame.at[0,'Density'] = 2.4
         self.assertEqual(_normalize_additive_rows(frame).at[0,'Density'], 2.4)
         for name in ('Micro Silica Local', 'Hidense-X', 'NaCl-X'):
@@ -101,7 +101,7 @@ class TrueCustomUAT(unittest.TestCase):
         self.edit_rows(restored, {'0': {'Name': 'Micro Silica'}})
         frame = restored.session_state['cement_additives_dfs']['Main']
         self.assertEqual(frame.iloc[0][['Material Type','Name','Physical State','Density']].tolist(),
-                         ['Extender','Micro Silica','Powder',2.2])
+                         ['Extender','Micro Silica','Powder',137.3415375 / 62.4])
 
     def test_custom_controls_follow_row_deletion_and_sentinel_reselection(self):
         app = self.configured_app(audit.BATCH1_JOBS[0])
