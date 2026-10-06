@@ -175,7 +175,7 @@ def calculate_base_results(p, vol, effective_density, powders_for_calc, liquids_
     # Derived formulation metrics do not change manual field Yield/Fresh Water.
     p["solution"] = round_half_up(calc_res["field_solution_bbl"], 1)
     for metric in ("base_fluid_gal_sk", "mix_water_gal_sk", "mix_fluid_gal_sk"):
-        p[metric] = round_half_up(calc_res[metric], 3)
+        p[metric] = calc_res[metric]
     return calc_res
 
 
@@ -304,7 +304,7 @@ def refresh_cement_calculations(state):
             components = build_components(df)
             result = calculate_base_results(p, volume, density, *components)
             if p.get("auto_calc", True):
-                p["yield"] = round_half_up(result["yield_ft3_per_sk"], 3)
+                p["yield"] = result["yield_ft3_per_sk"]
                 p["mix_water"] = round_half_up(result["field_water_bbl"], 1)
                 p["total_sacks"] = round_half_up(result["field_sacks"], 1)
             else:
@@ -780,7 +780,7 @@ def render():
 
             if p["auto_calc"]:
                 # Synchronize automatically calculated results
-                p["yield"] = round_half_up(calc_res["yield_ft3_per_sk"], 3)
+                p["yield"] = calc_res["yield_ft3_per_sk"]
                 p["mix_water"] = round_half_up(calc_res["field_water_bbl"], 1)
                 p["total_sacks"] = round_half_up(calc_res["field_sacks"], 1)
                 

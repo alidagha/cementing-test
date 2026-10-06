@@ -92,9 +92,9 @@ class Round4MassBalance(unittest.TestCase):
                   for x in build_components(formulation())[0] if x['in_solution'])
         liquid = .41
         self.assertIn('mix_water_gal_sk', p)
-        self.assertAlmostEqual(p['base_fluid_gal_sk'], eng.round_half_up(base, 3))
-        self.assertAlmostEqual(p['mix_water_gal_sk'], eng.round_half_up(base + salt, 3))
-        self.assertAlmostEqual(p['mix_fluid_gal_sk'], eng.round_half_up(base + salt + wet + liquid, 3))
+        self.assertAlmostEqual(p['base_fluid_gal_sk'], base, places=12)
+        self.assertAlmostEqual(p['mix_water_gal_sk'], base + salt, places=12)
+        self.assertAlmostEqual(p['mix_fluid_gal_sk'], base + salt + wet + liquid, places=12)
         self.assertAlmostEqual(got['field_solution_bbl'], (base + salt + wet + liquid) * got['field_sacks'] / 42, places=10)
 
     def test_lab_water_comes_from_per_sack_mass_ratio(self):

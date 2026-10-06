@@ -1130,6 +1130,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "additives": lab_adds_rows,
                 "bhsp": lab_info.get("bhsp", ""),
                 "mix_fluid": lab_info.get("mix_fluid", ""),
+                "mix_water": lab_info.get("mix_water", ""),
                 "base_fluid": lab_info.get("base_fluid", ""),
                 "solution_density": lab_info.get("solution_density", ""),
                 "uca_temp": uca_temp,
