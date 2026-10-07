@@ -793,13 +793,13 @@ class AuditRegressions(unittest.TestCase):
                                for p in context["slurries"]]
                     # Chained upper bottoms use a top label, without the MD suffix.
                     summary = [(name.title(), float(bottom), float(top)) for name, bottom, top in re.findall(
-                        r"(main|lead(?: #\d)?) cement slurry from ([\d.]+) m(?: MD)? to ([\d.]+) m", context["exec_summary"])]
+                        r"(main|lead(?: #\d)?) cement slurry will be cemented from (?:the shoe at )?([\d.]+) m(?: MD)? to ([\d.]+) m", context["exec_summary"])]
                     # Report sections follow presentation order; the summary
                     # keeps its established deepest-first engineering chain.
                     expected_report = [next(row for row in expected if row[0] == name) for name in slurries]
                     self.assertEqual(payload, expected_report)
                     self.assertEqual(summary, expected)
-                    self.assertIn("target depth is 3000.0 m MD", context["exec_summary"])
+                    self.assertIn("will be set and cemented at 3000.0 m MD", context["exec_summary"])
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
                     word = []
                     for table in doc.tables:

@@ -226,8 +226,12 @@ class Round2Phase23UAT(unittest.TestCase):
                         self.assertEqual((rows[0][1], rows[0][3]), expected)
                         for label, value in zip((rows[0][0], rows[0][2]), expected):
                             self.assertEqual((label + value).count('%'), 0 if value == 'N/A' else 1)
-                        self.assertIn('CSG-OH excess: ' + expected[0], app.session_state['exec_summary_text'])
-                        self.assertIn('CSG-CSG excess: ' + expected[1], app.session_state['exec_summary_text'])
+                        for value, region in zip(expected, ('OH-CSG', 'CSG-CSG')):
+                            clause = value + ' excess for ' + region
+                            if value == 'N/A':
+                                self.assertNotIn('excess for ' + region, app.session_state['exec_summary_text'])
+                            else:
+                                self.assertIn(clause, app.session_state['exec_summary_text'])
                         self.assertNotIn('VOLUME BASIS', app.session_state['exec_summary_text'])
 
     def test_auto_gradient_word_only_formatting_preserves_formula_and_precision(self):

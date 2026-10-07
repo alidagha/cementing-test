@@ -6,7 +6,7 @@ import pandas as pd
 import materials_db
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
                            migrate_material_properties, validate_material_properties)
-from placement import EXCESS_FIELDS, excess_percentage
+from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
 
 
 def content_signature(raw_bytes):
@@ -87,6 +87,8 @@ def _validate_project(data):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
     for field, _, _ in EXCESS_FIELDS:
         excess_percentage(data.get("placement_config", {}), field)
+    if "executive_summary_config" in data:
+        validate_executive_summary_config(data["executive_summary_config"])
     cfg = data.get("fluids_config", {})
     if cfg and (not isinstance(cfg.get("active", []), list)
                 or not all(isinstance(x, str) for x in cfg.get("active", []))

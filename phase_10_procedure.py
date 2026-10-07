@@ -7,7 +7,10 @@ import os
 import re
 from collections import deque
 from pathlib import Path
-from placement import target_depth, host_label, slurry_intervals, EXCESS_FIELDS, excess_percentage
+from placement import (target_depth, host_label, slurry_intervals, EXCESS_FIELDS,
+                       resolve_report_excess, summary_config_for_job, hardware_choices,
+                       hardware_row_metadata, target_row_metadata, hardware_context_label,
+                       HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
 from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
@@ -199,27 +202,25 @@ def parse_shoe_depth_from_hardware(hw_df, default_md=None, job_type="", placemen
     return target_depth(hw_df, job_type, placement_config or {})
 
 
-def _placement_excess_values(config, job_type):
-    """Share optional percent display between the summary and placement cells."""
-    values = {}
-    for field, _, report_key in EXCESS_FIELDS:
-        try:
-            value = excess_percentage(config, field) if config.get("job_type") == job_type else None
-            values[report_key] = "N/A" if value is None else str(value).removesuffix(".0") + "%"
-        except ValueError:
-            values[report_key] = "...."  # Existing placement gate blocks invalid input.
-    return values
+def _placement_excess_values(config, job_type, summary_config=None, slurry=None):
+    """Display the same resolved report-only values in Summary and placement cells."""
+    try:
+        values = resolve_report_excess(job_type, config, summary_config, slurry)
+    except ValueError:
+        return {key: "...." for _, _, key in EXCESS_FIELDS}  # Existing export gate blocks invalid inputs.
+    return {key: "N/A" if value is None else str(value).removesuffix(".0") + "%"
+            for key, value in values.items()}
 
 
-def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None):
-    """Use shared intervals and independent global excess values in Word."""
+def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None, summary_config=None):
+    """Use shared intervals and resolved report-only excess values in Word."""
     if interval is None:
         interval = slurry_intervals(hw_df, job_type, placement_config or {},
                                     [payload["name"]], {payload["name"]: slurry_params})[payload["name"]]
     bottom_depth = interval["bottom_depth"]
     payload["top"] = interval["top"] if interval["top_depth"] is not None else "...."
     payload["bottom"] = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
-    payload.update(_placement_excess_values(placement_config, job_type))
+    payload.update(_placement_excess_values(placement_config, job_type, summary_config, payload["name"]))
     return payload
 
 def separate_lab_tables(lab_grid_df: pd.DataFrame, phase5_df: pd.DataFrame = None):
@@ -359,113 +360,135 @@ def get_slurry_display_values(fluid_data: dict, slurry_name: str) -> tuple:
     den_str = f"{den} pcf" if den not in (None, "") else ".... pcf [DENSITY NOT SET IN PHASE IV]"
     return vol_str, den_str
 
+def _summary_join(parts):
+    return " and ".join(parts) if len(parts) < 3 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_config, config, hw_df):
+    groups = []
+    for slurry in REPORT_SLURRY_ORDER:
+        if slurry not in active_slurries:
+            continue
+        record = config.get("per_slurry", {}).get(slurry, {})
+        basis = record.get("volume_basis", "auto")
+        try:
+            excess = resolve_report_excess(job_type, placement_config, config or None, slurry)
+        except ValueError:
+            return ".... [INVALID PLACEMENT EXCESS IN PHASE II/III]"
+        clauses = [f'{str(value).removesuffix(".0")}% excess for {label}' for key, label in
+                   (("excess_oh", "OH-CSG"), ("excess_csg", "CSG-CSG"))
+                   if (value := excess[key]) is not None]
+        reason = ("client request" if basis == "client_request" else
+                  _summary_join(clauses) if basis in ("auto", "unspecified", "excess") else "")
+        qualifiers = []
+        if record.get("wet_stands") is not None:
+            host = hardware_context_label(hw_df, record.get("wet_inside_host_row"))
+            qualifiers.append(f'with {record["wet_stands"]:g} stands wet' + (f" inside {host}" if host else ""))
+        if record.get("liner_lap_m") is not None:
+            host = hardware_context_label(hw_df, record.get("liner_lap_host_row"))
+            qualifiers.append(f'{record["liner_lap_m"]:.1f} m liner lap' + (f" inside {host}" if host else ""))
+        qualifier = _summary_join(qualifiers)
+        group_key = (reason, qualifier)
+        volume = f"{get_slurry_display_values(fluid_data, slurry)[0]} for {slurry.lower()} slurry"
+        if groups and groups[-1][0] == group_key:
+            groups[-1][1].append(volume)
+        else:
+            groups.append((group_key, [volume]))
+    sentences = []
+    for (reason, qualifier), volumes in groups:
+        if reason:
+            suffix = (" " if qualifier.startswith("with ") else " and ") + qualifier if qualifier else ""
+            sentences.append(f"The calculated cement volume is based on {reason}{suffix}, giving {_summary_join(volumes)}.")
+        else:
+            suffix = f", {qualifier}" if qualifier else ""
+            # Direct single-slurry references state the volume without a basis claim.
+            value = volumes[0].split(" for ")[0] if len(active_slurries) == 1 else _summary_join(volumes)
+            sentences.append(f"The calculated cement volume is {value}{suffix}.")
+    return " ".join(sentences)
+
+
 def generate_executive_summary(
-    job_type: str, 
-    fluid_data: dict, 
-    active_fluids: list, 
-    additives_dfs: dict, 
-    hw_df: pd.DataFrame = None, 
+    job_type: str,
+    fluid_data: dict,
+    active_fluids: list,
+    additives_dfs: dict,
+    hw_df: pd.DataFrame = None,
     geo_md: float = 3000.0,
     cement_params: dict = None,
-    placement_config: dict = None
+    placement_config: dict = None,
+    executive_summary_config: dict = None
 ) -> str:
-    """
-    Auto-generates authentic NIDC Executive Summary matching company standards:
-    - Paragraph 1: Formal proposal preamble
-    - Paragraph 2: Rig safety policy and pre-job safety meeting declaration
-    - Paragraph 3: Dynamic operational summary (shoe depth, design type, slurry placement intervals, volumes & excess)
-    """
-    job_upper = str(job_type).upper()
-    job_clean = job_type.replace('"', '').replace("CSG", "").replace("LNR", "").strip()
-    
+    """Locked preamble/safety paragraphs and a deterministic report-only narrative."""
     p1 = ("Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention "
           "on the referenced well. The proposal includes well data, materials and resources requirements.")
-    
+
     p2 = ("NIDC has established a safety policy to which all NIDC personnel must adhere. A pre-job safety meeting "
           "will be held with client representatives and other on location personnel to familiarize everyone with existing "
           "hazards and safety procedures. We would appreciate close cooperation between the client representative and "
           "the NIDC representative to ensure a safe operation.")
-    
+
+    active_slurries = active_slurry_names(active_fluids)
+    config = summary_config_for_job(executive_summary_config, job_type, active_slurries)
     placement_config = placement_config or {}
-    shoe_depth = parse_shoe_depth_from_hardware(hw_df, job_type=job_type, placement_config=placement_config)
-    shoe_str = f"{shoe_depth:.1f} m MD" if shoe_depth is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
-    excess = _placement_excess_values(placement_config, job_type)
-    excess_statement = f"CSG-OH excess: {excess['excess_oh']}; CSG-CSG excess: {excess['excess_csg']}"
-
-    slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
-    active_slurries = [
-        f for f in active_fluids 
-        if any(f.replace(" ", "").lower() == s.replace(" ", "").lower() for s in slurry_archetypes)
-    ]
-    
+    target = target_depth(hw_df, job_type, placement_config)
+    target_text = f"{target:.1f} m MD" if target is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
     placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {})
-
-    has_dry_blend = False
-    has_neat = False
-    for s in active_slurries:
-        df_adds = additives_dfs.get(s)
-        if df_adds is not None and isinstance(df_adds, pd.DataFrame) and not df_adds.empty:
-            for _, r in df_adds.iterrows():
-                mat_type = str(r.get("Material Type", ""))
-                r_name = str(r.get("Name", "") or "").strip()
-                display_name = r_name if r_name and r_name != "Other (Custom)" else mat_type
-                state = resolve_physical_state(mat_type, r.get("Physical State"))
-                _, is_forced_dry = normalize_additive_mix(state, r.get("Mix Method"), display_name, mat_type)
-                if is_forced_dry:
-                    has_dry_blend = True
-                else:
-                    has_neat = True
+    # Classification is per slurry: wet additives do not turn a dry design into two designs.
+    dry_designs = []
+    for slurry in active_slurries:
+        frame = additives_dfs.get(slurry)
+        dry_designs.append(any(normalize_additive_mix(
+            resolve_physical_state(row.get("Material Type", ""), row.get("Physical State")),
+            row.get("Mix Method"), row.get("Name", ""), row.get("Material Type", ""))[1]
+            for _, row in frame.iterrows()) if isinstance(frame, pd.DataFrame) else False)
+    design = ("Dry blend and neat" if any(dry_designs) and not all(dry_designs) else
+              "Dry blend" if any(dry_designs) else "Neat") + " cement design will be used"
+    # Parse only a complete supported taxonomy form; host size is never the job size.
+    match = re.fullmatch(r'(?:CSG|LNR|TIE BACK LNR) (\d+(?: \d+/\d+)?)"', job_type)
+    size = match.group(1) if match else None
+    contexts = [label for token in config.get("placement_context_rows", [])
+                if (label := hardware_context_label(hw_df, token))]
+    job = job_type.upper()
+    origin = config.get("tie_back_origin", "Target depth")
+    if "TIE BACK" in job:
+        verb = "set" if origin == "Target depth" else "done"
+        opening = f'{size}" Tie Back cementing will be {verb} at {target_text}.'
+        environment = "this tie back"
+    elif "PLUG" in job:
+        opening = f"Cement plug will be set at {target_text}."
+        environment = "inside " + (_summary_join(contexts) if contexts else "casing / open hole")
+    elif "SQUEEZE" in job:
+        scope = config.get("squeeze_scope", "")
+        row = (hardware_row_metadata(hw_df, config["squeeze_context_row"])
+               if config.get("squeeze_context_row") else target_row_metadata(hw_df, job_type, placement_config))
+        if scope and row and row["size"]:
+            operation = f'{row["size"]}" {scope}'
+            opening = (f"{operation} Squeeze will be cemented at {target_text}." if scope == "Liner Lap" else
+                       f"{operation} will be squeeze cemented at {target_text}.")
+            environment = "this " + scope.lower()
         else:
-            has_neat = True
-            
-    if has_dry_blend and has_neat and len(active_slurries) > 1:
-        design_str = "Dry blend and neat cement design will be used"
-    elif has_dry_blend:
-        design_str = "Dry blend cement design will be used"
+            opening = f"Cement squeeze will be performed at {target_text}."
+            environment = "this zone"
     else:
-        design_str = "Neat cement design will be used"
-        
-    primary = "Main" if "Main" in active_slurries else (active_slurries[0] if active_slurries else "Main")
-    primary_vol, primary_den = get_slurry_display_values(fluid_data, primary)
-    # The placement sentence describes the primary slurry, but the rig will
-    # pump every active slurry. List every volume when there is more than one.
-    if len(active_slurries) > 1:
-        volumes = "; ".join(
-            f"{slurry}: {get_slurry_display_values(fluid_data, slurry)[0]}"
-            for slurry in active_slurries
-        )
-        volume_statement = f"Planned slurry volumes: {volumes}"
-    else:
-        volume_statement = f"Planned slurry volume: {primary_vol}"
-    if "PLUG" in job_upper:
-        top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
-        p3 = (f"Cement plug target depth is {shoe_str}. {design_str} for cement placement inside casing / open hole; "
-              f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top}. "
-              f"{volume_statement}; {excess_statement}.")
-    elif "SQUEEZE" in job_upper:
-        p3 = (f"{job_type} treatment depth is {shoe_str}. {design_str} for this zone; "
-              f"{primary_den} {primary.lower()} cement slurry is planned at {shoe_str}. "
-              f"{volume_statement}; {excess_statement}.")
-    elif "TIE BACK" in job_upper:
-        top = placements.get(primary, {}).get("top", ".... m [TOP NOT SET IN PHASE V]")
-        host = parse_tieback_host_label(hw_df, job_type=job_type, placement_config=placement_config)
-        host = host or "[HOST NOT SELECTED IN PHASE II/III]"
-        p3 = (f"{job_type} target depth is {shoe_str}. {design_str} for this tie back; "
-              f"{primary_den} {primary.lower()} cement slurry is planned from {shoe_str} to {top} "
-              f"inside {host}. {volume_statement}; {excess_statement}.")
-    else:
-        kind = "Liner" if "LNR" in job_upper else "Casing"
-        placement_parts = []
-        volume_parts = []
-        for slurry, interval in placements.items():
-            volume, density = get_slurry_display_values(fluid_data, slurry)
-            placement_parts.append(f"{density} {slurry.lower()} cement slurry from {interval['bottom']} to {interval['top']}")
-            volume_parts.append(f"{slurry}: {volume}")
-        intervals = "; ".join(placement_parts) if placement_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
-        volumes = "; ".join(volume_parts) if volume_parts else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
-        p3 = (f"{job_type} {kind.lower()} target depth is {shoe_str}. {design_str} for this {kind.lower()}; "
-              f"planned placement: {intervals}. Planned slurry volumes: {volumes}; {excess_statement}.")
-
+        kind = "Liner" if "LNR" in job else "Casing"
+        opening = f'{size}" {kind} will be set and cemented at {target_text}.'
+        environment = "inside " + _summary_join(contexts) if contexts else "this " + kind.lower()
+    chain = []
+    for index, (slurry, interval) in enumerate(placements.items()):
+        _, density = get_slurry_display_values(fluid_data, slurry)
+        subject = f"{density} {slurry.lower()} cement slurry will be cemented"
+        bottom = f'{interval["bottom_depth"]:.1f} m' if interval["bottom_depth"] is not None else interval["bottom"]
+        if "SQUEEZE" in job:
+            chain.append(f"{subject} at {target_text}")
+            continue
+        if index == 0 and ("CSG" in job or ("LNR" in job and "TIE BACK" not in job)):
+            bottom = "the shoe at " + bottom
+        elif "TIE BACK" in job and origin != "Target depth":
+            bottom = ("the Tie Back Sleeve at " if origin == "Tie Back Sleeve" else "the shoe at ") + bottom
+        chain.append(f"{subject} from {bottom} to {interval['top']}")
+    chain_text = _summary_join(chain) if chain else "[NO CEMENT SLURRY CONFIGURED IN PHASE IV]"
+    volumes = _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_config, config, hw_df)
+    p3 = f"{opening} {design} to cement {environment}; {chain_text}." + (f" {volumes}" if volumes else "")
     return f"{p1}\n\n{p2}\n\n{p3}"
 
 def build_additives_mixing_procedure(slurry_name: str, additives_df: pd.DataFrame) -> str:
@@ -856,13 +879,14 @@ def synchronize_report_texts():
     preflush = state.get("preflush_calc")
     pump_time = state.get("total_pump_time_min", 0.0)
     placement = state.get("placement_config", {})
-    summary_source = [job, active, fluids, params, additives, hardware, depth, placement]
+    summary_config = summary_config_for_job(state.get("executive_summary_config"), job, active_slurry_names(active))
+    summary_source = [job, active, fluids, params, additives, hardware, depth, placement, summary_config]
     procedure_source = [job, active, fluids, params, additives, preflush, depth, pump_time, placement,
                         {name: state.get(f"cement_calc_{name}") for name in active}]
     specs = {
         "exec_summary_text": {
-            "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement),
-            "signature": fingerprint([1, summary_source]),
+            "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement, summary_config or None),
+            "signature": fingerprint([2, summary_source]),
         },
         "procedure_text": {
             "generated": generate_official_procedure(job, fluids, active, params, additives, preflush, depth, pump_time, placement),
@@ -1142,7 +1166,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         # BUG-04: populate the four placement keys the template's per-slurry
         # placement block consumes (top/bottom/excess_oh/excess_csg).
         _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,
-                                 st.session_state.get("placement_config", {}), placements[s])
+                                 st.session_state.get("placement_config", {}), placements[s],
+                                 st.session_state.get("executive_summary_config"))
 
     # BUG-19 (merged BUG-04 scope): a bare standardized '....' in any of the
     # four placement cells is now an explicit export blocker instead of
@@ -1405,6 +1430,73 @@ def _phase_for_issue(issue):
     return None
 
 
+def _commit_summary_metadata(widget_key, field, slurry=None):
+    """Commit shadow widgets before navigation can unmount them."""
+    state = st.session_state
+    job = state.get("job_type", 'CSG 20"')
+    stored = state.get("executive_summary_config")
+    config = dict(stored) if stored and stored.get("job_type") == job else {"version": SUMMARY_VERSION, "job_type": job}
+    value = state[widget_key]
+    if slurry is None:
+        config[field] = value
+    else:
+        records = dict(config.get("per_slurry", {}))
+        records[slurry] = {**records.get(slurry, {}), field: value}
+        config["per_slurry"] = records
+    state["executive_summary_config"] = config
+    invalidate_document(state)
+
+
+def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
+    active = active_slurry_names(active_fluids)
+    config = summary_config_for_job(st.session_state.get("executive_summary_config"), job_type, active)
+    rows = hardware_choices(hw_df, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back"})
+    hosts = hardware_choices(hw_df, HOST_DESCRIPTIONS)
+    revision = fingerprint([job_type, load_sig, list(rows)])[:16]
+
+    def widget(field, label, record, slurry=None, options=None, number=False, tokens=None, multiple=False):
+        key = f"_summary_{revision}_{slurry or 'job'}_{field}"
+        default = record.get(field)
+        if tokens is not None:
+            options = list(tokens) if multiple else ["", *tokens]
+            default = [token for token in (default or []) if token in tokens] if multiple else default if default in tokens else ""
+        elif options is not None:
+            default = default if default in options else options[0]
+        if key not in st.session_state:
+            st.session_state[key] = default
+        args = dict(key=key, on_change=_commit_summary_metadata, args=(key, field, slurry))
+        if number:
+            st.number_input(label, min_value=0.0, step=1.0 if field == "wet_stands" else 0.1, **args)
+        elif multiple:
+            st.multiselect(label, options, format_func=lambda token: tokens[token]["label"], **args)
+        else:
+            st.selectbox(label, options, format_func=(lambda token: tokens[token]["label"] if token else "Not specified")
+                         if tokens is not None else str, **args)
+
+    with st.expander("Executive Summary reference details (optional)"):
+        st.caption("Report wording only. Volumes, densities, targets and slurry intervals remain engineering inputs in their existing phases.")
+        widget("placement_context_rows", "Placement context rows", config, tokens=rows, multiple=True)
+        if "SQUEEZE" in job_type:
+            widget("squeeze_scope", "Squeeze scope", config, options=SQUEEZE_SCOPES)
+            widget("squeeze_context_row", "Squeeze context row", config, tokens=rows)
+        if "TIE BACK" in job_type:
+            widget("tie_back_origin", "Tie Back origin", config, options=TIE_BACK_ORIGINS)
+        for slurry in REPORT_SLURRY_ORDER:
+            if slurry not in active:
+                continue
+            record = config.get("per_slurry", {}).get(slurry, {})
+            st.markdown(f"**{slurry} report details**")
+            widget("volume_basis", f"Volume basis — {slurry}", record, slurry, options=VOLUME_BASES)
+            for field, label, _ in EXCESS_FIELDS:
+                widget(field, f"{label} override — {slurry}", record, slurry, number=True)
+            if "LNR" in job_type:
+                widget("wet_stands", f"Wet stands — {slurry}", record, slurry, number=True)
+                widget("wet_inside_host_row", f"Wet stands host — {slurry}", record, slurry, tokens=hosts)
+                if "TIE BACK" not in job_type:
+                    widget("liner_lap_m", f"Liner lap (m) — {slurry}", record, slurry, number=True)
+                    widget("liner_lap_host_row", f"Liner lap host — {slurry}", record, slurry, tokens=hosts)
+
+
 def render():
     st.header("Phase X: Procedure & Export")
     st.markdown("Review official executive summary and execution instructions, then export the complete engineering dossier to Word.")
@@ -1471,6 +1563,7 @@ def render():
     preflush_calc = st.session_state.get("preflush_calc", {})
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
 
+    _render_summary_metadata(job_type, active_fluids, hw_df, load_sig)
     specs = synchronize_report_texts()
     # BUG-32 (new finding, this audit): this pre-render warning regex used to
     # omit the "(?! BASIS)" lookahead that unresolved_export_inputs() carries,

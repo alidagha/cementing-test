@@ -122,7 +122,7 @@ class Round2ReportUAT(unittest.TestCase):
                     self.assertEqual(payload['top'], intervals[payload['name']]['top'])
                     self.assertEqual(payload['bottom'], f"{intervals[payload['name']]['bottom_depth']:.1f} m MD")
                 self.assertEqual([name.title() for name in re.findall(
-                    r'(lead(?: #\d)?|main|tail) cement slurry from', context['exec_summary'])], list(reversed(ORDER)))
+                    r'(lead(?: #\d)?|main|tail) cement slurry will be cemented from', context['exec_summary'])], list(reversed(ORDER)))
                 self.assert_word_order(self.word(context), ORDER)
 
     def test_operational_fluids_procedure_and_timing_are_not_sorted_for_report(self):
