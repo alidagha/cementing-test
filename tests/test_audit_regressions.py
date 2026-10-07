@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import materials_db
-from engineering_tools import compute_phase_status, lab_review_signature, round_half_up
+from engineering_tools import compute_phase_status, lab_review_signature, round_half_up, BBL_TO_CUFT
 from project_io import decode_project
 from project_state import is_project_key, prepare_calculations, hardware_draft_pending
 
@@ -293,7 +293,7 @@ class AuditRegressions(unittest.TestCase):
                 app = self.app(round_trip(project))
                 self.export(app)
                 self.assertEqual(app.session_state["cement_params"]["Main"]["yield"], 1.5)
-                self.assertEqual(app.session_state["cement_params"]["Main"]["total_sacks"], 187.2)
+                self.assertEqual(app.session_state["cement_params"]["Main"]["total_sacks"], 50.0 * BBL_TO_CUFT / 1.5)
 
     def test_batch1_lab_masses_block_confirmation_and_export(self):
         for job in BATCH1_JOBS:
@@ -838,7 +838,7 @@ class AuditRegressions(unittest.TestCase):
                     if not auto:
                         p.update(mix_water=30.0, manual_mix_water=30.0, manual_yield=1.5)
                         p["yield"] = 1.5
-                        project["cement_additives_dfs"]["Main"].loc[0, "User Input"] = 60.0 / 187.2
+                        project["cement_additives_dfs"]["Main"].loc[0, "User Input"] = 60.0 / (50.0 * BBL_TO_CUFT / 1.5)
                     app = self.app(round_trip(project))
                     self.phase(app, "phase5")
                     self.phase(app, "phase7")
@@ -852,18 +852,19 @@ class AuditRegressions(unittest.TestCase):
                     fluid = app.session_state["fluid_data"]["Main"]
                     engine = calculate_base_results(deepcopy(p), fluid["volume"], float(fluid["effective_density"]), *build_components(formulation))
                     if auto:
-                        self.assertEqual(p["mix_water"], round_half_up(engine["field_water_bbl"], 1))
+                        self.assertEqual(p["mix_water"], engine["field_water_bbl"])
                     else:
                         self.assertEqual(p["mix_water"], 30.0)
                         self.assertEqual(p["yield"], 1.5)
-                        self.assertEqual(p["total_sacks"], 187.2)
+                        self.assertEqual(p["total_sacks"], 50.0 * BBL_TO_CUFT / 1.5)
                     self.assertEqual(p["dead_vol"], dead)
                     total = round_half_up(p["mix_water"] + dead, 1)
-                    concentration = float(adds.iloc[0]["(lbs or gal)/bbl"].split()[0])
+                    concentration = formulation.iloc[0]["User Input"] * p["total_sacks"] / p["mix_water"]
+                    self.assertEqual(float(adds.iloc[0]["(lbs or gal)/bbl"].split()[0]), round_half_up(concentration, 3))
                     amount = float(adds.iloc[0]["lbs or gal (with dead Vol.)"].split()[0])
                     self.assertEqual(amount, round_half_up((p["mix_water"] + dead) * concentration, 2))
                     if not auto:
-                        self.assertEqual(concentration, 2.0)
+                        self.assertEqual(float(adds.iloc[0]["(lbs or gal)/bbl"].split()[0]), 2.0)
                         self.assertEqual(amount, 100.0 if dead else 60.0)
                     self.assertIn(f"**{total:.1f} bbl**", app.session_state["cement_note_Main"])
                     self.export(app)
@@ -872,7 +873,7 @@ class AuditRegressions(unittest.TestCase):
                     payload = context["slurries"][0]
                     self.assertEqual(payload["mix_water_bbl"], p["mix_water"])
                     self.assertEqual(payload["dead_vol_bbl"], dead)
-                    self.assertEqual(payload["total_water_bbl"], total)
+                    self.assertEqual(payload["total_water_bbl"], p["mix_water"] + dead)
                     self.assertIn(f"{total:.1f} bbl Fresh Water", payload["note_mix"])
                     water_line = next(line for line in context["procedure_text"].splitlines() if "Fill up" in line)
                     self.assertIn(f"{total:.1f} bbl", water_line)

@@ -170,19 +170,20 @@ class Phase45UAT(unittest.TestCase):
                 p = {"mix_water": 30.0, "dead_vol": 20.0, "total_sacks": 100.0, "auto_calc": automatic, "tank_name": "Test Tank"}
                 result = calculate_base_results(p, 50.0, 118.0, *build_components(additives))
                 if automatic:
-                    p["mix_water"] = round_half_up(result["field_water_bbl"], 1)
-                    p["total_sacks"] = round_half_up(result["field_sacks"], 1)
+                    p["mix_water"] = result["field_water_bbl"]
+                    p["total_sacks"] = result["field_sacks"]
                 original = deepcopy(p)
                 _, rows, note = build_cement_tables(p, additives, result)
                 self.assertEqual(p, original)
                 self.assertEqual(p["dead_vol"], 20.0)
                 if automatic:
-                    self.assertEqual(p["mix_water"], round_half_up(result["field_water_bbl"], 1))
+                    self.assertEqual(p["mix_water"], result["field_water_bbl"])
                 else:
                     self.assertEqual(p["mix_water"], 30.0)
                     self.assertEqual(rows.iloc[0]["(lbs or gal)/bbl"], "2.000 gal/bbl")
                     self.assertEqual(rows.iloc[0]["lbs or gal (with dead Vol.)"], "100.0 gal")
-                concentration = float(rows.iloc[0]["(lbs or gal)/bbl"].split()[0])
+                concentration = .6 * p["total_sacks"] / p["mix_water"]
+                self.assertEqual(float(rows.iloc[0]["(lbs or gal)/bbl"].split()[0]), round_half_up(concentration, 3))
                 self.assertEqual(float(rows.iloc[0]["lbs or gal (with dead Vol.)"].split()[0]), round_half_up((p["mix_water"] + 20.0) * concentration, 2))
                 self.assertIn(f"**{round_half_up(p['mix_water'] + 20, 1):.1f} bbl**", note)
 

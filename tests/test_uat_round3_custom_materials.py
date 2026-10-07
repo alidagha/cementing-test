@@ -141,6 +141,7 @@ class TrueCustomUAT(unittest.TestCase):
         frame = pd.DataFrame([custom(name='DRY-X',kind='Local Blend',mix='Dry Blend'), custom(state='Liquid')])
         p = {'cmt_sg':3.2,'dead_vol':10.,'tank_name':'Tank A','base_cement':'CEMENT G DELIJAN','auto_calc':True,'mix_water':30.,'total_sacks':100.}
         calc = calculate_base_results(p,50,118,*build_components(frame))
+        p.update(mix_water=calc['field_water_bbl'], total_sacks=calc['field_sacks'])
         blend, adds, note = build_cement_tables(p,frame,calc)
         self.assertEqual(blend.iloc[1]['Name'],'DRY-X'); self.assertEqual(blend.iloc[1]['Material Type'],'Local Blend')
         self.assertEqual(adds.iloc[0]['Name'],'EXT-X'); self.assertEqual(adds.iloc[0]['Material Type'],'Local Extender')

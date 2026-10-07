@@ -121,7 +121,7 @@ class Round4MassBalance(unittest.TestCase):
         refresh_fluids(state)
         self.assertEqual(refresh_cement_calculations(state), [])
         self.assertEqual(p['mix_water'], 123.4)
-        self.assertEqual(state['cement_params']['Main']['total_sacks'], eng.round_half_up(volume * BBL / 1.3, 1))
+        self.assertEqual(state['cement_params']['Main']['total_sacks'], volume * BBL / 1.3)
         self.assertNotEqual(eng.round_half_up(volume * BBL / 1.3, 1), eng.round_half_up(volume * 5.6146 / 1.3, 1))
 
     def test_shared_constants_liquid_density_and_mass_ratio(self):
@@ -179,8 +179,8 @@ class Round4MassBalance(unittest.TestCase):
         for dead in (0., 31.):
             p = {'cmt_sg': 3.2, 'dead_vol': dead, 'auto_calc': True, 'tank_name': 'Test'}
             result = calculate_base_results(p, 731, 152, *build_components(formulation()))
-            p.update({'mix_water': eng.round_half_up(result['field_water_bbl'], 1),
-                      'total_sacks': eng.round_half_up(result['field_sacks'], 1)})
+            p.update({'mix_water': result['field_water_bbl'],
+                      'total_sacks': result['field_sacks']})
             _, adds, note = build_cement_tables(p, formulation(), result)
             results.append(result); params.append(p); notes.append(note)
             totals.append(adds['lbs or gal (with dead Vol.)'].tolist())
@@ -263,7 +263,8 @@ class Round4MassBalance(unittest.TestCase):
         self.assertEqual(state['lab_payload_Main']['mix_water'], state['cement_params']['Main']['mix_water_gal_sk'])
         doc = Document(BytesIO(restored.session_state['_compiled_doc_bytes']))
         texts = [cell.text for table in doc.tables for row in table.rows for cell in row.cells]
-        self.assertTrue(any('6.248' in text for text in texts)); self.assertTrue(any('7.153' in text for text in texts))
+        self.assertIn(f"{payload['lab']['base_fluid']:.3f} gal/sk", texts)
+        self.assertIn(f"{payload['lab']['mix_fluid']:.3f} gal/sk", texts)
         self.assertTrue(any('583.8' in text for text in texts))
 
     def test_invalid_salt_blocks_status_and_export_then_recovers(self):

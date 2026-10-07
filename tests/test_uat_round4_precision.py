@@ -96,7 +96,7 @@ class Round4Precision(unittest.TestCase):
         p = state['cement_params']['Main']
         for key, source in [('total_sacks', 'field_sacks'), ('mix_water', 'field_water_bbl'),
                             ('solution', 'field_solution_bbl')]:
-            self.assertEqual(p[key], eng.round_half_up(result[source], 1))
+            self.assertEqual(p[key], result[source])
         before = engine(state['cement_additives_dfs']['Main'])
         self.phase(app, 'phase2_3'); self.phase(app, 'phase5')
         self.assertEqual(before, self.assert_auto_precision(app.session_state.to_dict()))
@@ -164,11 +164,11 @@ class Round4Precision(unittest.TestCase):
         self.assertEqual(payload['lab']['base_fluid'], result[METRICS[0]])
         self.assertEqual(payload['lab']['mix_water'], result[METRICS[1]])
         self.assertEqual(payload['lab']['mix_fluid'], result[METRICS[2]])
-        # Keep existing template formatting; it consumes raw payload values.
+        # Template-facing formatting is terminal; report payload remains raw.
         doc = Document(BytesIO(restored.session_state['_compiled_doc_bytes']))
         text = '\n'.join(c.text for t in doc.tables for r in t.rows for c in r.cells)
-        self.assertIn(str(result['yield_ft3_per_sk']), text)
-        self.assertIn(str(result['mix_fluid_gal_sk']), text)
+        self.assertIn(f"{result['yield_ft3_per_sk']:.3f} cuft/sk", text)
+        self.assertIn(f"{result['mix_fluid_gal_sk']:.3f} gal/sk", text)
 
     def test_manual_yield_remains_exact_entered_value_across_auto_and_restore(self):
         app = self.benchmark_app()

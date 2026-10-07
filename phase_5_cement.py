@@ -180,17 +180,17 @@ def calculate_base_results(p, vol, effective_density, powders_for_calc, liquids_
     if p.get("cmt_sg_source") == "catalog":
         p["cmt_sg"] = resolve_cement_sg(p)
     # Derived formulation metrics do not change manual field Yield/Fresh Water.
-    p["solution"] = round_half_up(calc_res["field_solution_bbl"], 1)
+    p["solution"] = calc_res["field_solution_bbl"]
     for metric in ("base_fluid_gal_sk", "mix_water_gal_sk", "mix_fluid_gal_sk"):
         p[metric] = calc_res[metric]
     return calc_res
 
 
 def build_cement_tables(p, edited_df, calc_res):
-    mix_w = float(p["mix_water"])
+    mix_w = calc_res["field_water_bbl"] if p["auto_calc"] else float(p["mix_water"])
     dead_v = float(p["dead_vol"])
     total_tank_water = mix_w + dead_v
-    total_sacks = float(p["total_sacks"])
+    total_sacks = calc_res["field_sacks"] if p["auto_calc"] else float(p["total_sacks"])
     # Automatic salt quantities use full precision, like the engine.
     # Manual Override deliberately uses the selected field water volume.
     salt_water_bbl = calc_res["field_water_bbl"] if p["auto_calc"] else mix_w
@@ -229,44 +229,48 @@ def build_cement_tables(p, edited_df, calc_res):
             continue
 
         if is_dry_blend:
-            conc_lbs_sk = round_half_up(user_val * 1.1, 3)
-            tot_lbs = round_half_up(conc_lbs_sk * total_sacks, 1)
+            conc_lbs_sk = user_val * 1.1
+            tot_lbs = conc_lbs_sk * total_sacks
 
-            sk_disp = f"{conc_lbs_sk:.2f}" if round(conc_lbs_sk, 2) == conc_lbs_sk else f"{conc_lbs_sk:.3f}"
-            if round(conc_lbs_sk, 1) == conc_lbs_sk:
-                sk_disp = f"{conc_lbs_sk:.1f}"
+            conc_display = round_half_up(conc_lbs_sk, 3)
+            sk_disp = f"{conc_display:.2f}" if round(conc_display, 2) == conc_display else f"{conc_display:.3f}"
+            if round(conc_display, 1) == conc_display:
+                sk_disp = f"{conc_display:.1f}"
 
             blend_rows.append({
                 "Item": len(blend_rows) + 1,
                 "Name": display_name,
                 "Material Type": mat_type,
-                "sks or lbs": f"{tot_lbs:.1f} lb",
+                "sks or lbs": f"{round_half_up(tot_lbs, 1):.1f} lb",
                 "lbs / sk": sk_disp
             })
         else:
             if state == "Powder":
-                conc = round_half_up(user_val * 1.1, 3)
-                base_amt = round_half_up(conc * total_sacks, 1)
-                conc_per_bbl = round_half_up(base_amt / mix_w, 3) if mix_w > 0 else 0.0
-                amt_dead_vol = round_half_up(conc_per_bbl * total_tank_water, 1)
+                conc = user_val * 1.1
+                base_amt = conc * total_sacks
+                conc_per_bbl = base_amt / mix_w if mix_w > 0 else 0.0
+                amt_dead_vol = conc_per_bbl * total_tank_water
 
-                col_base = f"{base_amt:.1f}"
-                col_sk = f"{conc:.3f}" if round(conc, 2) != conc else f"{conc:.2f}"
-                col_bbl = f"{conc_per_bbl:.3f}"
-                col_dead = f"{amt_dead_vol:.1f}"
+                col_base = f"{round_half_up(base_amt, 1):.1f}"
+                conc_display = round_half_up(conc, 3)
+                col_sk = f"{conc_display:.3f}" if round(conc_display, 2) != conc_display else f"{conc_display:.2f}"
+                col_bbl = f"{round_half_up(conc_per_bbl, 3):.3f}"
+                col_dead = f"{round_half_up(amt_dead_vol, 1):.1f}"
             else:
                 conc = user_val
-                base_amt = round_half_up(conc * total_sacks, 2)
-                conc_per_bbl = round_half_up(base_amt / mix_w, 3) if mix_w > 0 else 0.0
-                amt_dead_vol = round_half_up(conc_per_bbl * total_tank_water, 2)
+                base_amt = conc * total_sacks
+                conc_per_bbl = base_amt / mix_w if mix_w > 0 else 0.0
+                amt_dead_vol = conc_per_bbl * total_tank_water
 
-                base_disp = f"{base_amt:.2f}" if round(base_amt, 1) != base_amt else f"{base_amt:.1f}"
-                dead_disp = f"{amt_dead_vol:.2f}" if round(amt_dead_vol, 1) != amt_dead_vol else f"{amt_dead_vol:.1f}"
+                base_display = round_half_up(base_amt, 2)
+                dead_display = round_half_up(amt_dead_vol, 2)
+                base_disp = f"{base_display:.2f}" if round(base_display, 1) != base_display else f"{base_display:.1f}"
+                dead_disp = f"{dead_display:.2f}" if round(dead_display, 1) != dead_display else f"{dead_display:.1f}"
                 sk_disp = f"{conc:.3f}" if round(conc, 2) != conc else f"{conc:.2f}"
 
                 col_base = f"{base_disp} gal"
                 col_sk = f"{sk_disp} gal/sk"
-                col_bbl = f"{conc_per_bbl:.3f} gal/bbl"
+                col_bbl = f"{round_half_up(conc_per_bbl, 3):.3f} gal/bbl"
                 col_dead = f"{dead_disp} gal"
 
             adds_rows.append({
@@ -312,10 +316,10 @@ def refresh_cement_calculations(state):
             result = calculate_base_results(p, volume, density, *components)
             if p.get("auto_calc", True):
                 p["yield"] = result["yield_ft3_per_sk"]
-                p["mix_water"] = round_half_up(result["field_water_bbl"], 1)
-                p["total_sacks"] = round_half_up(result["field_sacks"], 1)
+                p["mix_water"] = result["field_water_bbl"]
+                p["total_sacks"] = result["field_sacks"]
             else:
-                p["total_sacks"] = round_half_up(volume * BBL_TO_CUFT / p["yield"], 1) if p["yield"] > 0 else 0.0
+                p["total_sacks"] = volume * BBL_TO_CUFT / p["yield"] if p["yield"] > 0 else 0.0
             blend, adds, note = build_cement_tables(p, df, result)
             state["cement_params"][slurry] = p
             state[f"cement_blend_{slurry}"] = blend
@@ -793,14 +797,14 @@ def render():
             if p["auto_calc"]:
                 # Synchronize automatically calculated results
                 p["yield"] = calc_res["yield_ft3_per_sk"]
-                p["mix_water"] = round_half_up(calc_res["field_water_bbl"], 1)
-                p["total_sacks"] = round_half_up(calc_res["field_sacks"], 1)
+                p["mix_water"] = calc_res["field_water_bbl"]
+                p["total_sacks"] = calc_res["field_sacks"]
                 
                 # Display Live Metrics Cards
                 c_met1, c_met2, c_met3, c_met4 = st.columns(4)
                 c_met1.metric("Calculated Yield", f"{p['yield']:.3f} cuft/sk", help="From CMT Calculator equation (Cell O3)")
                 c_met2.metric("Total Sacks", f"{p['total_sacks']:.1f} sks", f"~{p['total_sacks']*0.05:.1f} MT")
-                c_met3.metric("Fresh Water", f"{p['mix_water']:.1f} bbl", help="Pure Fresh Water required for the field slurry, bbl; excludes Dead Volume")
+                c_met3.metric("Fresh Water", f"{p['mix_water']:.2f} bbl", help="Pure Fresh Water required for the field slurry, bbl; excludes Dead Volume")
                 c_met4.metric("Total Solution", f"{calc_res['field_solution_bbl']:.1f} bbl", help="Total fluid volume including dissolved chemicals (Cell O6)")
                 c_base, c_water, c_fluid = st.columns(3)
                 c_base.metric("Base Fluid", f"{p['base_fluid_gal_sk']:.3f} gal/sk", help="Pure Fresh Water per sack")
@@ -834,7 +838,7 @@ def render():
                         args=(slurry, "mix_water", mw_ov_key)
                     )
                 with col_ov3:
-                    total_sacks_manual = round_half_up((vol * BBL_TO_CUFT) / p["yield"], 1) if p["yield"] > 0 else 0.0
+                    total_sacks_manual = (vol * BBL_TO_CUFT) / p["yield"] if p["yield"] > 0 else 0.0
                     p["total_sacks"] = total_sacks_manual
                     st.metric("Total Sacks", f"{p['total_sacks']:.1f} sks", f"~{p['total_sacks']*0.05:.1f} MT")
                 p["manual_yield"] = p["yield"]

@@ -15,7 +15,7 @@ from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, safe_float,
-                               parse_effective_numeric, require_nonnegative_number, LAB_THICKENING_ENDPOINT)
+                               parse_effective_numeric, require_nonnegative_number, LAB_THICKENING_ENDPOINT, BBL_TO_CUFT)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -31,6 +31,24 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
 
 SLURRY_ARCHETYPES = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
 REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
+
+def _word_quantity_context(context):
+    """Format a template-only copy after report arithmetic; retain raw context."""
+    slurries = []
+    for slurry in context.get("slurries", []):
+        row = dict(slurry, lab=dict(slurry.get("lab", {})))
+        for key, decimals in (("yield_cuft_sk", 3), ("solution", 1),
+                              ("mix_water_bbl", 1), ("total_sacks", 1), ("total_water_bbl", 1)):
+            value = safe_float(row.get(key), None)
+            if value is not None:
+                row[key] = f"{value:.{decimals}f}"
+        for key in ("base_fluid", "mix_water", "mix_fluid"):
+            value = safe_float(row["lab"].get(key), None)
+            if value is not None:
+                row["lab"][key] = f"{value:.3f}"
+        slurries.append(row)
+    return dict(context, slurries=slurries)
+
 
 def active_slurry_names(active_fluids):
     """Slurry members of the active fluid train (case/space-insensitive
@@ -170,7 +188,7 @@ def build_ordered_notes(
     for s in slurries_payload:
         tank = s.get("mixing_tank") or "Mud Reserve Tanks"
         total_water = s.get("total_water_bbl", 0.0)
-        mix_note = f"Mix above Additives in {total_water:.1f} bbl Fresh Water at {tank}."
+        mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         s["note_mix"] = counter.next(mix_note)
 
     # --- Per slurry (same order): Fresh Water / Rheology / Thickening Time ---
@@ -1074,7 +1092,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         p = st.session_state.get("cement_params", {}).get(s, {})
         vol = float(fluid_data.get(s, {}).get("volume", 0.0))
         yd = float(p.get("yield", 1.18))
-        total_sacks = float(p.get("total_sacks") or (round_half_up((vol * 5.6146) / yd, 1) if yd > 0 else 0.0))
+        total_sacks = float(p.get("total_sacks") or ((vol * BBL_TO_CUFT) / yd if yd > 0 else 0.0))
 
         # A) Blend Data (سیمان پایه G Delijan + پودرهای خشک بلِند)
         blend_df = st.session_state.get(f"cement_blend_{s}", pd.DataFrame())
@@ -1126,7 +1144,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             "yield_cuft_sk": yd,
             "mix_water_bbl": float(p.get("mix_water", 0.0)),
             "dead_vol_bbl": float(p.get("dead_vol", 0.0)),
-            "total_water_bbl": round_half_up(float(p.get("mix_water", 0.0)) + float(p.get("dead_vol", 0.0)), 1),
+            "total_water_bbl": float(p.get("mix_water", 0.0)) + float(p.get("dead_vol", 0.0)),
             "mixing_tank": p.get("tank_name", ""),
             "base_cement": p.get("base_cement", "Cement G Delijan"),
             "total_sacks": total_sacks,
@@ -1616,7 +1634,7 @@ def render():
         yd = float(p.get("yield", 1.18))
         sacks = safe_float(p["total_sacks"], None) if p.get("total_sacks") else None
         if sacks is None and vol is not None:
-            sacks = round_half_up((vol * 5.6146) / yd, 1) if yd > 0 else 0.0
+            sacks = (vol * BBL_TO_CUFT) / yd if yd > 0 else 0.0
         if vol is not None:
             total_slurry_vol += vol
         if sacks is not None:
@@ -1699,7 +1717,7 @@ def render():
                         # of re-reading the 650 KB file on every Build.
                         _tpl_mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
                         doc = DocxTemplate(io.BytesIO(_load_template_bytes(str(template_path), _tpl_mtime)))
-                        doc.render(master_context)
+                        doc.render(_word_quantity_context(master_context))
                         
                         doc_io = io.BytesIO()
                         doc.save(doc_io)
