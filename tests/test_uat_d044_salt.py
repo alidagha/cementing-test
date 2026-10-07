@@ -12,10 +12,13 @@ import test_audit_regressions as audit
 from phase_5_cement import build_components
 from phase_7_lab import build_lab_df_from_phase5
 
-NODES = ((2., .0360), (4., .0366), (6., .0371), (8., .0377), (10., .0383),
+V1_NODES = ((2., .0360), (4., .0366), (6., .0371), (8., .0377), (10., .0383),
          (12., .0388), (14., .0392), (15., .03946), (16., .0397), (18., .04013),
          (20., .04052), (22., .0409), (25., .04154), (28., .0421), (30., .04245),
          (32., .0428), (35., .04320), (37.2, .0436))
+NODES = ((2., .03453), (5., .03602), (8., .03742), (10., .03796), (12., .03845),
+         (15., .03934), (18., .04013), (20., .04052), (23., .04109), (25., .04154),
+         (28., .04204), (30., .04245), (33., .04285), (35., .04320), (37.2, .04374))
 
 
 def previous_signature(state, slurry):
@@ -44,13 +47,15 @@ class D044SaltUAT(unittest.TestCase):
     assert_export_blocked = audit.AuditRegressions.assert_export_blocked
 
     def test_exact_direct_authority_nodes(self):
+        self.assertEqual(eng.SALT_MODEL_VERSION, 2)
+        self.assertEqual(ps.SALT_MODEL_VERSION, 2)
         self.assertEqual(eng.DISSOLVED_NACL_GAL_PER_LB, NODES)
         for pct, expected in NODES:
             with self.subTest(pct=pct):
                 self.assertEqual(eng.dissolved_nacl_gal_per_lb(pct), expected)
 
     def test_interpolation_is_between_authority_nodes_not_measurement(self):
-        for pct, expected in ((3., .0363), (23.5, .04122), (36.1, .0434)):
+        for pct, expected in ((3., .035026666666666664), (23.5, .0412025), (36.1, .04347)):
             with self.subTest(pct=pct):
                 self.assertAlmostEqual(eng.dissolved_nacl_gal_per_lb(pct), expected, places=14)
 
@@ -70,7 +75,7 @@ class D044SaltUAT(unittest.TestCase):
     def test_mass_volume_and_phase5_phase7_consistency(self):
         from test_uat_round4_mass_balance import formulation
         from phase_5_cement import calculate_base_results
-        for tail, av in ((False, .04013), (True, .03946)):
+        for tail, av in ((False, .04013), (True, .03934)):
             with self.subTest(tail=tail):
                 df = formulation(tail)
                 powders, liquids, salt = build_components(df)
@@ -101,16 +106,81 @@ class D044SaltUAT(unittest.TestCase):
         state = {'material_property_schema': 1, 'cement_additives_dfs': {'Main': salt_frame(18.)}}
         old = previous_signature(state, 'Main')
         self.assertNotEqual(ps.lab_source_signature(state, 'Main'), old)
-        current = ps.lab_source_signature(state, 'Main')
-        with patch.object(ps, 'SALT_MODEL_VERSION', 2):
-            self.assertNotEqual(ps.lab_source_signature(state, 'Main'), current)
+        with patch.object(ps, 'SALT_MODEL_VERSION', 1):
+            v1 = ps.lab_source_signature(state, 'Main')
+        self.assertNotEqual(ps.lab_source_signature(state, 'Main'), v1)
         for df in (pd.DataFrame(), salt_frame(0.), salt_frame(18.).assign(Name='NaCl-X', **{'Material Type':'Local Salt'})):
             state['cement_additives_dfs']['Main'] = df
             before = previous_signature(state, 'Main')
             self.assertEqual(ps.lab_source_signature(state, 'Main'), before)
-            with patch.object(ps, 'SALT_MODEL_VERSION', 2):
+            with patch.object(ps, 'SALT_MODEL_VERSION', 1):
                 self.assertEqual(ps.lab_source_signature(state, 'Main'), before)
         self.assertEqual(state['material_property_schema'], 1)
+
+    def v1_review_app(self, pct=15., manual=False):
+        # Generate a genuine v1 source/review with the old engine table; never forge hashes.
+        with patch.object(ps, 'SALT_MODEL_VERSION', 1), patch.object(eng, 'DISSOLVED_NACL_GAL_PER_LB', V1_NODES):
+            app = self.configured_app(audit.BATCH1_JOBS[0], additives=True)
+            if pct is not None:
+                app.session_state['cement_additives_dfs']['Main'] = pd.concat([
+                    app.session_state['cement_additives_dfs']['Main'], salt_frame(pct)], ignore_index=True)
+                self.phase(app, 'phase5'); self.phase(app, 'phase7')
+                next(b for b in app.button if b.label=='Sync with Phase V').click().run()
+                next(b for b in app.button if b.label=='Confirm measured lab results').click().run()
+            if manual:
+                draft = audit.round_trip(app.session_state.to_dict())
+                draft['lab_grid_dfs']['Main'].loc[0, 'Mass'] = '777.7'
+                draft['lab_grid_dfs']['Main'].loc[0, 'Lot No'] = 'D044-V1-MANUAL-LOT'
+                draft['lab_qc_params']['Main']['reviewed'] = False
+                app = self.app(draft); self.phase(app, 'phase7')
+                next(b for b in app.button if b.label=='Confirm measured lab results').click().run()
+            state = audit.round_trip(app.session_state.to_dict())
+            self.assertEqual(state['lab_source_signatures']['Main'], ps.lab_source_signature(state, 'Main'))
+            self.assertTrue(state['lab_qc_params']['Main']['reviewed'])
+            return state
+
+    def test_true_v1_review_restore_requires_sync_or_keep_and_reconfirm(self):
+        state = self.v1_review_app(manual=True)
+        old = state['lab_grid_dfs']['Main']
+        for action in ('Sync with Phase V', 'Keep reviewed lab entries'):
+            with self.subTest(action=action):
+                app = self.app(deepcopy(state)); self.assert_export_blocked(app)
+                self.phase(app, 'phase7')
+                self.assertTrue(any('Formulation Drift' in w.value for w in app.warning))
+                next(b for b in app.button if b.label==action).click().run()
+                current = app.session_state.to_dict()
+                self.assertFalse(current['lab_qc_params']['Main']['reviewed'])
+                self.assertEqual(current['material_property_schema'], 1)
+                if action == 'Sync with Phase V':
+                    expected = build_lab_df_from_phase5(current['cement_additives_dfs']['Main'],
+                        slurry_weight_pcf=118., slurry_volume_bbl=50.,
+                        cmt_sg=current['cement_params']['Main']['cmt_sg'], existing_df=old, recalculate_mass=True)
+                    self.assertNotEqual(expected.iloc[0]['Mass'], '777.7')
+                else:
+                    expected = old
+                pd.testing.assert_frame_equal(current['lab_grid_dfs']['Main'], expected)
+                self.assertEqual(expected.iloc[0]['Lot No'], 'D044-V1-MANUAL-LOT')
+                self.assert_export_blocked(app); self.phase(app, 'phase7')
+                next(b for b in app.button if b.label=='Confirm measured lab results').click().run()
+                restored = self.app(audit.round_trip(app.session_state.to_dict())); self.export(restored)
+                doc = Document(BytesIO(restored.session_state['_compiled_doc_bytes']))
+                text = '\n'.join(c.text for t in doc.tables for r in t.rows for c in r.cells)
+                for mass in expected['Mass']: self.assertIn(str(mass), text)
+
+    def test_no_salt_and_zero_salt_v1_review_stay_current_after_fresh_restore(self):
+        for pct in (None, 0.):
+            with self.subTest(pct=pct):
+                state = self.v1_review_app(pct)
+                signature = state['lab_source_signatures']['Main']
+                grid = state['lab_grid_dfs']['Main'].copy(deep=True)
+                qc = deepcopy(state['lab_qc_params']['Main'])
+                self.assertEqual(signature, ps.lab_source_signature(state, 'Main'))
+                self.assertEqual(ps.prepare_calculations(state), [])
+                restored = self.app(audit.round_trip(state)); self.phase(restored, 'phase7')
+                self.assertFalse(any('Formulation Drift' in w.value for w in restored.warning))
+                self.assertEqual(restored.session_state['lab_qc_params']['Main'], qc)
+                pd.testing.assert_frame_equal(restored.session_state['lab_grid_dfs']['Main'], grid)
+                self.export(restored)
 
     def old_review_app(self):
         app = self.configured_app(audit.BATCH1_JOBS[0], additives=True)

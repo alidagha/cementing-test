@@ -13,10 +13,9 @@ SACK = 110.0
 WATER = 62.4
 GAL = 7.48051945
 BBL = 42.0 / GAL
-NODES = [(2., .0360), (4., .0366), (6., .0371), (8., .0377), (10., .0383),
-         (12., .0388), (14., .0392), (15., .03946), (16., .0397), (18., .04013),
-         (20., .04052), (22., .0409), (25., .04154), (28., .0421), (30., .04245),
-         (32., .0428), (35., .04320), (37.2, .0436)]
+NODES = [(2., .03453), (5., .03602), (8., .03742), (10., .03796), (12., .03845),
+         (15., .03934), (18., .04013), (20., .04052), (23., .04109), (25., .04154),
+         (28., .04204), (30., .04245), (33., .04285), (35., .04320), (37.2, .04374)]
 
 
 def formulation(tail=False):
@@ -55,7 +54,7 @@ class Round4MassBalance(unittest.TestCase):
         for pct, expected in NODES:
             with self.subTest(pct=pct): self.assertEqual(helper(pct), expected)
         self.assertEqual(helper(0), 0)
-        for pct, expected in [(3., .0363), (23.5, .04122), (36.1, .0434)]:
+        for pct, expected in [(3., .035026666666666664), (23.5, .0412025), (36.1, .04347)]:
             with self.subTest(pct=pct): self.assertAlmostEqual(helper(pct), expected, places=14)
 
     def test_salt_supported_range_is_enforced(self):
@@ -141,7 +140,7 @@ class Round4MassBalance(unittest.TestCase):
             with self.subTest(tail=tail):
                 powders, liquids, salt = build_components(formulation(tail))
                 result = benchmark(tail)
-                av = .03946 if tail else .04013
+                av = .03934 if tail else .04013
                 water = result['water_vol_per_sack'] * WATER
                 salt_volume_gal = water * salt / 100 * av
                 base = result['water_vol_per_sack'] * GAL
