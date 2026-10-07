@@ -13,10 +13,10 @@ SACK = 110.0
 WATER = 62.4
 GAL = 7.48051945
 BBL = 42.0 / GAL
-NODES = [(2., .0371), (4., .0378), (6., .0384), (8., .0390), (10., .0394),
-         (12., .0399), (14., .0403), (16., .0407), (18., .0412), (20., .0416),
-         (22., .0420), (24., .0424), (26., .0428), (28., .0430), (30., .0433),
-         (32., .0436), (34., .0439), (37.2, .0442)]
+NODES = [(2., .0360), (4., .0366), (6., .0371), (8., .0377), (10., .0383),
+         (12., .0388), (14., .0392), (15., .03946), (16., .0397), (18., .04013),
+         (20., .04052), (22., .0409), (25., .04154), (28., .0421), (30., .04245),
+         (32., .0428), (35., .04320), (37.2, .0436)]
 
 
 def formulation(tail=False):
@@ -49,13 +49,13 @@ class Round4MassBalance(unittest.TestCase):
     configured_app = audit.AuditRegressions.configured_app
     export = audit.AuditRegressions.export
     assert_export_blocked = audit.AuditRegressions.assert_export_blocked
-    def test_nelson_nodes_interpolation_and_zero(self):
+    def test_d044_nodes_interpolation_and_zero(self):
         helper = getattr(eng, 'dissolved_nacl_gal_per_lb', None)
-        self.assertIsNotNone(helper, 'No shared Nelson-table absolute-volume helper')
+        self.assertIsNotNone(helper, 'No shared CEMCADE D044-table absolute-volume helper')
         for pct, expected in NODES:
             with self.subTest(pct=pct): self.assertEqual(helper(pct), expected)
         self.assertEqual(helper(0), 0)
-        for pct, expected in [(3., .03745), (15., .0405), (35.6, .04405)]:
+        for pct, expected in [(3., .0363), (23.5, .04122), (36.1, .0434)]:
             with self.subTest(pct=pct): self.assertAlmostEqual(helper(pct), expected, places=14)
 
     def test_salt_supported_range_is_enforced(self):
@@ -79,7 +79,7 @@ class Round4MassBalance(unittest.TestCase):
         vp = sum(p['percent'] * SACK / 100 / p['density_pcf'] for p in powders)
         ml = sum(l['gal_per_sk'] * l['density_ppg'] for l in liquids)
         vl = sum(l['gal_per_sk'] for l in liquids) / GAL
-        w = got['water_vol_per_sack']; ms = w * WATER * .18; vs = ms * .0412 / GAL
+        w = got['water_vol_per_sack']; ms = w * WATER * .18; vs = ms * .04013 / GAL
         self.assertAlmostEqual(got['yield_ft3_per_sk'], vc + vp + vl + w + vs, places=12)
         self.assertAlmostEqual((SACK + mp + ml + w * WATER + ms) / got['yield_ft3_per_sk'], 152., places=12)
 
@@ -87,7 +87,7 @@ class Round4MassBalance(unittest.TestCase):
         p = {'cmt_sg': 3.2}
         got = calculate_base_results(p, 731., 152., *build_components(formulation()))
         base = got['water_vol_per_sack'] * GAL
-        salt = got['water_vol_per_sack'] * WATER * .18 * .0412
+        salt = got['water_vol_per_sack'] * WATER * .18 * .04013
         wet = sum(x['percent'] * SACK / 100 / x['density_pcf'] * GAL
                   for x in build_components(formulation())[0] if x['in_solution'])
         liquid = .41
@@ -141,7 +141,7 @@ class Round4MassBalance(unittest.TestCase):
             with self.subTest(tail=tail):
                 powders, liquids, salt = build_components(formulation(tail))
                 result = benchmark(tail)
-                av = .0405 if tail else .0412
+                av = .03946 if tail else .04013
                 water = result['water_vol_per_sack'] * WATER
                 salt_volume_gal = water * salt / 100 * av
                 base = result['water_vol_per_sack'] * GAL
@@ -263,8 +263,8 @@ class Round4MassBalance(unittest.TestCase):
         self.assertEqual(state['lab_payload_Main']['mix_water'], state['cement_params']['Main']['mix_water_gal_sk'])
         doc = Document(BytesIO(restored.session_state['_compiled_doc_bytes']))
         texts = [cell.text for table in doc.tables for row in table.rows for cell in row.cells]
-        self.assertTrue(any('6.231' in text for text in texts)); self.assertTrue(any('7.145' in text for text in texts))
-        self.assertTrue(any('584.2' in text for text in texts))
+        self.assertTrue(any('6.248' in text for text in texts)); self.assertTrue(any('7.153' in text for text in texts))
+        self.assertTrue(any('583.8' in text for text in texts))
 
     def test_invalid_salt_blocks_status_and_export_then_recovers(self):
         app = self.configured_app(audit.BATCH1_JOBS[0])

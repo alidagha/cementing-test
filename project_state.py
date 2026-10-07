@@ -13,7 +13,8 @@ from engineering_tools import (require_positive_density, require_bhsp_density, r
                                validate_lab_masses, thickening_time_valid, parse_effective_numeric,
                                validate_lab_collection_results, LAB_THICKENING_ENDPOINT,
                                MATERIAL_PROPERTY_SCHEMA, LEGACY_ADDITIVE_SG,
-                               catalog_cement_sg, resolve_cement_sg, default_additive_density_gcm3)
+                               catalog_cement_sg, resolve_cement_sg, default_additive_density_gcm3,
+                               is_salt_additive, SALT_MODEL_VERSION)
 
 SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 
@@ -419,13 +420,20 @@ def lab_source_signature(state, slurry):
     fluid = state.get("fluid_data", {}).get(slurry, {})
     # Cup masses do not depend on field volume, tank or manual field water.
     well = state.get("well_data", {})
-    return fingerprint({"schema": 3, "material_property_schema": state.get("material_property_schema", 0),
+    source = {"schema": 3, "material_property_schema": state.get("material_property_schema", 0),
                         "base_cement": p.get("base_cement", "Cement G Delijan"),
                         "cmt_sg": resolve_cement_sg(p),
                         "density": fluid.get("density", "118.0"),
                         "effective_density": fluid.get("effective_density"),
                         "bhst": well.get("bhst", state.get("bhst", "-")), "bhsp": well.get("bhsp", ""),
-                        "additives": state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame())})
+                        "additives": state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame())}
+    additives = source["additives"]
+    if isinstance(additives, pd.DataFrame) and any(
+            is_salt_additive(row.get("Material Type", ""), row.get("Name", ""))
+            and safe_float(row.get("User Input"), 0.0) > 0.0
+            for _, row in additives.iterrows()):
+        source["salt_model_version"] = SALT_MODEL_VERSION
+    return fingerprint(source)
 
 
 def refresh_lab_payloads(state):

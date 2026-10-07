@@ -473,14 +473,15 @@ def resolve_physical_state(material_type: str, user_state) -> str:
     return materials_db.get_state_for_material_type(material_type)
 
 
-# Nelson & Guillot, Well Cementing: dissolved NaCl absolute volume at
-# reference conditions. Concentration is % BWOW, not weight % of brine.
+# Owner-approved CEMCADE D044 60°F dissolved NaCl absolute-volume data.
+# Concentration is % BWOW, not weight % of brine.
+SALT_MODEL_VERSION = 1
 DISSOLVED_NACL_GAL_PER_LB = (
-    (2.0, 0.0371), (4.0, 0.0378), (6.0, 0.0384), (8.0, 0.0390),
-    (10.0, 0.0394), (12.0, 0.0399), (14.0, 0.0403), (16.0, 0.0407),
-    (18.0, 0.0412), (20.0, 0.0416), (22.0, 0.0420), (24.0, 0.0424),
-    (26.0, 0.0428), (28.0, 0.0430), (30.0, 0.0433), (32.0, 0.0436),
-    (34.0, 0.0439), (37.2, 0.0442),
+    (2.0, 0.0360), (4.0, 0.0366), (6.0, 0.0371), (8.0, 0.0377),
+    (10.0, 0.0383), (12.0, 0.0388), (14.0, 0.0392), (15.0, 0.03946),
+    (16.0, 0.0397), (18.0, 0.04013), (20.0, 0.04052), (22.0, 0.0409),
+    (25.0, 0.04154), (28.0, 0.0421), (30.0, 0.04245), (32.0, 0.0428),
+    (35.0, 0.04320), (37.2, 0.0436),
 )
 
 
