@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import io
 import hashlib
+import math
 import os
 import re
 from collections import deque
@@ -46,6 +47,10 @@ def _word_quantity_context(context):
             value = safe_float(row["lab"].get(key), None)
             if value is not None:
                 row["lab"][key] = f"{value:.3f}"
+        for key in ("bhsp", "uca_pressure"):
+            value = safe_float(row["lab"].get(key), None)
+            if value is not None and math.isfinite(value):
+                row["lab"][key] = f"{round_half_up(value, 0):.0f}"
         slurries.append(row)
     return dict(context, slurries=slurries)
 

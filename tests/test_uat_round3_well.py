@@ -130,7 +130,7 @@ class Round3WellUAT(unittest.TestCase):
                 self.assertAlmostEqual(float(app.session_state['lab_payload_Main']['bhsp']),5603.88)
                 doc=Document(BytesIO(app.session_state['_compiled_doc_bytes']))
                 table=next(t for t in doc.tables if t.rows[0].cells[0].text=='Thickening Time Test')
-                self.assertAlmostEqual(float(table.rows[3].cells[1].text),5603.88)
+                self.assertEqual(table.rows[3].cells[1].text,'5604')
                 self.assertEqual(table.rows[2].cells[-1].text,'70 Bc\nhr:mm')
                 self.assertEqual(table.rows[3].cells[-1].text,'03:30')
 
