@@ -5,7 +5,7 @@ import math
 import pandas as pd
 import materials_db
 from rheology import validate_rheology_inputs
-from engineering_tools import THICKENING_TEST_FIELDS
+from engineering_tools import THICKENING_TEST_FIELDS, compressive_inputs
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
                            migrate_material_properties, validate_material_properties)
 from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
@@ -130,6 +130,8 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol",))
         if "lab_qc_params" in draft:
+            if "compressive" in draft["lab_qc_params"] or "comp_test" in draft["lab_qc_params"]:
+                compressive_inputs(draft["lab_qc_params"])
             _check_thickening_draft(draft["lab_qc_params"], f"inactive_slurry_drafts.{slurry}.lab_qc_params")
             if "rheology" in draft["lab_qc_params"]:
                 validate_rheology_inputs(draft["lab_qc_params"]["rheology"])
@@ -150,6 +152,8 @@ def _validate_project(data):
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                               f"cement_params.{name}", nullable=("dead_vol",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if "compressive" in params or "comp_test" in params:
+            compressive_inputs(params)
         _check_thickening_draft(params, f"lab_qc_params.{name}")
         if "rheology" in params:
             validate_rheology_inputs(params["rheology"])

@@ -6,7 +6,7 @@ import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset, build_rheology
 from project_state import invalidate_document
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS
+from engineering_tools import lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 # IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
@@ -68,6 +68,45 @@ def _render_thickening_test(slurry, qc, load_sig):
     except ValueError as exc:
         st.caption(f"{slurry}: {exc}. Unfinished values remain saved.")
         return False
+
+def _commit_compressive(slurry, test, field, key):
+    st.session_state["lab_qc_params"][slurry]["compressive"][test][field] = st.session_state[key]
+    invalidate_document(st.session_state)
+
+
+def _render_compressive(slurry, qc, load_sig, bhst, bhsp):
+    st.markdown("#### Compressive Strength Test")
+    data = compressive_inputs(qc)
+    for test, title in (("uca", "UCA"), ("crush", "Crush Test")):
+        row = data[test]
+        prefix = f"_comp_{get_slurry_key(slurry, '').strip('_')}_{test}_"
+        key = prefix + "selected_" + load_sig
+        if key not in st.session_state:
+            st.session_state[key] = row["selected"]
+        st.checkbox(f"{title} - {slurry}", key=key, on_change=_commit_compressive,
+                    args=(slurry, test, "selected", key))
+        if not row["selected"]:
+            continue
+        st.caption(f"{title}: Temp = {bhst} °F (BHST); Pressure = {bhsp} psi (BHSP)")
+        columns = st.columns(len(COMPRESSIVE_TEST_FIELDS[test]))
+        for column, (field, label) in zip(columns, COMPRESSIVE_TEST_FIELDS[test]):
+            key = prefix + field + "_" + load_sig
+            if key not in st.session_state:
+                value = row[field]
+                st.session_state[key] = None if value in (None, "") else float(value)
+            column.number_input(f"{label} - {slurry}", value=None, key=key, format="%.17g",
+                                on_change=_commit_compressive, args=(slurry, test, field, key),
+                                help="Measured finite nonnegative value; blank is an unfinished draft.")
+    try:
+        payload = validate_compressive_test(qc)
+        for test, title in (("uca", "UCA"), ("crush", "Crush Test")):
+            if payload[test]["selected"]:
+                st.success(f"{title} result: {payload[test]['result']} psi")
+        return payload, True
+    except ValueError as exc:
+        st.caption(f"{slurry}: {exc}. Unfinished values remain saved.")
+        return {}, False
+
 
 def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
     row = st.session_state["lab_qc_params"][slurry]["rheology"][dataset]
@@ -435,7 +474,6 @@ def render():
                     "bhct": None,
                     "api_fl": 0.0,
                     "free_water": 0.0,
-                    "comp_test": "CRUSH",
                     "thickening_time": ""
                 }
             )
@@ -670,20 +708,7 @@ def render():
                     help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
                 )
                 
-            with col4:
-                comp_opts = ["CRUSH", "UCA"]
-                cur_comp = qc.get("comp_test", "CRUSH")
-                comp_idx = comp_opts.index(cur_comp) if cur_comp in comp_opts else 0
-                comp_key = f"_qc_comp_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                qc["comp_test"] = st.selectbox(
-                    f"Compressive Test - {slurry}",
-                    options=comp_opts,
-                    index=comp_idx,
-                    key=comp_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "comp_test", comp_key)
-                )
-
+            compressive, comp_valid = _render_compressive(slurry, qc, load_sig, bhst, st.session_state.get("well_data", {}).get("bhsp", ""))
             tt_valid = _render_thickening_test(slurry, qc, load_sig)
 
             try:
@@ -700,14 +725,14 @@ def render():
                 st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
             rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)
             temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
-            review_matches = (temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
+            review_matches = (comp_valid and temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
                               and signatures.get(slurry) == current_p5_sig)
             if review_matches:
                 st.success("Lab readings and formulation reviewed for this slurry.")
             elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                           disabled=bool(rheology_issues) or drifted or not temperature_valid or not tt_valid or not masses_valid or not collection_valid,
+                           disabled=not comp_valid or bool(rheology_issues) or drifted or not temperature_valid or not tt_valid or not masses_valid or not collection_valid,
                            help="Confirm the values above are measured and checked for the current well and formulation."):
                 qc["reviewed"] = True
                 qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
@@ -742,7 +767,7 @@ def render():
                 "free_water": qc["free_water"],
                 "free_water_45": qc["free_water_45"],
                 "surface_hardened_hours": qc["surface_hardened_hours"],
-                "comp_test": qc["comp_test"],
+                "compressive": compressive,
                 **{field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS},
                 "bhsp": well_data.get("bhsp", ""),
                 "base_fluid": slurry_cement_params.get("base_fluid_gal_sk", ""),

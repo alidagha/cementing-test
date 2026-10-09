@@ -48,10 +48,25 @@ def _word_quantity_context(context):
             value = safe_float(row["lab"].get(key), None)
             if value is not None:
                 row["lab"][key] = f"{value:.3f}"
-        for key in ("bhsp", "uca_pressure"):
+        for key in ("bhsp", "uca_pressure", "crush_pressure"):
             value = safe_float(row["lab"].get(key), None)
             if value is not None and math.isfinite(value):
                 row["lab"][key] = f"{round_half_up(value, 0):.0f}"
+        if "compressive" in row["lab"]:
+            data = row["lab"]["compressive"]
+            results = []
+            for test, title, fields in (
+                ("uca", "UCA", ("cs_8", "cs_12", "cs_24")),
+                ("crush", "Crush Test", tuple(f"force_{i}" for i in range(1, 5))),
+            ):
+                source = data.get(test, {})
+                selected = source.get("selected", False)
+                for field in fields:
+                    value = source.get(field)
+                    row["lab"][f"{test}_{field}"] = str(value) if selected and value is not None else "-"
+                if selected:
+                    results.append(f"{title} = {source['result']} psi")
+            row["lab"]["compressive_result"] = "Compressive strength results: " + "; ".join(results) + "."
         if "thickening_cell" in row["lab"]:
             cell = row["lab"]["thickening_cell"]
             row["lab"]["thickening_cell"] = str(cell) if isinstance(cell, (int, float)) else "-"
@@ -1137,33 +1152,12 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         conv_rows, lab_adds_rows = separate_lab_tables(
             lab_grid_df, st.session_state.get("cement_additives_dfs", {}).get(s))
 
-        # Compressive Strength: pre-resolve which test (UCA vs CRUSH) is active
-        # here in Python rather than with a Jinja {% if %} in the Word template.
-        # UCA uses the well's own BHST/BHSP (we have both); CRUSH TEST uses a
-        # separate curing-bath condition that has no computed or input source
-        # yet in this app, so it is left as "-" pending a dedicated field —
-        # same placeholder convention used elsewhere for not-yet-built inputs.
-        #
-        # FIX (real bug, confirmed): uca_pressure used to read live
-        # well_data.get("bhsp") while uca_temp read the cached
-        # lab_info.get("bhst") right next to it on the same line — two
-        # different sources for what's documented as "the same shared well
-        # property" (see phase_7_lab.py's comment on bhsp). If BHSP is
-        # changed in Phase II/III after the last Phase VII visit for this
-        # slurry, the exported report could show one BHSP value in the
-        # "Test Basic Data" table (from the cached lab snapshot) and a
-        # different one in the "Compressive Strength / UCA" table (from the
-        # live value) — same physical quantity, two numbers, one report.
-        # Both now consistently read the same cached lab_info snapshot.
-        comp_test_val = str(lab_info.get("comp_test", "-")).strip().upper()
-        if comp_test_val == "UCA":
-            uca_temp, uca_pressure = lab_info.get("bhst", "-"), lab_info.get("bhsp", "-")
-            crush_temp, crush_pressure = "-", "-"
-        elif comp_test_val == "CRUSH":
-            uca_temp, uca_pressure = "-", "-"
-            crush_temp, crush_pressure = "-", "-"
-        else:
-            uca_temp = uca_pressure = crush_temp = crush_pressure = "-"
+        # Both selected tests share the same freshly rebuilt Test Basic Data.
+        compressive = lab_info.get("compressive", {})
+        def condition(test, field):
+            return lab_info.get(field, "-") if compressive.get(test, {}).get("selected", False) else "-"
+        uca_temp, uca_pressure = condition("uca", "bhst"), condition("uca", "bhsp")
+        crush_temp, crush_pressure = condition("crush", "bhst"), condition("crush", "bhsp")
 
         slurries_payload.append({
             "name": s,
@@ -1193,7 +1187,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "free_water": lab_info.get("free_water", "-"),
                 "free_water_45": lab_info.get("free_water_45"),
                 "surface_hardened_hours": lab_info.get("surface_hardened_hours"),
-                "comp_test": lab_info.get("comp_test", "-"),
+                "compressive": compressive,
                 "grid": lab_rows,
                 "conventional": conv_rows,
                 "additives": lab_adds_rows,

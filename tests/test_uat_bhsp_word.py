@@ -39,7 +39,9 @@ def pressure_cells(doc):
     thick = next(t for t in doc.tables if t.rows[0].cells[0].text == "Thickening Time Test")
     uca = next(r.cells[3].text for t in doc.tables for r in t.rows
                if len(r.cells) >= 4 and r.cells[0].text == "UCA" and r.cells[2].text == "Pressure")
-    return basic, thick.rows[3].cells[1].text, uca
+    crush = next(r.cells[7].text for t in doc.tables for r in t.rows
+                 if len(r.cells) == 9 and r.cells[4].text == "CRUSH TEST" and r.cells[6].text == "Pressure")
+    return basic, thick.rows[3].cells[1].text, uca, crush
 
 
 @pytest.mark.parametrize("manual,expected", [
@@ -54,7 +56,9 @@ def test_normal_review_fresh_restore_direct_export_all_pressure_consumers(manual
         case.phase(app, "phase7")
         next(b for b in app.button if b.label == "Sync with Phase V").click().run()
     case.phase(app, "phase7")
-    next(w for w in app.selectbox if "Compressive Test" in w.label).set_value("UCA").run()
+    next(w for w in app.checkbox if w.label == "UCA - Main").check().run()
+    for label in ("CS @ 08:00", "CS @ 12:00", "CS @ 24:00"):
+        next(w for w in app.number_input if w.label == label + " - Main").set_value(100.0).run()
     next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
     saved = audit.round_trip(app.session_state.to_dict())
     raw = saved["well_data"]["bhsp"]
@@ -71,7 +75,7 @@ def test_normal_review_fresh_restore_direct_export_all_pressure_consumers(manual
     label = "automatic" if manual is None else "half-up" if manual == "5467.5" else "manual"
     Path(f"/tmp/bhsp-{label}.docx").write_bytes(
         restored.session_state["_compiled_doc_bytes"])
-    assert pressure_cells(doc) == (expected + " psi", expected, expected)
+    assert pressure_cells(doc) == (expected + " psi", expected, expected, expected)
     assert restored.session_state["well_data"]["bhsp"] == raw
     assert restored.session_state["lab_payload_Main"]["bhsp"] == raw
     assert restored.session_state["lab_qc_params"]["Main"] == qc

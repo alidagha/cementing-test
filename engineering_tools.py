@@ -7,6 +7,7 @@ Includes the validated mass-balance slurry engine from NIDC CMT Calculator 03-3.
 import re
 import math
 from numbers import Real
+from fractions import Fraction
 from decimal import Decimal, ROUND_HALF_UP
 import materials_db
 from rheology import validate_rheology_results
@@ -30,9 +31,75 @@ THICKENING_TEST_FIELDS = (
 )
 
 
+COMPRESSIVE_TEST_FIELDS = {
+    "uca": (("cs_8", "CS @ 08:00"), ("cs_12", "CS @ 12:00"), ("cs_24", "CS @ 24:00")),
+    "crush": tuple((f"force_{i}", f"Force {i} (lbf)") for i in range(1, 5)),
+}
+
+
+def compressive_inputs(qc):
+    """Normalize legacy selection once, retaining only canonical measured drafts."""
+    if "compressive" not in qc:
+        legacy = qc.get("comp_test")
+        if legacy is not None and legacy not in ("UCA", "CRUSH", "-"):
+            raise ValueError("Compressive Test: unsupported legacy selection")
+        data = {test: {"selected": legacy == mode} for test, mode in (("uca", "UCA"), ("crush", "CRUSH"))}
+    else:
+        data = qc["compressive"]
+    if not isinstance(data, dict) or any(test not in COMPRESSIVE_TEST_FIELDS for test in data):
+        raise ValueError("Compressive Test: expected UCA/Crush records")
+    normalized = {}
+    for test, fields in COMPRESSIVE_TEST_FIELDS.items():
+        row = data.get(test, {})
+        if not isinstance(row, dict) or any(key not in {"selected", *(field for field, _ in fields)} for key in row):
+            raise ValueError(f"Compressive Test: malformed {test} record")
+        selected = row.get("selected", False)
+        if not isinstance(selected, bool):
+            raise ValueError(f"Compressive Test: {test} selection must be boolean")
+        result = {"selected": selected}
+        for field, label in fields:
+            value = row.get(field)
+            if value is not None and value != "" and (isinstance(value, bool) or
+                    not isinstance(value, (int, float)) or not math.isfinite(value)):
+                raise ValueError(f"Compressive Test: {label} must be a finite number or blank")
+            result[field] = value
+        normalized[test] = result
+    qc["compressive"] = normalized
+    qc.pop("comp_test", None)
+    return normalized
+
+
+def validate_compressive_test(qc):
+    """Single measured-strength completion/derivation gate for UI/status/export."""
+    data = compressive_inputs(qc)
+    if not any(row["selected"] for row in data.values()):
+        raise ValueError("Compressive Test: select UCA and/or Crush Test")
+    output = {}
+    for test, fields in COMPRESSIVE_TEST_FIELDS.items():
+        row = data[test]
+        if not row["selected"]:
+            output[test] = {"selected": False}
+            continue
+        for field, label in fields:
+            value = row[field]
+            if value is None or value == "" or value < 0:
+                raise ValueError(f"Compressive Test: {label} requires a finite nonnegative measurement")
+        if test == "uca":
+            result = row["cs_24"]
+        else:
+            try:
+                # Exact stored-number arithmetic retains even a tiny positive remainder.
+                result = math.ceil(sum(Fraction(row[field]) for field, _ in fields) / 16)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError("Compressive Test: Crush calculation must remain finite") from exc
+        output[test] = {**row, "result": result}
+    return output
+
+
 def lab_review_signature(qc, grid):
     """Identify precisely the QC readings and lab rows confirmed by an operator."""
     from project_state import fingerprint
+    compressive_inputs(qc)
     return fingerprint({"qc": {key: value for key, value in qc.items()
                                if key not in ("reviewed", "review_signature", "thickening_endpoint")},
                         "grid": grid})
@@ -1000,6 +1067,7 @@ def compute_phase_status(ss) -> dict:
                 validate_lab_collection_results(qc[slurry])
                 validate_rheology_results(qc[slurry])
                 validate_thickening_test(qc[slurry])
+                validate_compressive_test(qc[slurry])
             except ValueError:
                 missing.append(slurry)
                 continue

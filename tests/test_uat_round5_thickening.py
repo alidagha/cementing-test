@@ -302,7 +302,11 @@ def test_multislurry_archive_reactivation_flc_and_word():
 
 def test_only_authorized_thickening_cell_text_changed_in_template():
     original = BytesIO(subprocess.check_output(['git', 'show', 'ecb0a6e:master_template.docx']))
-    with zipfile.ZipFile(original) as old, zipfile.ZipFile('master_template.docx') as new:
+    completed = BytesIO(subprocess.check_output(['git', 'show', 'a713cef:master_template.docx']))
+    with zipfile.ZipFile(completed) as closed, zipfile.ZipFile('master_template.docx') as current:
+        get_table = lambda x: next(m.group() for m in re.finditer(rb'<w:tbl>.*?</w:tbl>', x, re.S) if b'Thickening Time Test' in m.group())
+        assert get_table(closed.read('word/document.xml')) == get_table(current.read('word/document.xml'))
+    with zipfile.ZipFile(original) as old, zipfile.ZipFile(completed) as new:
         assert old.namelist() == new.namelist()
         for name in old.namelist():
             if name != 'word/document.xml': assert old.read(name) == new.read(name)

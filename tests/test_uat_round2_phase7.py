@@ -128,9 +128,12 @@ class Round2LabUAT(unittest.TestCase):
         for endpoint in ('100 Bc','Not specified','arbitrary',None):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(lab_review_signature({**qc,'thickening_endpoint':endpoint},grid),signature)
-        for field in ('bhct','thickening_time','free_water','free_water_45','surface_hardened_hours','api_fl','comp_test'):
+        for field in ('bhct','thickening_time','free_water','free_water_45','surface_hardened_hours','api_fl'):
             with self.subTest(measured=field):
                 self.assertNotEqual(lab_review_signature({**qc,field:'changed'},grid),signature)
+        changed_qc = deepcopy(qc)
+        changed_qc['compressive']['crush']['force_1'] += 1
+        self.assertNotEqual(lab_review_signature(changed_qc, grid), signature)
         for column in grid.columns:
             changed=grid.copy();changed.loc[0,column]='changed'
             self.assertNotEqual(lab_review_signature(qc,changed),signature)
