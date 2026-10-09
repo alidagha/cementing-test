@@ -5,6 +5,7 @@ import math
 import pandas as pd
 import materials_db
 from rheology import validate_rheology_inputs
+from engineering_tools import THICKENING_TEST_FIELDS
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
                            migrate_material_properties, validate_material_properties)
 from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
@@ -58,6 +59,16 @@ def _check_numeric_fields(container, fields, path, nullable=()):
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f"{path}.{field} must be a finite number (got {value!r}).")
+
+
+def _check_thickening_draft(container, path):
+    # Completion belongs to Phase VII/export; malformed HH:MM text may reopen.
+    _check_numeric_fields(container, ("thickening_cell",), path, nullable=("thickening_cell",))
+    for field, _, kind in THICKENING_TEST_FIELDS:
+        if field == "thickening_time" or kind == "number" or field not in container:
+            continue
+        if container[field] is not None and not isinstance(container[field], str):
+            raise ValueError(f"{path}.{field} must be text or an unfinished blank.")
 
 
 def _validate_project(data):
@@ -119,6 +130,7 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol",))
         if "lab_qc_params" in draft:
+            _check_thickening_draft(draft["lab_qc_params"], f"inactive_slurry_drafts.{slurry}.lab_qc_params")
             if "rheology" in draft["lab_qc_params"]:
                 validate_rheology_inputs(draft["lab_qc_params"]["rheology"])
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"),
@@ -138,6 +150,7 @@ def _validate_project(data):
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                               f"cement_params.{name}", nullable=("dead_vol",))
     for name, params in data.get("lab_qc_params", {}).items():
+        _check_thickening_draft(params, f"lab_qc_params.{name}")
         if "rheology" in params:
             validate_rheology_inputs(params["rheology"])
         _check_numeric_fields(params, ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",

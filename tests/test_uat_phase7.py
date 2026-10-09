@@ -122,7 +122,7 @@ class Phase7UAT(unittest.TestCase):
         self.phase(app, "phase1")
         self.phase(app, "phase7")
         self.assertEqual(self.input(app, "Surface Sample Hours - Main").value, 8.25)
-        tt = next(w for w in app.text_input if w.label == "Thickening Time (HH:MM) - Main")
+        tt = next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main")
         tt.set_value("03:30").run()  # Explicit measured setup, no implicit lab time.
         self.assertEqual(tt.value, "03:30")
         tt.set_value("04:45").run()

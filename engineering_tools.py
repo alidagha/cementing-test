@@ -20,7 +20,14 @@ BBL_TO_CUFT = BBL_GAL / GAL_PER_CUFT
 WATER_LB_PER_GAL = WATER_DENSITY_PCF / GAL_PER_CUFT
 LAB_SCALE = 1058.0
 
-LAB_THICKENING_ENDPOINT = "70 Bc"
+THICKENING_TEST_FIELDS = (
+    ("thickening_test_start", "Test Start", "clock"),
+    ("thickening_enter_time", "Enter Time", "elapsed"),
+    ("thickening_cell", "Cell", "number"),
+    ("thickening_30_bc", "30 Bc", "duration"),
+    ("thickening_50_bc", "50 Bc", "duration"),
+    ("thickening_time", "70 Bc", "duration"),
+)
 
 
 def lab_review_signature(qc, grid):
@@ -52,12 +59,35 @@ def thickening_time_valid(value) -> bool:
     inclusive upper bound; the owner spec rejects values above 24 hours.
     Deliberately NO digit normalization here: it mirrors the pre-existing
     format regex's strictness on what the operator literally typed."""
+    minutes = _hhmm_minutes(value)
+    return minutes is not None and 0 < minutes <= 24 * 60
+
+
+def _hhmm_minutes(value, *, two_digit_hours=False):
+    """Parse literal HH:MM; preserve the existing duration's hour-width rule."""
     text = str(value).strip()
-    if not re.fullmatch(r"\d{1,2}:[0-5]\d", text):
-        return False
+    pattern = r"[0-9]{2}:[0-5][0-9]" if two_digit_hours else r"\d{1,2}:[0-5]\d"
+    if not re.fullmatch(pattern, text):
+        return None
     hours, minutes = text.split(":")
-    total_minutes = int(hours) * 60 + int(minutes)
-    return 0 < total_minutes <= 24 * 60
+    return int(hours) * 60 + int(minutes)
+
+
+def validate_thickening_test(qc):
+    """One completion gate for UI, status and export; unfinished drafts may save."""
+    for field, label, kind in THICKENING_TEST_FIELDS:
+        value = qc.get(field)
+        if kind == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError("Cell: enter a finite numeric value")
+        elif kind == "duration":
+            if not thickening_time_valid(value):
+                raise ValueError(f"{label}: enter HH:MM, greater than 00:00 and at most 24:00")
+        else:
+            minutes = _hhmm_minutes(value, two_digit_hours=True)
+            if minutes is None or not 0 <= minutes <= 24 * 60:
+                raise ValueError(f"{label}: enter HH:MM from 00:00 through 24:00")
+    return {field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS}
 
 # ==============================================================================
 # 1. CORE NUMERIC, STRING & HYDRAULIC UTILITIES
@@ -969,10 +999,8 @@ def compute_phase_status(ss) -> dict:
             try:
                 validate_lab_collection_results(qc[slurry])
                 validate_rheology_results(qc[slurry])
+                validate_thickening_test(qc[slurry])
             except ValueError:
-                missing.append(slurry)
-                continue
-            if not thickening_time_valid(qc[slurry].get("thickening_time")):
                 missing.append(slurry)
                 continue
             bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst", 200))

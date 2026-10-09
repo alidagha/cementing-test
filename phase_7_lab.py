@@ -6,7 +6,7 @@ import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset, build_rheology
 from project_state import invalidate_document
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid, validate_lab_collection_results, LAB_THICKENING_ENDPOINT
+from engineering_tools import lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 # IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
@@ -39,6 +39,35 @@ def _commit_lab_qc(slurry: str, field: str, widget_key: str) -> None:
     entry = st.session_state.get("lab_qc_params", {}).get(slurry)
     if isinstance(entry, dict):
         entry[field] = value
+        if field in {key for key, _, _ in THICKENING_TEST_FIELDS}:
+            invalidate_document(st.session_state)
+
+
+def _render_thickening_test(slurry, qc, load_sig):
+    st.markdown("#### Thickening Time Test")
+    columns = st.columns(3)
+    for i, (field, label, kind) in enumerate(THICKENING_TEST_FIELDS):
+        key = f"_qc_{field}_{get_slurry_key(slurry, 'in')}_{load_sig}"
+        if key not in st.session_state:
+            value = qc.get(field)
+            st.session_state[key] = (float(value) if value is not None else None) if kind == "number" else ("" if value is None else str(value))
+        args = (slurry, field, key)
+        if kind == "number":
+            columns[i % 3].number_input(f"{label} - {slurry}", value=None, key=key,
+                                       on_change=_commit_lab_qc, args=args,
+                                       help="Finite numeric cell value; no integer-only or range restriction.")
+        else:
+            help_text = ("Wall-clock start, 00:00–23:59 or exactly 24:00." if kind == "clock" else
+                         "Elapsed test time, 00:00–24:00." if kind == "elapsed" else
+                         "Elapsed milestone time, greater than 00:00 and at most 24:00.")
+            columns[i % 3].text_input(f"{label} (HH:MM) - {slurry}", key=key,
+                                     on_change=_commit_lab_qc, args=args, help=help_text)
+    try:
+        validate_thickening_test(qc)
+        return True
+    except ValueError as exc:
+        st.caption(f"{slurry}: {exc}. Unfinished values remain saved.")
+        return False
 
 def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
     row = st.session_state["lab_qc_params"][slurry]["rheology"][dataset]
@@ -414,6 +443,8 @@ def render():
             qc.setdefault("bhct", None)
             qc.setdefault("free_water_45", None)
             qc.setdefault("surface_hardened_hours", None)
+            for field, _, kind in THICKENING_TEST_FIELDS:
+                qc.setdefault(field, None if kind == "number" else "")
 
             # Fetch parameters from Phase V and Phase IV
             p_cement = st.session_state.get("cement_params", {}).get(slurry, {}).get("base_cement", "Cement G Delijan")
@@ -652,30 +683,8 @@ def render():
                     on_change=_commit_lab_qc,
                     args=(slurry, "comp_test", comp_key)
                 )
-                tt_key = f"_qc_tt_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                qc["thickening_time"] = st.text_input(
-                    f"Thickening Time (HH:MM) - {slurry}",
-                    value=str(qc.get("thickening_time", "")),
-                    key=tt_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "thickening_time", tt_key),
-                    help=f"Reported thickening time at {LAB_THICKENING_ENDPOINT}."
-                )
-                # FIX (requested, Level 2 #8): this is free text with no
-                # format enforcement (deliberately — see the design-decisions
-                # note on why range/free-text fields in this app stay text
-                # inputs), and it's printed into the Word report exactly as
-                # typed. A caption-level nudge catches an obviously malformed
-                # value (e.g. "3:3", "03.30") without blocking anything.
-                # BUG-09 + F2 (P1-02, owner-approved 2026-09-29): two-stage
-                # gate — the HH:MM format check AND the semantic envelope:
-                # '00:00' is not a measurable thickening time and anything
-                # above 24 hours is outside lab-report plausibility. Both now
-                # fail tt_valid, so they can neither be confirmed (button
-                # below) nor keep a stale 'reviewed' status alive.
-                tt_valid = thickening_time_valid(qc["thickening_time"])
-                if not tt_valid:
-                    st.caption("⚠️ Format should be HH:MM (e.g. 03:30); '00:00' and values above 24 hours are rejected. This value is printed in the report exactly as typed.")
+
+            tt_valid = _render_thickening_test(slurry, qc, load_sig)
 
             try:
                 validate_lab_masses(edited_lab_df)
@@ -710,10 +719,7 @@ def render():
             elif not temperature_valid:
                 st.caption("Correct BHCT/BHST before confirming the lab results.")
             elif not tt_valid:
-                # BUG-09 + F2: malformed OR out-of-envelope Thickening Time
-                # ('00:00', above 24:00) must not be confirmable into the
-                # exported report.
-                st.caption("Correct the Thickening Time (HH:MM, e.g. 03:30 — '00:00' and values above 24 hours are rejected) before confirming the lab results.")
+                st.caption("Complete the Thickening Time Test fields before confirming the lab results.")
             else:
                 st.warning("Lab QC has not been confirmed for this slurry; defaults are not measured results.")
 
@@ -737,8 +743,7 @@ def render():
                 "free_water_45": qc["free_water_45"],
                 "surface_hardened_hours": qc["surface_hardened_hours"],
                 "comp_test": qc["comp_test"],
-                "thickening_time": qc["thickening_time"],
-                "thickening_endpoint": LAB_THICKENING_ENDPOINT,
+                **{field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS},
                 "bhsp": well_data.get("bhsp", ""),
                 "base_fluid": slurry_cement_params.get("base_fluid_gal_sk", ""),
                 "mix_water": slurry_cement_params.get("mix_water_gal_sk", ""),

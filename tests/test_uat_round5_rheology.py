@@ -214,7 +214,9 @@ def test_multi_slurry_archive_reactivation_and_word():
 
 def test_template_only_authorized_rheology_text_changes():
     original=BytesIO(subprocess.check_output(['git','show','9205d84:master_template.docx']))
-    with zipfile.ZipFile(original) as old,zipfile.ZipFile('master_template.docx') as new:
+    completed=BytesIO(subprocess.check_output(['git','show','ecb0a6e:master_template.docx']))
+    # Round 5-2 authorizes other Lab cells; retain the complete 5-1 scope proof.
+    with zipfile.ZipFile(original) as old,zipfile.ZipFile(completed) as new:
         assert old.namelist()==new.namelist()
         for name in old.namelist():
             if name!='word/document.xml':assert old.read(name)==new.read(name)
@@ -225,6 +227,8 @@ def test_template_only_authorized_rheology_text_changes():
         clean=after.group().replace(b'<w:t>{{ s.lab.bhct }} degF</w:t>',b'<w:t>degF</w:t>',1)
         clean=re.sub(rb'{{ s.lab.rheology\.get.*? }}',b'-',clean)
         assert clean==before.group()
+        with zipfile.ZipFile('master_template.docx') as current:
+            assert tb(current.read('word/document.xml')).group()==after.group()
 
 
 def test_hidden_invalid_draft_excluded_from_runtime_validity_but_not_json_trust():

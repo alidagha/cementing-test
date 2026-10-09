@@ -50,6 +50,12 @@ def rheology_fixture():
             "gel_10_sec": "8", "gel_10_min": "12"}}
 
 
+def thickening_fixture():
+    """Explicit measured Round 5-2 inputs for existing valid-export fixtures."""
+    return {"thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+            "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00"}
+
+
 BATCH1_JOBS = ('CSG 9 5/8"', 'CMT PLUG', 'CMT SQUEEZE', 'LNR 7"', 'TIE BACK LNR 7"')
 
 
@@ -196,13 +202,13 @@ class AuditRegressions(unittest.TestCase):
                 {"Chemical": "Spacer", "User Input (% or gal)": 1.0, "Weighting Agent Type": "-"},
             ]) for s in ("Spacer", "Spacer Ahead", "Spacer Behind")}
         self.phase(app, "phase6")
-        app.session_state["lab_qc_params"] = {"Main": {"rheology": rheology_fixture()}}
+        app.session_state["lab_qc_params"] = {"Main": {"rheology": rheology_fixture(), **thickening_fixture()}}
         self.phase(app, "phase7")
         for label, value in (("BHCT (°F) - Main", 150),
                              ("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
             next(w for w in app.number_input if w.label == label).set_value(value).run()
-        next(w for w in app.text_input if w.label == "Thickening Time (HH:MM) - Main").set_value("03:30").run()
+        next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main").set_value("03:30").run()
         next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
         self.healthy(app)
         return app
@@ -780,7 +786,7 @@ class AuditRegressions(unittest.TestCase):
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
                             bhct=150, thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
-                            rheology=rheology_fixture())
+                            rheology=rheology_fixture(), **thickening_fixture())
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
                         self.phase(app, phase)

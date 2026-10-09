@@ -11,8 +11,8 @@ from rheology import validate_rheology_results
 from engineering_tools import (require_positive_density, require_bhsp_density, require_positive_pump_rate,
                                require_preflush_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
-                               validate_lab_masses, thickening_time_valid, parse_effective_numeric,
-                               validate_lab_collection_results, LAB_THICKENING_ENDPOINT,
+                               validate_lab_masses, validate_thickening_test, parse_effective_numeric,
+                               validate_lab_collection_results, THICKENING_TEST_FIELDS,
                                MATERIAL_PROPERTY_SCHEMA, LEGACY_ADDITIVE_SG,
                                catalog_cement_sg, resolve_cement_sg, default_additive_density_gcm3,
                                is_salt_additive, SALT_MODEL_VERSION)
@@ -307,6 +307,7 @@ def purge_inactive_slurries(state, active):
         stems += [f"_editor_additives_{token}_", f"_editor_lab_tbl_{token}_", f"_sync_btn_{token}_"]
         stems += [f"_rheo_{token}_"]
         stems += [f"_qc_{p}_in_{token}_" for p in ("bhct", "fl", "fw", "fw45", "surface_hours", "comp", "tt", "tt_endpoint")]
+        stems += [f"_qc_{field}_in_{token}_" for field, _, _ in THICKENING_TEST_FIELDS]
         # BUG-15: the phase V/VI editors additionally keep a revision counter
         # and editor_state keeps a "_editor_source_" mirror of every editor
         # key; none of these matched the stems above and survived the purge.
@@ -484,9 +485,11 @@ def refresh_lab_payloads(state):
             state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: Phase VII Rheology: {exc}; review the selected datasets before Word export.")
             continue
-        if not thickening_time_valid(qc.get("thickening_time")):
+        try:
+            thickening = validate_thickening_test(qc)
+        except ValueError as exc:
             state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII thickening time must be valid HH:MM, greater than 00:00 and at most 24:00.")
+            issues.append(f"{slurry}: Phase VII Thickening Time Test: {exc}.")
             continue
         p = state.get("cement_params", {}).get(slurry, {})
         well = state.get("well_data", {})
@@ -515,7 +518,7 @@ def refresh_lab_payloads(state):
             "api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
             "free_water": qc.get("free_water", "-"), "comp_test": qc.get("comp_test", "-"),
             "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
-            "thickening_time": qc.get("thickening_time", "-"), "thickening_endpoint": LAB_THICKENING_ENDPOINT,
+            **thickening,
             "bhsp": well.get("bhsp", ""), "base_fluid": p.get("base_fluid_gal_sk", ""),
             "mix_water": p.get("mix_water_gal_sk", ""),
             "mix_fluid": p.get("mix_fluid_gal_sk", ""), "solution_density": materials_db.SOLUTION_DENSITY_PCF,

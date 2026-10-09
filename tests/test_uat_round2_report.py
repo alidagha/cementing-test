@@ -43,7 +43,7 @@ class Round2ReportUAT(unittest.TestCase):
             project['lab_qc_params'][slurry] = {'bhct': 150, 'free_water': float(i),
                 'free_water_45': i + .5, 'surface_hardened_hours': 8. + i,
                 'thickening_time': '03:30', 'thickening_endpoint': '70 Bc',
-                'rheology': audit.rheology_fixture()}
+                'rheology': audit.rheology_fixture(), **audit.thickening_fixture()}
         app = case.app(audit.round_trip(project))
         for phase in ('phase2_3', 'phase4', 'phase5', 'phase6', 'phase7'):
             case.phase(app, phase)

@@ -17,7 +17,7 @@ from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, safe_float,
-                               parse_effective_numeric, require_nonnegative_number, LAB_THICKENING_ENDPOINT, BBL_TO_CUFT)
+                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -52,6 +52,9 @@ def _word_quantity_context(context):
             value = safe_float(row["lab"].get(key), None)
             if value is not None and math.isfinite(value):
                 row["lab"][key] = f"{round_half_up(value, 0):.0f}"
+        if "thickening_cell" in row["lab"]:
+            cell = row["lab"]["thickening_cell"]
+            row["lab"]["thickening_cell"] = str(cell) if isinstance(cell, (int, float)) else "-"
         # Terminal Rheology presentation only; canonical readings/fits stay numeric.
         if "rheology" in row["lab"]:
             rheology = {}
@@ -1184,9 +1187,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "bhct": lab_info.get("bhct", "-"),
                 "rheology": lab_info.get("rheology", {}),
                 "bhst": lab_info.get("bhst", "-"),
-                "thickening_time": lab_info.get("thickening_time", "-"),
-                "thickening_endpoint": LAB_THICKENING_ENDPOINT,
-                "thickening_endpoint_label": LAB_THICKENING_ENDPOINT,
+                **{field: lab_info.get(field, "-") for field, _, _ in THICKENING_TEST_FIELDS},
                 "fluid_loss": lab_info.get("api_fl", "-"),
                 "api_fl_collected": lab_info.get("api_fl_collected", "-"),
                 "free_water": lab_info.get("free_water", "-"),

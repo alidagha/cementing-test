@@ -46,7 +46,7 @@ class Round2LabUAT(unittest.TestCase):
         return next(w for w in app.number_input if w.label == label)
 
     def time(self, app, s):
-        return next(w for w in app.text_input if w.label == 'Thickening Time (HH:MM) - '+s)
+        return next(w for w in app.text_input if w.label == '70 Bc (HH:MM) - '+s)
 
     def context(self, state, prepared=False):
         with patch.object(report.st, 'session_state', deepcopy(state)):
@@ -145,15 +145,15 @@ class Round2LabUAT(unittest.TestCase):
                     app=self.app(p);self.phase(app,'phase7')
                     self.assertEqual(app.session_state['lab_qc_params']['Main']['thickening_endpoint'],endpoint)
                     self.assertFalse(any('Thickening Time Endpoint' in w.label for w in app.selectbox))
-                    self.assertEqual(app.session_state['lab_payload_Main']['thickening_endpoint'],'70 Bc')
+                    self.assertNotIn('thickening_endpoint',app.session_state['lab_payload_Main'])
                     self.assertEqual(compute_phase_status(app.session_state)['phase7']['level'],'ok')
                     state=deepcopy(app.session_state.to_dict())
                     self.assertEqual(prepare_calculations(state),[])
-                    self.assertEqual(state['lab_payload_Main']['thickening_endpoint'],'70 Bc')
+                    self.assertNotIn('thickening_endpoint',state['lab_payload_Main'])
                     state['lab_payload_Main']['thickening_endpoint']=endpoint
                     context=self.context(state,prepared=True)
-                    self.assertEqual(context['slurries'][0]['lab']['thickening_endpoint'],'70 Bc')
-                    self.assertEqual(context['slurries'][0]['lab']['thickening_endpoint_label'],'70 Bc')
+                    self.assertNotIn('thickening_endpoint',context['slurries'][0]['lab'])
+                    self.assertNotIn('thickening_endpoint_label',context['slurries'][0]['lab'])
                     self.export(app)
                     doc=Document(BytesIO(app.session_state['_compiled_doc_bytes']))
                     table=next(t for t in doc.tables if t.rows[0].cells[0].text=='Thickening Time Test')
