@@ -9,6 +9,7 @@ import math
 from numbers import Real
 from decimal import Decimal, ROUND_HALF_UP
 import materials_db
+from rheology import validate_rheology_results
 
 
 CEMENT_SACK_LB = 110.0
@@ -967,6 +968,7 @@ def compute_phase_status(ss) -> dict:
                 continue
             try:
                 validate_lab_collection_results(qc[slurry])
+                validate_rheology_results(qc[slurry])
             except ValueError:
                 missing.append(slurry)
                 continue

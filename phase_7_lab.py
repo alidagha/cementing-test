@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import re
 import materials_db
+from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset, build_rheology
+from project_state import invalidate_document
 from project_state import lab_source_signature
 from engineering_tools import lab_review_signature, lab_temperature_valid, thickening_time_valid, validate_lab_collection_results, LAB_THICKENING_ENDPOINT
 from input_guard import repair_invalid_inputs
@@ -37,6 +39,69 @@ def _commit_lab_qc(slurry: str, field: str, widget_key: str) -> None:
     entry = st.session_state.get("lab_qc_params", {}).get(slurry)
     if isinstance(entry, dict):
         entry[field] = value
+
+def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
+    row = st.session_state["lab_qc_params"][slurry]["rheology"][dataset]
+    if rpm is None:
+        row[field] = st.session_state[widget_key]
+    else:
+        row["readings"][str(rpm)] = st.session_state[widget_key]
+    invalidate_document(st.session_state)
+
+
+def _render_rheology(slurry, qc, load_sig):
+    st.markdown("#### Rheology Test — Fann 35 / R1B1 / Spring 1.0")
+    data = qc.setdefault("rheology", {})
+    token = get_slurry_key(slurry, "").strip("_")
+    for dataset, label in RHEOLOGY_DATASETS:
+        row = data.setdefault(dataset, new_rheology_dataset())
+        prefix = f"_rheo_{token}_{dataset}_"
+        key = prefix + "selected_" + load_sig
+        if key not in st.session_state:
+            st.session_state[key] = row.get("selected", False)
+        st.checkbox(f"{label} - {slurry}", key=key, on_change=_commit_rheology,
+                    args=(slurry, dataset, "selected", key))
+        if not row.get("selected", False):
+            continue
+        condition = "Surface" if dataset == "surface_down" else f"{qc.get('bhct')} °F (BHCT)"
+        st.caption(f"{label}: {condition}")
+        readings = row.setdefault("readings", {})
+        columns = st.columns(7)
+        for column, rpm in zip(columns, RPM_ORDER):
+            key = prefix + str(rpm) + "_" + load_sig
+            if key not in st.session_state:
+                value = readings.get(str(rpm), "")
+                st.session_state[key] = "" if value is None else str(value)
+            column.text_input(f"{rpm} RPM - {label} - {slurry}", key=key,
+                              on_change=_commit_rheology,
+                              args=(slurry, dataset, "readings", key, rpm))
+        columns = st.columns(2)
+        for column, field, gel_label in zip(columns, ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):
+            key = prefix + field + "_" + load_sig
+            if key not in st.session_state:
+                value = row.get(field, "")
+                st.session_state[key] = "" if value is None else str(value)
+            column.text_input(f"{gel_label} - {label} - {slurry}", key=key,
+                              on_change=_commit_rheology,
+                              args=(slurry, dataset, field, key),
+                              help="Enter a finite measured number or '-'. Blank is unfinished.")
+    try:
+        result, issues = build_rheology(qc)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return {}, [str(exc)]
+    for dataset, label in RHEOLOGY_DATASETS:
+        row = result[dataset]
+        if row["selected"] and row["pv_cp"] is not None:
+            st.caption(label)
+            columns = st.columns(3)
+            for column, title, field, decimals in zip(columns, ("PV (cP)", "Ty (lbf/100ft²)", "IOD"),
+                                                       ("pv_cp", "ty_lbf_100ft2", "iod"), (3, 2, 3)):
+                column.metric(title, f"{row[field]:.{decimals}f}")
+    for issue in issues:
+        st.warning(issue)
+    return result, issues
+
 
 def get_slurry_key(slurry_name: str, prefix: str) -> str:
     sanitized = "".join(c if c.isalnum() else "_" for c in str(slurry_name)).lower()
@@ -624,15 +689,16 @@ def render():
             except ValueError as exc:
                 collection_valid = False
                 st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
+            rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)
             temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
-            review_matches = (temperature_valid and tt_valid and masses_valid and collection_valid
+            review_matches = (temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
                               and signatures.get(slurry) == current_p5_sig)
             if review_matches:
                 st.success("Lab readings and formulation reviewed for this slurry.")
             elif st.button("Confirm measured lab results", key=f"_confirm_lab_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                           disabled=drifted or not temperature_valid or not tt_valid or not masses_valid or not collection_valid,
+                           disabled=bool(rheology_issues) or drifted or not temperature_valid or not tt_valid or not masses_valid or not collection_valid,
                            help="Confirm the values above are measured and checked for the current well and formulation."):
                 qc["reviewed"] = True
                 qc["review_signature"] = lab_review_signature(qc, edited_lab_df)
@@ -662,6 +728,7 @@ def render():
             # Expose consolidated clean lab payload for Phase X Word export
             st.session_state[f"lab_payload_{slurry}"] = {
                 "grid": edited_lab_df,
+                "rheology": rheology,
                 "bhct": qc["bhct"],
                 "bhst": bhst,
                 "api_fl": qc["api_fl"] * 2.0,

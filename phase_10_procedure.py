@@ -8,6 +8,7 @@ import os
 import re
 from collections import deque
 from pathlib import Path
+from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
                        hardware_row_metadata, target_row_metadata, hardware_context_label,
@@ -51,6 +52,25 @@ def _word_quantity_context(context):
             value = safe_float(row["lab"].get(key), None)
             if value is not None and math.isfinite(value):
                 row["lab"][key] = f"{round_half_up(value, 0):.0f}"
+        # Terminal Rheology presentation only; canonical readings/fits stay numeric.
+        if "rheology" in row["lab"]:
+            rheology = {}
+            for dataset, _ in RHEOLOGY_DATASETS:
+                source = row["lab"].get("rheology", {}).get(dataset, {})
+                selected = source.get("selected", False)
+                rendered = {str(rpm): "-" for rpm in RPM_ORDER}
+                for rpm in RPM_ORDER:
+                    value = source.get("readings", {}).get(str(rpm))
+                    if selected and value is not None:
+                        rendered[str(rpm)] = f"{value:g}"
+                for field, decimals in (("pv_cp", 3), ("ty_lbf_100ft2", 2), ("iod", 3)):
+                    value = source.get(field)
+                    rendered[field] = f"{value:.{decimals}f}" if selected and value is not None else "-"
+                for field in ("gel_10_sec", "gel_10_min"):
+                    value = source.get(field, "-")
+                    rendered[field] = f"{value:g}" if selected and isinstance(value, (int, float)) else "-"
+                rheology[dataset] = rendered
+            row["lab"]["rheology"] = rheology
         slurries.append(row)
     return dict(context, slurries=slurries)
 
@@ -1162,6 +1182,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             "lab_additives": [dict(row, Name=row["Material Type"]) for row in lab_adds_rows],
             "lab": {
                 "bhct": lab_info.get("bhct", "-"),
+                "rheology": lab_info.get("rheology", {}),
                 "bhst": lab_info.get("bhst", "-"),
                 "thickening_time": lab_info.get("thickening_time", "-"),
                 "thickening_endpoint": LAB_THICKENING_ENDPOINT,

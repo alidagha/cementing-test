@@ -4,6 +4,7 @@ import json
 import math
 import pandas as pd
 import materials_db
+from rheology import validate_rheology_inputs
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
                            migrate_material_properties, validate_material_properties)
 from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
@@ -118,6 +119,8 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol",))
         if "lab_qc_params" in draft:
+            if "rheology" in draft["lab_qc_params"]:
+                validate_rheology_inputs(draft["lab_qc_params"]["rheology"])
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params",
                                   nullable=("free_water_45", "surface_hardened_hours", "bhct"))
@@ -135,6 +138,8 @@ def _validate_project(data):
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                               f"cement_params.{name}", nullable=("dead_vol",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if "rheology" in params:
+            validate_rheology_inputs(params["rheology"])
         _check_numeric_fields(params, ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",
                               nullable=("free_water_45", "surface_hardened_hours", "bhct"))
     hardware_columns = {"Description", "MD (m)", "Size (in)", "ID (in)",

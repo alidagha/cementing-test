@@ -42,6 +42,14 @@ def round_trip(state):
                           namespace["deserialize_item"])
 
 
+def rheology_fixture():
+    """Measured Rheology prerequisite for existing valid-export fixtures."""
+    return {"surface_down": {"selected": True,
+            "readings": dict(zip(('300', '200', '100', '60', '30', '6', '3'),
+                                 ('168', '116', '64', '41', '24', '8', '6'))),
+            "gel_10_sec": "8", "gel_10_min": "12"}}
+
+
 BATCH1_JOBS = ('CSG 9 5/8"', 'CMT PLUG', 'CMT SQUEEZE', 'LNR 7"', 'TIE BACK LNR 7"')
 
 
@@ -188,6 +196,7 @@ class AuditRegressions(unittest.TestCase):
                 {"Chemical": "Spacer", "User Input (% or gal)": 1.0, "Weighting Agent Type": "-"},
             ]) for s in ("Spacer", "Spacer Ahead", "Spacer Behind")}
         self.phase(app, "phase6")
+        app.session_state["lab_qc_params"] = {"Main": {"rheology": rheology_fixture()}}
         self.phase(app, "phase7")
         for label, value in (("BHCT (°F) - Main", 150),
                              ("Free Water Collected (45° angle) (ml) - Main", 0.0),
@@ -770,7 +779,8 @@ class AuditRegressions(unittest.TestCase):
                         project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=depths[slurry], top_job_type=job)
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
-                            bhct=150, thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0)
+                            bhct=150, thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
+                            rheology=rheology_fixture())
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
                         self.phase(app, phase)
