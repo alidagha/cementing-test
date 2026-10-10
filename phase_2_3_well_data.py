@@ -4,7 +4,8 @@ import pandas as pd
 import math
 import materials_db
 from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS
-from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived
+from bhct_helper import M_TO_FT, suggest_bhct
+from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived, invalidate_document
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -43,6 +44,30 @@ def _commit_well_widget(field):
         if field == source:
             st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=default)
     st.session_state["well_data"] = get_well_data()
+    invalidate_document(st.session_state)
+
+
+def _bhct_suggestion():
+    """Advisory correlation in feet; only a BHCT regime may be applied."""
+    try:
+        tvd_m = float(st.session_state.get("geo_tvd"))
+        bhst = float(st.session_state.get("bhst"))
+        if tvd_m <= 0 or bhst <= 80:
+            return None
+        suggestion = suggest_bhct(tvd_ft=tvd_m * M_TO_FT, max_rbhest_f=bhst)
+        return (tvd_m, suggestion) if suggestion["kind"] == "BHCT" else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _apply_bhct_suggestion():
+    suggestion = _bhct_suggestion()
+    if suggestion is None:
+        return
+    value = float(max(60, min(400, round(suggestion[1]["temp_degF"]))))
+    st.session_state["_w_bhct"] = st.session_state["bhct"] = value
+    st.session_state["well_data"] = get_well_data()
+    invalidate_document(st.session_state)
 
 
 def _commit_placement(field, widget_key):
@@ -72,6 +97,8 @@ def render():
                    ("bhst", "BHST (°F)", 0, True),
                    ("geo_gradient", "Temperature gradient", 0.0, False))
                if st.session_state.get(field) is not None]
+    if st.session_state.get("bhct") is not None:
+        bounded.append((st.session_state, "bhct", "BHCT (°F)", 60.0, 400.0, False))
     placement = st.session_state.get("placement_config", {})
     if (placement.get("job_type") == st.session_state.get("job_type")
             and placement.get("target_row") == "__manual__"):
@@ -404,7 +431,7 @@ def render():
     st.subheader("3. Geothermal Temperature Profile")
     st.caption("NOTE 1: The Calculated Temperature is based on True Vertical Depth.")
     
-    col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
+    col_g1, col_g2, col_g3, col_bhct, col_g4, col_g5 = st.columns(6)
     with col_g1:
         _seed("_w_geo_md", "geo_md")
         st.number_input("MD (m)", value=None, min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md", on_change=_commit_well_widget, args=("geo_md",))
@@ -417,6 +444,23 @@ def render():
         _seed("_w_bhst", "bhst")
         st.number_input("BHST (degF)", value=None, min_value=0, step=1, key="_w_bhst", on_change=_commit_well_widget, args=("bhst",))
         st.session_state["bhst"] = st.session_state["_w_bhst"]
+    with col_bhct:
+        _seed("_w_bhct", "bhct")
+        st.number_input("BHCT (degF)", value=None, min_value=60.0, max_value=400.0,
+                        step=5.0, key="_w_bhct", on_change=_commit_well_widget, args=("bhct",),
+                        help="Shared well circulating temperature for every fluid and slurry.")
+        suggestion = _bhct_suggestion()
+        if suggestion is not None:
+            tvd_m, result = suggestion
+            raw = round(result["temp_degF"])
+            applied = max(60, min(400, raw))
+            clamp = " (clamped to 60–400 °F)" if raw != applied else ""
+            st.caption(f"Suggested BHCT ≈ {raw} °F{clamp} — i-Handbook/API 10B, TVD {tvd_m * M_TO_FT:,.0f} ft.")
+            st.button(f"Apply {applied} °F", key="_apply_well_bhct", on_click=_apply_bhct_suggestion,
+                      help="Explicitly apply the advisory estimate to the single well BHCT input.")
+        if (st.session_state["bhct"] is not None and st.session_state["bhst"] is not None
+                and st.session_state["bhct"] > st.session_state["bhst"]):
+            st.error("BHCT cannot exceed BHST; correct the well temperature before Lab review.")
     with col_g4:
         _seed("_w_geo_gradient", "geo_gradient")
         st.number_input("Gradient (degF/100ft)", value=None, min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient", on_change=_commit_well_widget, args=("geo_gradient",))

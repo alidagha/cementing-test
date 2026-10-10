@@ -2,23 +2,24 @@
 import streamlit as st
 from typing import Dict, Any
 import materials_db
-from project_state import purge_inactive_slurries
+from project_state import purge_inactive_slurries, invalidate_document
 from input_guard import repair_invalid_inputs
 from engineering_tools import parse_effective_numeric, require_positive_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
 
 # Strict API & Well Execution Sequence for Fluid Train Sorting
-HYDRAULIC_EXECUTION_ORDER = [
-    "Pre Flush",
-    "Spacer",
-    "Spacer Ahead",
-    "Lead",
-    "Lead #1",
-    "Lead #2",
-    "Main",
-    "Tail",
-    "Spacer Behind",
-    "Displacement Fluid"
-]
+HYDRAULIC_EXECUTION_ORDER = materials_db.HYDRAULIC_EXECUTION_ORDER
+
+def _commit_fluid_selection(fluid, key):
+    cfg = st.session_state["fluids_config"]
+    selected = set(cfg["active"])
+    if st.session_state[key]:
+        selected.add(fluid)
+    else:
+        selected.discard(fluid)
+    cfg["active"] = [name for name in HYDRAULIC_EXECUTION_ORDER if name in selected]
+    purge_inactive_slurries(st.session_state, cfg["active"])
+    invalidate_document(st.session_state)
+
 
 def build_fluid_record(
     name: str,
@@ -165,7 +166,7 @@ def render():
         if chk_key not in st.session_state:
             st.session_state[chk_key] = fluid in active_set
             
-        checked = col.checkbox(fluid, key=chk_key)
+        checked = col.checkbox(fluid, key=chk_key, on_change=_commit_fluid_selection, args=(fluid, chk_key))
         if checked:
             selected_fluids.append(fluid)
             
@@ -323,7 +324,7 @@ def render():
                 # density (e.g. 200 pcf) could pass silently here yet trigger
                 # a warning one phase later, which read as contradictory/
                 # confusing rather than as two independent checks.
-                if disp_effective_density > 0 and fluid in {"Main", "Lead", "Lead #1", "Lead #2", "Tail"} and not (75.0 <= disp_effective_density <= 180.0):
+                if disp_effective_density > 0 and fluid in materials_db.CEMENT_FORMULATION_FLUIDS and not (75.0 <= disp_effective_density <= 180.0):
                     st.warning(
                         f"⚠ **Plausibility Check:** {fluid} density is {disp_effective_density:.1f} pcf — outside the "
                         "typical range for a cement slurry (~75-180 pcf). Please verify this isn't a typo; an implausible "

@@ -17,7 +17,7 @@ from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, safe_float,
-                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT)
+                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -31,19 +31,24 @@ from project_state import (fingerprint, prepare_calculations, sync_report_text,
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
 
-SLURRY_ARCHETYPES = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+SLURRY_ARCHETYPES = materials_db.PLACEMENT_SLURRIES
 REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
+
+def _word_program_quantities(row):
+    row = dict(row)
+    for key, decimals in (("yield_cuft_sk", 3), ("solution", 1),
+                          ("mix_water_bbl", 1), ("total_sacks", 1), ("total_water_bbl", 1)):
+        value = safe_float(row.get(key), None)
+        if value is not None:
+            row[key] = f"{value:.{decimals}f}"
+    return row
+
 
 def _word_quantity_context(context):
     """Format a template-only copy after report arithmetic; retain raw context."""
     slurries = []
     for slurry in context.get("slurries", []):
-        row = dict(slurry, lab=dict(slurry.get("lab", {})))
-        for key, decimals in (("yield_cuft_sk", 3), ("solution", 1),
-                              ("mix_water_bbl", 1), ("total_sacks", 1), ("total_water_bbl", 1)):
-            value = safe_float(row.get(key), None)
-            if value is not None:
-                row[key] = f"{value:.{decimals}f}"
+        row = _word_program_quantities(dict(slurry, lab=dict(slurry.get("lab", {}))))
         for key in ("base_fluid", "mix_water", "mix_fluid"):
             value = safe_float(row["lab"].get(key), None)
             if value is not None:
@@ -90,7 +95,10 @@ def _word_quantity_context(context):
                 rheology[dataset] = rendered
             row["lab"]["rheology"] = rheology
         slurries.append(row)
-    return dict(context, slurries=slurries)
+    rendered = dict(context, slurries=slurries)
+    if context.get("has_scavenger"):
+        rendered["scavenger"] = _word_program_quantities(context["scavenger"])
+    return rendered
 
 
 def active_slurry_names(active_fluids):
@@ -171,7 +179,8 @@ def build_ordered_notes(
     total_pump_time_min: float,
     slurries_payload: list,
     has_open_hole_notes: bool,
-    freshwater_note_style: str = "total hardness"
+    freshwater_note_style: str = "total hardness",
+    scavenger_payload: dict = None
 ) -> dict:
     """
     Generates every NOTE in this report, in the single validated order found
@@ -234,6 +243,11 @@ def build_ordered_notes(
         mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         s["note_mix"] = counter.next(mix_note)
 
+    if scavenger_payload is not None:
+        tank = scavenger_payload.get("mixing_tank") or "Mud Reserve Tanks"
+        water = round_half_up(scavenger_payload["total_water_bbl"], 1)
+        scavenger_payload["note_mix"] = counter.next(f"Mix above Additives in {water:.1f} bbl Fresh Water at {tank}.")
+
     # --- Per slurry (same order): Fresh Water / Rheology / Thickening Time ---
     fw_phrase = (
         "Fresh water means total hardness in the 400 ppm range and salt in the 3000 ppm range."
@@ -253,6 +267,7 @@ def build_ordered_notes(
         [notes["note_geothermal"], notes["note_densities"], notes["note_maxpump"], notes["note_dispvol"]]
         + ([notes["note_hydrostatic"], notes["note_porefrac"]] if has_open_hole_notes else [])
         + [s["note_mix"] for s in slurries_payload]
+        + ([scavenger_payload["note_mix"]] if scavenger_payload is not None else [])
         + [x for s in slurries_payload for x in (s["lab"]["note_freshwater"], s["lab"]["note_rheology"], s["lab"]["note_thickening"])]
     )
     return notes
@@ -627,7 +642,7 @@ def generate_official_procedure(
         shared step counter; joined back into one newline-separated block."""
         return "\n".join(sc.next(x) for x in items if x)
     
-    slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+    slurry_archetypes = materials_db.CEMENT_FORMULATION_FLUIDS
     active_slurries = [
         f for f in active_fluids 
         if any(f.replace(" ", "").lower() == s.replace(" ", "").lower() for s in slurry_archetypes)
@@ -941,7 +956,21 @@ def synchronize_report_texts():
     pump_time = state.get("total_pump_time_min", 0.0)
     placement = state.get("placement_config", {})
     summary_config = summary_config_for_job(state.get("executive_summary_config"), job, active_slurry_names(active))
-    summary_source = [job, active, fluids, params, additives, hardware, depth, placement, summary_config]
+    summary_active = [name for name in active if name != "Scavenger"]
+    summary_fluids = {name: dict(value) for name, value in fluids.items() if name != "Scavenger"}
+    if "Scavenger" in active:
+        # Summary sources must describe the train as if Scavenger were absent.
+        cumulative = 0.0
+        for name in summary_active:
+            row = summary_fluids.get(name)
+            if row is None or "duration_min" not in row:
+                continue  # Incomplete trains retain controlled Phase-IV feedback.
+            cumulative += row["duration_min"]
+            row.update(cumul_time_min=cumulative, cumul_time_str=format_to_hr_mm(cumulative))
+    summary_params = {name: value for name, value in params.items() if name != "Scavenger"}
+    summary_additives = {name: value for name, value in additives.items() if name != "Scavenger"}
+    summary_source = [job, summary_active, summary_fluids, summary_params, summary_additives,
+                      hardware, depth, placement, summary_config]
     procedure_source = [job, active, fluids, params, additives, preflush, depth, pump_time, placement,
                         {name: state.get(f"cement_calc_{name}") for name in active}]
     specs = {
@@ -1071,7 +1100,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     issues = [] if calculations_prepared else prepare_calculations(st.session_state)
     if issues:
         raise ValueError(" | ".join(issues))
-    if not any(name in {"Main", "Lead", "Lead #1", "Lead #2", "Tail"}
+    if not any(name in materials_db.PLACEMENT_SLURRIES
                for name in st.session_state.get("fluids_config", {}).get("active", [])):
         invalidate_document(st.session_state)
         raise ValueError("Phase IV: select at least one cement slurry before Word export.")
@@ -1089,7 +1118,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # project JSON (Phase IV's own widgets always emit floats); same
     # philosophy as the placement '....' gate further below.
     _volume_sources = list(active_slurries) + [
-        n for n in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind")
+        n for n in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind", "Scavenger")
         if n in active_fluids]
     unreadable_volumes = sorted(
         f"{name} → volume ({fluid_data[name].get('volume')!r})"
@@ -1222,6 +1251,21 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Complete the placement table inputs before Word export: "
                          + ", ".join(unresolved_placement))
 
+    # Scavenger is a Section-VI program payload, never a placement/Lab slurry.
+    scavenger_payload = None
+    if "Scavenger" in active_fluids:
+        p = st.session_state["cement_params"]["Scavenger"]
+        scavenger_payload = {
+            "name": "Scavenger", "volume_bbl": fluid_data["Scavenger"]["volume"],
+            "density_pcf": fluid_data["Scavenger"]["density"],
+            "yield_cuft_sk": p["yield"], "solution": p["solution"],
+            "mix_water_bbl": p["mix_water"], "total_sacks": p["total_sacks"],
+            "total_water_bbl": p["mix_water"] + (p.get("dead_vol") or 0.0),
+            "mixing_tank": p["tank_name"],
+            "blends": st.session_state["cement_blend_Scavenger"].to_dict("records"),
+            "additives": st.session_state["cement_calc_Scavenger"].to_dict("records"),
+        }
+
     # 4. Pre-flush Data Serialization with Structured Rows (جدول سطری Pre-flush)
     # F1 (P0-01, owner-approved 2026-09-29): preflush_calc is a Phase-VI render
     # byproduct and goes STALE when Phase IV volume/density edits are followed
@@ -1353,7 +1397,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         well_data=well_data,
         total_pump_time_min=st.session_state.get("total_pump_time_min", 0.0),
         slurries_payload=slurries_payload,
-        has_open_hole_notes=has_open_hole_notes
+        has_open_hole_notes=has_open_hole_notes,
+        scavenger_payload=scavenger_payload
     )
 
     proc_text = st.session_state.get("procedure_text", "")
@@ -1407,6 +1452,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "total_pump_time_hhmm": st.session_state.get("total_pump_time_hhmm", "00:00"),
         
         "slurries": note_ctx["slurries"],
+        "has_scavenger": scavenger_payload is not None,
+        "scavenger": scavenger_payload,
         "preflush": preflush_data,
         "spacers": spacer_rows,
         "spacer_volume_bbl": spacer_volume_bbl,
@@ -1626,7 +1673,7 @@ def render():
     # 3. Executive Logistics & Material Summary
     st.subheader("3. Logistics & Material Summary")
     
-    slurry_archetypes = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+    slurry_archetypes = materials_db.CEMENT_FORMULATION_FLUIDS
     active_slurries = [
         f for f in active_fluids 
         if any(f.replace(" ", "").lower() == s.replace(" ", "").lower() for s in slurry_archetypes)

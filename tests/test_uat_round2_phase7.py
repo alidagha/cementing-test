@@ -9,8 +9,8 @@ from docx import Document
 import test_audit_regressions as audit
 import phase_10_procedure as report
 from engineering_tools import compute_phase_status, lab_review_signature, thickening_time_valid
-from project_state import prepare_calculations
-from phase_7_lab import _bhct_suggestion
+from project_state import prepare_calculations, lab_source_signature
+from phase_2_3_well_data import _bhct_suggestion
 
 SLURRIES = ['Lead', 'Lead #1', 'Lead #2', 'Main', 'Tail']
 
@@ -30,6 +30,7 @@ class Round2LabUAT(unittest.TestCase):
 
     def fresh_lab(self):
         p = deepcopy(self.valid)
+        p['bhct'] = p['well_data']['bhct'] = None
         p['fluids_config']['active'] = [*SLURRIES, 'Displacement Fluid']
         for i, s in enumerate(SLURRIES):
             p['fluids_config']['params'][s] = deepcopy(p['fluids_config']['params']['Main'])
@@ -56,7 +57,8 @@ class Round2LabUAT(unittest.TestCase):
         app = self.fresh_lab()
         for s in SLURRIES:
             with self.subTest(slurry=s):
-                self.assertIsNone(self.number(app,'BHCT (°F) - '+s).value)
+                self.assertIsNone(app.session_state['bhct'])
+                self.assertNotIn('bhct',app.session_state['lab_qc_params'][s])
                 self.assertEqual(self.time(app,s).value,'')
                 self.assertEqual(app.session_state['lab_qc_params'][s]['thickening_time'],'')
         self.assertFalse(any('Thickening Time Endpoint' in w.label for w in app.selectbox))
@@ -65,28 +67,32 @@ class Round2LabUAT(unittest.TestCase):
         self.assert_export_blocked(app)
         self.phase(app,'phase7')
         for s in SLURRIES:
-            self.assertIsNone(self.number(app,'BHCT (°F) - '+s).value)
+            self.assertIsNone(app.session_state['bhct'])
+            self.assertNotIn('bhct',app.session_state['lab_qc_params'][s])
             self.assertEqual(self.time(app,s).value,'')
 
     def test_current_nullable_active_and_inactive_drafts_and_numeric_rejections(self):
         for s in SLURRIES:
             for inactive in (False, True):
                 with self.subTest(slurry=s, inactive=inactive):
-                    qc={'bhct':None,'thickening_time':''}
-                    p={'job_type':audit.BATCH1_JOBS[0], 'material_property_schema':1}
+                    qc={'thickening_time':''}
+                    p={'job_type':audit.BATCH1_JOBS[0], 'material_property_schema':1, 'bhct':None}
                     if inactive:p['inactive_slurry_drafts']={s:{'lab_qc_params':qc}}
                     else:p['lab_qc_params']={s:qc}
                     self.assertEqual(audit.round_trip(p),p)
                     for bad in (True,'bad',float('inf'),float('nan')):
-                        qc['bhct']=bad
+                        p['bhct']=bad
                         with self.assertRaises(ValueError):audit.round_trip(p)
 
     def test_first_entries_navigation_and_fresh_restore_preserve_blank_and_entered(self):
         app=self.fresh_lab()
+        self.phase(app,'phase2_3')
+        self.number(app,'BHCT (degF)').set_value(155.0)
+        self.phase(app,'phase1');self.phase(app,'phase2_3')
+        self.assertEqual(self.number(app,'BHCT (degF)').value,155)
+        self.phase(app,'phase7')
         for s in SLURRIES[:-1]:
-            self.number(app,'BHCT (°F) - '+s).set_value(155)
-            self.phase(app,'phase1');self.phase(app,'phase7')
-            self.assertEqual(self.number(app,'BHCT (°F) - '+s).value,155)
+            self.assertEqual(app.session_state[f'lab_payload_{s}']['bhct'],155)
             self.time(app,s).set_value('04:45')
             self.phase(app,'phase1');self.phase(app,'phase7')
             self.assertEqual(self.time(app,s).value,'04:45')
@@ -94,7 +100,7 @@ class Round2LabUAT(unittest.TestCase):
         self.phase(restored,'phase7')
         for s in SLURRIES:
             with self.subTest(slurry=s):
-                self.assertEqual(self.number(restored,'BHCT (°F) - '+s).value,None if s=='Tail' else 155)
+                self.assertEqual(restored.session_state[f'lab_payload_{s}']['bhct'],155)
                 self.assertEqual(self.time(restored,s).value,'' if s=='Tail' else '04:45')
 
     def test_blank_bhct_or_time_blocks_even_matching_review_and_invalidates_word(self):
@@ -107,7 +113,11 @@ class Round2LabUAT(unittest.TestCase):
                         for key in ('cement_params','cement_additives_dfs','lab_grid_dfs','lab_qc_params','lab_source_signatures'):
                             p[key][s]=deepcopy(p[key]['Main'])
                         p['fluids_config']['params'][s]=deepcopy(p['fluids_config']['params']['Main'])
-                    qc=p['lab_qc_params'][s];qc[field]=value
+                    qc=p['lab_qc_params'][s]
+                    if field=='bhct':
+                        p['bhct']=p['well_data']['bhct']=value
+                        p['lab_source_signatures'][s]=lab_source_signature(p,s)
+                    else:qc[field]=value
                     qc['review_signature']=lab_review_signature(qc,p['lab_grid_dfs'][s])
                     p['_compiled_doc_bytes']=b'stale'
                     app=self.app(audit.round_trip(p));self.phase(app,'phase4');self.phase(app,'phase7')
@@ -128,9 +138,12 @@ class Round2LabUAT(unittest.TestCase):
         for endpoint in ('100 Bc','Not specified','arbitrary',None):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(lab_review_signature({**qc,'thickening_endpoint':endpoint},grid),signature)
-        for field in ('bhct','thickening_time','free_water','free_water_45','surface_hardened_hours','api_fl'):
+        for field in ('thickening_time','free_water','free_water_45','surface_hardened_hours','api_fl'):
             with self.subTest(measured=field):
                 self.assertNotEqual(lab_review_signature({**qc,field:'changed'},grid),signature)
+        changed_well=deepcopy(self.valid)
+        changed_well['bhct']=changed_well['well_data']['bhct']=155
+        self.assertNotEqual(lab_source_signature(changed_well,'Main'),lab_source_signature(self.valid,'Main'))
         changed_qc = deepcopy(qc)
         changed_qc['compressive']['crush']['force_1'] += 1
         self.assertNotEqual(lab_review_signature(changed_qc, grid), signature)
@@ -170,15 +183,17 @@ class Round2LabUAT(unittest.TestCase):
         p=audit.round_trip(app.session_state.to_dict())
         p['geo_md']=p['geo_tvd']=3100.
         p['well_data']['geo_md']=p['well_data']['geo_tvd']=3100.
-        app=self.app(p);self.phase(app,'phase7')
-        with patch('phase_7_lab.st.session_state',app.session_state):suggestion=_bhct_suggestion()[2]
+        app=self.app(p);self.phase(app,'phase2_3')
+        with patch('phase_2_3_well_data.st.session_state',app.session_state):suggestion=_bhct_suggestion()[1]
         expected=max(60,min(400,round(suggestion['temp_degF'])))
+        self.assertIsNone(self.number(app,'BHCT (degF)').value)
+        next(b for b in app.button if b.key=='_apply_well_bhct').click().run()
+        self.assertEqual(self.number(app,'BHCT (degF)').value,expected)
+        self.phase(app,'phase7')
         for s in SLURRIES:
             with self.subTest(slurry=s):
-                self.assertIsNone(self.number(app,'BHCT (°F) - '+s).value)
-                button=next(b for b in app.button if b.key.startswith('_qc_bhct_apply_btn_'+s.lower().replace(' ','_').replace('#','_')+'_'))
-                button.click().run()
-                self.assertEqual(self.number(app,'BHCT (°F) - '+s).value,expected)
+                self.assertEqual(app.session_state[f'lab_payload_{s}']['bhct'],expected)
+                self.assertNotIn('bhct',app.session_state['lab_qc_params'][s])
 
     def test_material_types_occurrences_custom_fallback_and_unchanged_membership(self):
         names=['Micro Silica','Silica Flour','Hidense','O-uniFLC5','O-GAS BLOCK','Micro Block']

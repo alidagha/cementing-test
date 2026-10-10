@@ -198,6 +198,17 @@ class Round2Phase1UAT(unittest.TestCase):
     def test_template_change_preserves_all_structure_and_other_zip_parts(self):
         with ZipFile(audit.ROOT / 'master_template.docx') as z:
             root = ET.fromstring(z.read('word/document.xml'))
+            # Round 6 authorizes only this additional Section-VI program block.
+            # Keep every original structure/hash assertion on the untouched XML.
+            body = root.find(W + 'body')
+            nodes = list(body)
+            text = lambda node: ''.join(t.text or '' for t in node.iter(W + 't'))
+            start = next(i for i, node in enumerate(nodes) if text(node) == '{%p if has_scavenger %}')
+            end = next(i for i, node in enumerate(nodes) if i > start and text(node) == '{%p endif %}')
+            inserted = nodes[start:end + 1]
+            self.assertEqual(sum(node.tag == W + 'tbl' for node in inserted), 3)
+            for node in inserted:
+                body.remove(node)
             # Ignore text values only: retain every element, property and attribute,
             # including fonts, spacing, page settings and complete table structure.
             structure = [(e.tag, sorted(e.attrib.items()), None if e.tag == W + 't' else e.text, e.tail)

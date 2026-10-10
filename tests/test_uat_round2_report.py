@@ -18,6 +18,7 @@ from phase_7_lab import build_lab_df_from_phase5
 from placement import slurry_intervals, hardware_choices, HOST_DESCRIPTIONS
 
 ORDER = ['Lead', 'Lead #1', 'Lead #2', 'Main', 'Tail']
+HYDRAULIC_SLURRIES = ['Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail']
 
 
 class Round2ReportUAT(unittest.TestCase):
@@ -31,7 +32,8 @@ class Round2ReportUAT(unittest.TestCase):
         for i, slurry in enumerate(ORDER):
             project['fluids_config']['params'][slurry] = deepcopy(project['fluids_config']['params']['Main'])
             project['cement_params'][slurry] = deepcopy(project['cement_params']['Main'])
-            project['cement_params'][slurry].update(top_mode='Depth (m MD)', top_depth=500. + i * 500,
+            placement_index = ['Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail'].index(slurry)
+            project['cement_params'][slurry].update(top_mode='Depth (m MD)', top_depth=500. + placement_index * 500,
                                                     top_job_type=project['job_type'])
             project['cement_additives_dfs'][slurry] = pd.DataFrame([
                 {'Material Type': 'Extender', 'Name': 'Micro Silica', 'Physical State': 'Powder',
@@ -40,7 +42,7 @@ class Round2ReportUAT(unittest.TestCase):
                  'Mix Method': 'In Mix Water', 'User Input': .5, 'Density': 1.5},
                 {'Material Type': 'Anti Gas Migration', 'Name': 'O-GAS BLOCK', 'Physical State': 'Liquid',
                  'Mix Method': 'In Mix Water', 'User Input': .1, 'Density': 1.2}])
-            project['lab_qc_params'][slurry] = {'bhct': 150, 'free_water': float(i),
+            project['lab_qc_params'][slurry] = {'free_water': float(i),
                 'free_water_45': i + .5, 'surface_hardened_hours': 8. + i,
                 'thickening_time': '03:30', 'thickening_endpoint': '70 Bc',
                 'rheology': audit.rheology_fixture(), **audit.thickening_fixture(), **audit.compressive_fixture()}
@@ -116,14 +118,14 @@ class Round2ReportUAT(unittest.TestCase):
                 state.pop('procedure_text', None); state.pop('exec_summary_text', None)
                 state.pop('report_text_state', None)
                 intervals = slurry_intervals(state['hardware_table'], job, state['placement_config'],
-                                             ORDER, state['cement_params'])
-                self.assertEqual(list(intervals), list(reversed(ORDER)))
+                                             HYDRAULIC_SLURRIES, state['cement_params'])
+                self.assertEqual(list(intervals), list(reversed(HYDRAULIC_SLURRIES)))
                 context = self.context(state)
                 for payload in context['slurries']:
                     self.assertEqual(payload['top'], intervals[payload['name']]['top'])
                     self.assertEqual(payload['bottom'], f"{intervals[payload['name']]['bottom_depth']:.1f} m MD")
                 self.assertEqual([name.title() for name in re.findall(
-                    r'(lead(?: #\d)?|main|tail) cement slurry will be cemented from', context['exec_summary'])], list(reversed(ORDER)))
+                    r'(lead(?: #\d)?|main|tail) cement slurry will be cemented from', context['exec_summary'])], list(reversed(HYDRAULIC_SLURRIES)))
                 self.assert_word_order(self.word(context), ORDER)
 
     def test_operational_fluids_procedure_and_timing_are_not_sorted_for_report(self):
@@ -131,7 +133,7 @@ class Round2ReportUAT(unittest.TestCase):
         context = self.context(state)
         self.assertEqual([f['name'] for f in context['fluids_train']], state['fluids_config']['active'])
         self.assertEqual(unescape(context['procedure_text']), state['procedure_text'])
-        positions = [context['procedure_text'].index(f'{s} cement slurry (') for s in ORDER]
+        positions = [context['procedure_text'].index(f'{s} cement slurry (') for s in HYDRAULIC_SLURRIES]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(state['total_pump_time_min'], 125.)
         self.assertIn('Safety Factor is 156 min', context['note_maxpump'])

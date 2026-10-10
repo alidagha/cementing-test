@@ -11,6 +11,7 @@ from engineering_tools import (compute_phase_status, lab_review_signature,
                                validate_lab_collection_results)
 from bhct_helper import suggest_bhct, M_TO_FT
 import phase_10_procedure as report
+from project_state import lab_source_signature
 
 
 class Phase7UAT(unittest.TestCase):
@@ -24,8 +25,8 @@ class Phase7UAT(unittest.TestCase):
     def input(self, app, label):
         return next(w for w in app.number_input if w.label == label)
 
-    def lab(self, slurries=("Main",), qc=None, tvd=100.0, bhst=200):
-        app = self.app({"geo_md": tvd, "geo_tvd": tvd, "bhst": bhst,
+    def lab(self, slurries=("Main",), qc=None, tvd=100.0, bhst=200, bhct=None):
+        app = self.app({"geo_md": tvd, "geo_tvd": tvd, "bhst": bhst, "bhct": bhct,
                         "fluids_config": {"active": list(slurries), "params": {
                             s: {"volume": 50.0, "density": "118", "pump_rate": "4"} for s in slurries}},
                         "lab_qc_params": qc or {}})
@@ -35,45 +36,50 @@ class Phase7UAT(unittest.TestCase):
 
     def test_new_main_bhct_blank_other_archetypes_unchanged(self):
         app = self.lab(("Main", "Lead", "Lead #1", "Lead #2", "Tail"))
-        self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
+        self.assertIsNone(app.session_state["bhct"])
         for s in ("Lead", "Lead #1", "Lead #2", "Tail"):
-            self.assertIsNone(self.input(app, "BHCT (°F) - " + s).value)
+            self.assertNotIn("bhct", app.session_state["lab_qc_params"][s])
         self.phase(app, "phase1")
         self.phase(app, "phase7")
-        self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
+        self.assertIsNone(app.session_state["bhct"])
         self.assertNotEqual(compute_phase_status(app.session_state)["phase7"]["level"], "ok")
         self.assertTrue(next(b for b in app.button if b.label == "Confirm measured lab results").disabled)
-        self.input(app, "BHCT (°F) - Lead").set_value(155).run()
+        self.phase(app, "phase2_3")
+        self.input(app, "BHCT (degF)").set_value(155.0).run()
         self.phase(app, "phase1")
         self.phase(app, "phase7")
-        self.assertEqual(self.input(app, "BHCT (°F) - Lead").value, 155)
+        self.assertEqual(app.session_state["bhct"], 155)
+        for s in ("Main", "Lead", "Lead #1", "Lead #2", "Tail"):
+            self.assertEqual(app.session_state[f"lab_payload_{s}"]["bhct"], 155)
 
     def test_main_bhct_first_entry_clear_and_restore(self):
         app = self.lab()
-        self.input(app, "BHCT (°F) - Main").set_value(140)
+        self.phase(app, "phase2_3")
+        self.input(app, "BHCT (degF)").set_value(140.0)
         self.phase(app, "phase1")
-        self.phase(app, "phase7")
-        self.assertEqual(self.input(app, "BHCT (°F) - Main").value, 140)
+        self.phase(app, "phase2_3")
+        self.assertEqual(self.input(app, "BHCT (degF)").value, 140)
         saved = audit.round_trip(app.session_state.to_dict())
         restored = self.app(saved)
-        self.phase(restored, "phase7")
-        self.assertEqual(self.input(restored, "BHCT (°F) - Main").value, 140)
-        self.input(restored, "BHCT (°F) - Main").set_value(None).run()
+        self.phase(restored, "phase2_3")
+        self.assertEqual(self.input(restored, "BHCT (degF)").value, 140)
+        self.input(restored, "BHCT (degF)").set_value(None).run()
         self.phase(restored, "phase10")
-        self.phase(restored, "phase7")
-        self.assertIsNone(self.input(restored, "BHCT (°F) - Main").value)
-        self.assertIsNone(audit.round_trip(restored.session_state.to_dict())["lab_qc_params"]["Main"]["bhct"])
+        self.phase(restored, "phase2_3")
+        self.assertIsNone(self.input(restored, "BHCT (degF)").value)
+        self.assertIsNone(audit.round_trip(restored.session_state.to_dict())["well_data"]["bhct"])
 
     def test_legacy_main_150_and_90_angle_preserved(self):
-        app = self.lab(qc={"Main": {"bhct": 150, "free_water": 1.5}})
-        self.assertEqual(self.input(app, "BHCT (°F) - Main").value, 150)
+        app = self.lab(qc={"Main": {"free_water": 1.5}}, bhct=150)
+        self.assertEqual(app.session_state["bhct"], 150)
         self.assertEqual(self.input(app, "Free Water Collected (90° angle) (ml) - Main").value, 1.5)
         self.assertIsNone(self.input(app, "Free Water Collected (45° angle) (ml) - Main").value)
         self.assertIsNone(self.input(app, "Surface Sample Hours - Main").value)
         self.phase(app, "phase10")
         self.phase(app, "phase7")
-        saved = audit.round_trip(app.session_state.to_dict())["lab_qc_params"]["Main"]
-        self.assertEqual(saved["bhct"], 150)
+        project = audit.round_trip(app.session_state.to_dict())
+        saved = project["lab_qc_params"]["Main"]
+        self.assertEqual(project["bhct"], 150)
         self.assertEqual(saved["free_water"], 1.5)
         self.assertIsNone(saved["surface_hardened_hours"])
         self.assertNotEqual(compute_phase_status(app.session_state)["phase7"]["level"], "ok")
@@ -83,24 +89,26 @@ class Phase7UAT(unittest.TestCase):
             with self.subTest(tvd=tvd):
                 self.assertEqual(suggest_bhct(tvd * M_TO_FT, max_rbhest_f=200)["kind"], "SQUEEZE")
                 app = self.lab(tvd=tvd)
+                self.phase(app, "phase2_3")
                 self.assertFalse(any("Suggested SQUEEZE" in c.value for c in app.caption))
                 self.assertFalse(any(b.label.startswith("Apply ") and "°F" in b.label for b in app.button))
-                self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
+                self.assertIsNone(self.input(app, "BHCT (degF)").value)
 
     def test_high_tvd_bhct_suggestion_only_applies_on_click(self):
         for tvd in (10000 / M_TO_FT, 3100.0):
             with self.subTest(tvd=tvd):
                 app = self.lab(tvd=tvd)
+                self.phase(app, "phase2_3")
                 self.assertTrue(any("Suggested BHCT" in c.value for c in app.caption))
-                self.assertIsNone(self.input(app, "BHCT (°F) - Main").value)
-                self.input(app, "BHCT (°F) - Main").set_value(140).run()
+                self.assertIsNone(self.input(app, "BHCT (degF)").value)
+                self.input(app, "BHCT (degF)").set_value(140.0).run()
                 app.run()
-                self.assertEqual(self.input(app, "BHCT (°F) - Main").value, 140)
+                self.assertEqual(self.input(app, "BHCT (degF)").value, 140)
                 button = next(b for b in app.button if b.label.startswith("Apply ") and "°F" in b.label)
                 button.click().run()
                 expected = max(60, min(400, round(suggest_bhct(tvd * M_TO_FT, max_rbhest_f=200)["temp_degF"])))
-                self.assertEqual(self.input(app, "BHCT (°F) - Main").value, expected)
-                self.assertEqual(app.session_state["lab_qc_params"]["Main"]["bhct"], expected)
+                self.assertEqual(self.input(app, "BHCT (degF)").value, expected)
+                self.assertEqual(app.session_state["well_data"]["bhct"], expected)
 
     def test_free_water_angles_first_edits_navigation_and_restore(self):
         app = self.lab()
@@ -142,18 +150,22 @@ class Phase7UAT(unittest.TestCase):
                         validate_lab_collection_results({**good, field: bad})
 
     def test_nullable_qc_drafts_restore_active_and_inactive(self):
-        qc = {"bhct": None, "free_water": 1.5, "free_water_45": None, "surface_hardened_hours": None}
+        qc = {"free_water": 1.5, "free_water_45": None, "surface_hardened_hours": None}
         for archived in (False, True):
             with self.subTest(archived=archived):
                 project = ({"inactive_slurry_drafts": {"Main": {"lab_qc_params": qc}}} if archived
                            else {"lab_qc_params": {"Main": qc}})
                 project["job_type"] = 'CSG 20"'
+                project["bhct"] = None
                 project["material_property_schema"] = 1
                 self.assertEqual(audit.round_trip(project), project)
         for field in ("bhct", "free_water_45", "surface_hardened_hours"):
             with self.subTest(field=field):
                 with self.assertRaises(ValueError):
-                    audit.round_trip({"job_type": 'CSG 20"', "lab_qc_params": {"Main": {**qc, field: True}}})
+                    project = {"job_type": 'CSG 20"', "lab_qc_params": {"Main": dict(qc)}}
+                    if field == "bhct": project["bhct"] = True
+                    else: project["lab_qc_params"]["Main"][field] = True
+                    audit.round_trip(project)
 
     def test_qc_edits_invalidate_review_and_compiled_word(self):
         valid = self.configured_app(audit.BATCH1_JOBS[0])
@@ -183,7 +195,11 @@ class Phase7UAT(unittest.TestCase):
                 with self.subTest(job=job, field=field):
                     project = deepcopy(saved)
                     qc = project["lab_qc_params"]["Main"]
-                    qc[field] = None
+                    if field == "bhct":
+                        project["bhct"] = project["well_data"]["bhct"] = None
+                        project["lab_source_signatures"]["Main"] = lab_source_signature(project, "Main")
+                    else:
+                        qc[field] = None
                     qc["review_signature"] = lab_review_signature(qc, project["lab_grid_dfs"]["Main"])
                     app = self.app(audit.round_trip(project))
                     self.phase(app, "phase7")
@@ -191,7 +207,7 @@ class Phase7UAT(unittest.TestCase):
                     self.assertNotEqual(compute_phase_status(app.session_state)["phase7"]["level"], "ok")
                     self.assert_export_blocked(app)
                     self.phase(app, "phase7")
-                    self.assertIsNone(app.session_state["lab_qc_params"]["Main"][field])
+                    self.assertIsNone(app.session_state["bhct"] if field == "bhct" else app.session_state["lab_qc_params"]["Main"][field])
 
     def test_legacy_reviewed_without_hours_is_incomplete_draft(self):
         valid = self.configured_app(audit.BATCH1_JOBS[0])
@@ -203,7 +219,7 @@ class Phase7UAT(unittest.TestCase):
         restored = self.app(project)
         self.phase(restored, "phase7")
         self.assertEqual(restored.session_state["lab_qc_params"]["Main"]["free_water"], 0.0)
-        self.assertEqual(restored.session_state["lab_qc_params"]["Main"]["bhct"], 150)
+        self.assertEqual(restored.session_state["bhct"], 150)
         self.assertIsNone(restored.session_state["lab_qc_params"]["Main"]["surface_hardened_hours"])
         self.assert_export_blocked(restored)
 

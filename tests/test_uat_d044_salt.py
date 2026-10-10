@@ -112,9 +112,12 @@ class D044SaltUAT(unittest.TestCase):
         for df in (pd.DataFrame(), salt_frame(0.), salt_frame(18.).assign(Name='NaCl-X', **{'Material Type':'Local Salt'})):
             state['cement_additives_dfs']['Main'] = df
             before = previous_signature(state, 'Main')
-            self.assertEqual(ps.lab_source_signature(state, 'Main'), before)
+            current = ps.lab_source_signature(state, 'Main')
+            # Round 6 adds well BHCT to every source. Pre-D044 hashes lack it;
+            # isolate the salt-version invariant using the current source shape.
+            self.assertNotEqual(current, before)
             with patch.object(ps, 'SALT_MODEL_VERSION', 1):
-                self.assertEqual(ps.lab_source_signature(state, 'Main'), before)
+                self.assertEqual(ps.lab_source_signature(state, 'Main'), current)
         self.assertEqual(state['material_property_schema'], 1)
 
     def v1_review_app(self, pct=15., manual=False):

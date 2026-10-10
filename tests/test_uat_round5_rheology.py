@@ -132,9 +132,11 @@ def test_first_edit_navigation_drafts_and_review_invalidation():
     assert len(app.session_state['lab_qc_params']['Main']['rheology'])==3
     saved=audit.round_trip(app.session_state.to_dict());restored=case.app(saved);case.phase(restored,'phase7')
     assert next(w for w in restored.text_input if w.label==label).value=='169'
-    # Both BHCT dataset conditions consume the same canonical QC temperature.
-    next(w for w in restored.number_input if w.label=='BHCT (°F) - Main').set_value(155).run()
-    assert sum('155 °F (BHCT)' in c.value for c in restored.caption)==2
+    # Both BHCT dataset conditions consume the single canonical well temperature.
+    case.phase(restored,'phase2_3')
+    next(w for w in restored.number_input if w.label=='BHCT (degF)').set_value(155.0).run()
+    case.phase(restored,'phase7')
+    assert sum(f"{restored.session_state['bhct']} °F (BHCT)" in c.value for c in restored.caption)==2
     for field in ('gel_10_sec','gel_10_min'):
         changed=deepcopy(saved['lab_qc_params']['Main']);changed['rheology']['surface_down'][field]='9'
         assert lab_review_signature(changed,saved['lab_grid_dfs']['Main']) != lab_review_signature(saved['lab_qc_params']['Main'],saved['lab_grid_dfs']['Main'])

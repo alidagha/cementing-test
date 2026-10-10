@@ -3,16 +3,12 @@ import streamlit as st
 import pandas as pd
 import re
 import materials_db
-from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset, build_rheology
+from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
 from project_state import invalidate_document
 from project_state import lab_source_signature
-from engineering_tools import lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
+from engineering_tools import build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
-# IH-15: i-Handbook / API 10B BHCT suggestion (standalone additive module).
-# The read-only engine (engineering_tools.py / materials_db.py) is untouched;
-# the manual BHCT entry and lab_temperature_valid remain the only authority.
-from bhct_helper import M_TO_FT, suggest_bhct
 from engineering_tools import (
     clean_number,
     require_positive_density,
@@ -131,7 +127,7 @@ def _render_rheology(slurry, qc, load_sig):
                     args=(slurry, dataset, "selected", key))
         if not row.get("selected", False):
             continue
-        condition = "Surface" if dataset == "surface_down" else f"{qc.get('bhct')} °F (BHCT)"
+        condition = "Surface" if dataset == "surface_down" else f"{st.session_state.get('well_data', {}).get('bhct', st.session_state.get('bhct'))} °F (BHCT)"
         st.caption(f"{label}: {condition}")
         readings = row.setdefault("readings", {})
         columns = st.columns(7)
@@ -154,7 +150,7 @@ def _render_rheology(slurry, qc, load_sig):
                               args=(slurry, dataset, field, key),
                               help="Enter a finite measured number or '-'. Blank is unfinished.")
     try:
-        result, issues = build_rheology(qc)
+        result, issues = build_lab_rheology(qc, slurry)
     except ValueError as exc:
         st.warning(str(exc))
         return {}, [str(exc)]
@@ -174,54 +170,6 @@ def _render_rheology(slurry, qc, load_sig):
 def get_slurry_key(slurry_name: str, prefix: str) -> str:
     sanitized = "".join(c if c.isalnum() else "_" for c in str(slurry_name)).lower()
     return f"{prefix}_{sanitized}"
-
-def _bhct_suggestion():
-    """IH-15: resolve the i-Handbook / API 10B BHCT suggestion from the current
-    well data, or return None when the inputs don't support the correlation.
-
-    CRITICAL unit note: `geo_tvd` (Phase II/III) is stored in METERS while the
-    decompiled correlations take FEET, so it is converted with the pinned
-    factor M_TO_FT = 3.28084 before entering suggest_bhct. The lookup mirrors
-    the established well-data pattern (well_data snapshot first, top-level
-    shadow key as fallback) so the suggestion and the BHST Reference caption
-    always come from the same data vintage. The suggestion stays hidden when
-    TVD is non-positive or BHST <= 80 degF: the i-Handbook pseudo gradient
-    PsTG = (MaxRBHST - 80) * 100 / TVD only makes physical sense above the
-    80 degF surface-temperature base of the correlation.
-
-    Returns (tvd_m, tvd_ft, suggestion_dict) or None.
-    """
-    tvd_m = st.session_state.get("well_data", {}).get(
-        "geo_tvd", st.session_state.get("geo_tvd", 3000.0))
-    bhst_v = st.session_state.get("well_data", {}).get(
-        "bhst", st.session_state.get("bhst", 200))
-    try:
-        tvd_ft = float(tvd_m) * M_TO_FT
-        bhst_f = float(bhst_v)
-    except (TypeError, ValueError):
-        return None
-    if tvd_ft <= 0 or bhst_f <= 80:
-        return None
-    try:
-        suggestion = suggest_bhct(tvd_ft=tvd_ft, max_rbhest_f=bhst_f)
-        return (float(tvd_m), tvd_ft, suggestion) if suggestion["kind"] == "BHCT" else None
-    except ValueError:
-        return None
-
-def _apply_bhct_suggestion(slurry: str, suggested: int, widget_key: str) -> None:
-    """IH-15 on_click callback for the 'Apply' button under the BHCT field.
-
-    Commits the suggested value into st.session_state["lab_qc_params"][slurry]
-    ["bhct"] AND into the live number_input widget key. Callbacks run BEFORE
-    the script re-executes, so assigning a widget-backed key here is legal —
-    this is the only way the visible field actually follows the suggestion
-    (setting it after instantiation raises StreamlitAPIException). The click
-    itself triggers the rerun that re-renders the field with the new value;
-    no explicit st.rerun() is needed (and one inside would be redundant).
-    """
-    st.session_state.setdefault("lab_qc_params", {}).setdefault(slurry, {})["bhct"] = suggested
-    st.session_state[widget_key] = suggested
-
 
 def has_legacy_salt_basis(phase5_df: pd.DataFrame, lab_df: pd.DataFrame) -> bool:
     """Flag old salt lab rows on load even when the transient sync hash is absent."""
@@ -426,7 +374,7 @@ def render():
     
     # 1. Strict SSOT Tab Derivation from Phase IV sequence
     active_pipeline = st.session_state.get("fluids_config", {}).get("active", [])
-    slurry_archetypes = {"Main", "Lead", "Lead #1", "Lead #2", "Tail"}
+    slurry_archetypes = materials_db.RHEOLOGY_LAB_FLUIDS
     active_slurries = [f for f in active_pipeline if f in slurry_archetypes]
     
     if not active_slurries:
@@ -435,11 +383,8 @@ def render():
         
     bhst = st.session_state.get("well_data", {}).get("bhst", st.session_state.get("bhst", 200))
     fluid_data = st.session_state.get("fluid_data", {})
-    # IH-15: i-Handbook/API 10B suggestion, resolved once per render from the
-    # well-level TVD/BHST (same data vintage as `bhst` above); None when the
-    # inputs don't support the correlation. Pure math — no side effects.
-    bhct_suggestion = _bhct_suggestion()
-    
+    bhct = st.session_state.get("well_data", {}).get("bhct", st.session_state.get("bhct"))
+
     # Canonical State Initializations
     if "lab_qc_params" not in st.session_state:
         st.session_state["lab_qc_params"] = {}
@@ -450,16 +395,17 @@ def render():
 
     bounded = []
     for slurry in active_slurries:
+        if slurry not in materials_db.PLACEMENT_SLURRIES:
+            continue
         qc = st.session_state["lab_qc_params"].get(slurry, {})
         for field, label, low, high, integer in (
-            ("bhct", "BHCT (°F)", 60, 400, True),
             ("api_fl", "Filtrate @ 30 min (ml)", 0.0, None, False),
             ("free_water", "Free water (ml)", 0.0, None, False),
             ("free_water_45", "Free Water Collected (45° angle) (ml)", 0.0, None, False),
             ("surface_hardened_hours", "Surface Sample Hours", 0.0, None, False),
         ):
             if field in qc and not (qc[field] is None and
-                    field in ("free_water_45", "surface_hardened_hours", "bhct")):
+                    field in ("free_water_45", "surface_hardened_hours")):
                 bounded.append((qc, field, f"{label} - {slurry}", low, high, integer))
     if repair_invalid_inputs(bounded, f"phase7_{load_sig}"):
         return
@@ -469,20 +415,15 @@ def render():
         with tabs[i]:
             st.subheader(f"{slurry} Lab Data")
             
-            qc = st.session_state["lab_qc_params"].setdefault(
-                slurry, {
-                    "bhct": None,
-                    "api_fl": 0.0,
-                    "free_water": 0.0,
-                    "thickening_time": ""
-                }
-            )
-            
-            qc.setdefault("bhct", None)
-            qc.setdefault("free_water_45", None)
-            qc.setdefault("surface_hardened_hours", None)
-            for field, _, kind in THICKENING_TEST_FIELDS:
-                qc.setdefault(field, None if kind == "number" else "")
+            full_lab = slurry in materials_db.PLACEMENT_SLURRIES
+            qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
+            if full_lab:
+                qc.setdefault("api_fl", 0.0)
+                qc.setdefault("free_water", 0.0)
+                qc.setdefault("free_water_45", None)
+                qc.setdefault("surface_hardened_hours", None)
+                for field, _, kind in THICKENING_TEST_FIELDS:
+                    qc.setdefault(field, None if kind == "number" else "")
 
             # Fetch parameters from Phase V and Phase IV
             p_cement = st.session_state.get("cement_params", {}).get(slurry, {}).get("base_cement", "Cement G Delijan")
@@ -540,7 +481,7 @@ def render():
                 if legacy_salt_basis:
                     st.warning("⚠ Salt lab rows use the old concentration basis. Click 'Sync with Phase V' to recalculate on % BWOW; Lot No. is preserved.")
                 elif drifted:
-                    st.warning("⚠ **Formulation Drift:** Lab data is unverified for the current formulation or BHST/BHSP (including older projects). Sync quantities, or review and keep your existing lab entries.")
+                    st.warning("⚠ **Formulation Drift:** Lab data is unverified for the current formulation or BHST/BHCT/BHSP. Sync quantities, or review and keep your existing lab entries.")
             with col_h2:
                 sync_key = f"_sync_{get_slurry_key(slurry, 'btn')}_{load_sig}"
                 # FIX (requested, Level 1 #3): when the values on screen are
@@ -605,111 +546,61 @@ def render():
             
             st.markdown("---")
             
-            # 2. QC & Core Physical Properties
-            st.markdown("#### 2. QC & Core Lab Results")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                bhct_key = f"_qc_bhct_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                if bhct_key not in st.session_state:
-                    st.session_state[bhct_key] = int(qc["bhct"]) if qc["bhct"] is not None else None
-                qc["bhct"] = st.number_input(
-                    f"BHCT (°F) - {slurry}",
-                    min_value=60,
-                    max_value=400,
-                    value=None,
-                    step=5,
-                    key=bhct_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "bhct", bhct_key)
-                )
-                st.caption(f"BHST Reference: **{bhst} °F**")
-                # IH-15: advisory i-Handbook/API 10B suggestion, shown only
-                # when TVD + BHST support the correlation. Display-only caption
-                # plus an explicit 'Apply' button — it never overwrites anything
-                # by itself and can never hard-block the phase (the manual entry
-                # and the lab_temperature_valid check stay authoritative).
-                # The suggested value is clamped to the widget's 60-400 °F range
-                # before applying so the number_input can never receive an
-                # out-of-bounds state; any clamping is disclosed in the caption.
-                if bhct_suggestion is not None:
-                    sug_m, sug_ft, sug = bhct_suggestion
-                    sug_raw = int(round(sug["temp_degF"]))
-                    sug_apply = max(60, min(400, sug_raw))
-                    clamp_note = (f" (clamped to the 60-400 °F field range)"
-                                  if sug_apply != sug_raw else "")
-                    st.caption(
-                        f"💡 Suggested {sug['kind']} ≈ **{sug_raw} °F**{clamp_note} — "
-                        f"i-Handbook: TVD {sug_ft:,.0f} ft ({sug_m:,.0f} m), "
-                        f"BHST {bhst} °F, PsTG {sug['pstg_degF_per_100ft']:.2f} °F/100ft"
+            st.markdown("#### Test Basic Data — Well References")
+            st.caption(f"BHST: {bhst} °F | BHCT: {bhct} °F | BHSP: {st.session_state.get('well_data', {}).get('bhsp', '')} psi")
+            if full_lab:
+                st.markdown("#### 2. QC & Core Lab Results")
+                col2, col3 = st.columns(2)
+                with col2:
+                    fl_key = f"_qc_fl_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    qc["api_fl"] = st.number_input(
+                        f"Filtrate @ 30 min (ml) - {slurry}",
+                        min_value=0.0,
+                        step=1.0,
+                        value=float(qc.get("api_fl", 0.0)),
+                        key=fl_key,
+                        on_change=_commit_lab_qc,
+                        args=(slurry, "api_fl", fl_key),
+                        help="API standard 30-min filter press test volume"
                     )
-                    st.button(
-                        f"Apply {sug_apply} °F",
-                        key=f"_qc_bhct_apply_{get_slurry_key(slurry, 'btn')}_{load_sig}",
-                        on_click=_apply_bhct_suggestion,
-                        args=(slurry, sug_apply, bhct_key),
-                        help="Overwrite the manual BHCT entry with the i-Handbook/API 10B "
-                             "estimate computed from well TVD and BHST.",
+                    calc_fl = qc["api_fl"] * 2.0
+                    st.success(f"**API FL (St. 2x):** {calc_fl:.1f} ml/30min")
+                
+                with col3:
+                    fw_key = f"_qc_fw_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    qc["free_water"] = st.number_input(
+                        f"Free Water Collected (90° angle) (ml) - {slurry}",
+                        min_value=0.0,
+                        step=0.1,
+                        value=float(qc.get("free_water", 0.0)),
+                        key=fw_key,
+                        on_change=_commit_lab_qc,
+                        args=(slurry, "free_water", fw_key)
                     )
-                # FIX (requested, Level 2 #8): BHCT (circulating temperature,
-                # what the slurry actually experiences while being pumped)
-                # can never physically exceed BHST (static temperature) —
-                # nothing caught a mistyped or copy-pasted value that broke
-                # this relationship before. A large gap the other direction
-                # is unusual but not necessarily wrong (schedules vary), so
-                # that case is a caption, not an error.
-                if qc["bhct"] is not None and bhst is not None and qc["bhct"] > bhst:
-                    st.error(f"✕ BHCT ({qc['bhct']}°F) cannot exceed BHST ({bhst}°F).")
-                elif qc["bhct"] is not None and bhst is not None and bhst - qc["bhct"] > 80:
-                    st.caption(f"ℹ️ BHCT is {bhst - qc['bhct']}°F below BHST — verify this matches the actual circulating temperature schedule.")
+                    st.success(f"**FW:** {qc['free_water']:.1f} ml / 250ml")
+                    fw45_key = f"_qc_fw45_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    if fw45_key not in st.session_state:
+                        st.session_state[fw45_key] = float(qc["free_water_45"]) if qc["free_water_45"] is not None else None
+                    qc["free_water_45"] = st.number_input(
+                        f"Free Water Collected (45° angle) (ml) - {slurry}",
+                        min_value=0.0, step=0.1, value=None, key=fw45_key,
+                        on_change=_commit_lab_qc, args=(slurry, "free_water_45", fw45_key)
+                    )
+                    hours_key = f"_qc_surface_hours_{get_slurry_key(slurry, 'in')}_{load_sig}"
+                    if hours_key not in st.session_state:
+                        st.session_state[hours_key] = float(qc["surface_hardened_hours"]) if qc["surface_hardened_hours"] is not None else None
+                    qc["surface_hardened_hours"] = st.number_input(
+                        f"Surface Sample Hours - {slurry}",
+                        min_value=0.0, step=0.25, value=None, key=hours_key,
+                        on_change=_commit_lab_qc, args=(slurry, "surface_hardened_hours", hours_key),
+                        help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
+                    )
                 
-            with col2:
-                fl_key = f"_qc_fl_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                qc["api_fl"] = st.number_input(
-                    f"Filtrate @ 30 min (ml) - {slurry}",
-                    min_value=0.0,
-                    step=1.0,
-                    value=float(qc.get("api_fl", 0.0)),
-                    key=fl_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "api_fl", fl_key),
-                    help="API standard 30-min filter press test volume"
-                )
-                calc_fl = qc["api_fl"] * 2.0
-                st.success(f"**API FL (St. 2x):** {calc_fl:.1f} ml/30min")
-                
-            with col3:
-                fw_key = f"_qc_fw_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                qc["free_water"] = st.number_input(
-                    f"Free Water Collected (90° angle) (ml) - {slurry}",
-                    min_value=0.0,
-                    step=0.1,
-                    value=float(qc.get("free_water", 0.0)),
-                    key=fw_key,
-                    on_change=_commit_lab_qc,
-                    args=(slurry, "free_water", fw_key)
-                )
-                st.success(f"**FW:** {qc['free_water']:.1f} ml / 250ml")
-                fw45_key = f"_qc_fw45_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                if fw45_key not in st.session_state:
-                    st.session_state[fw45_key] = float(qc["free_water_45"]) if qc["free_water_45"] is not None else None
-                qc["free_water_45"] = st.number_input(
-                    f"Free Water Collected (45° angle) (ml) - {slurry}",
-                    min_value=0.0, step=0.1, value=None, key=fw45_key,
-                    on_change=_commit_lab_qc, args=(slurry, "free_water_45", fw45_key)
-                )
-                hours_key = f"_qc_surface_hours_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                if hours_key not in st.session_state:
-                    st.session_state[hours_key] = float(qc["surface_hardened_hours"]) if qc["surface_hardened_hours"] is not None else None
-                qc["surface_hardened_hours"] = st.number_input(
-                    f"Surface Sample Hours - {slurry}",
-                    min_value=0.0, step=0.25, value=None, key=hours_key,
-                    on_change=_commit_lab_qc, args=(slurry, "surface_hardened_hours", hours_key),
-                    help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
-                )
-                
-            compressive, comp_valid = _render_compressive(slurry, qc, load_sig, bhst, st.session_state.get("well_data", {}).get("bhsp", ""))
-            tt_valid = _render_thickening_test(slurry, qc, load_sig)
+                compressive, comp_valid = _render_compressive(slurry, qc, load_sig, bhst, st.session_state.get("well_data", {}).get("bhsp", ""))
+                tt_valid = _render_thickening_test(slurry, qc, load_sig)
+
+            else:
+                compressive, comp_valid, tt_valid = {}, True, True
 
             try:
                 validate_lab_masses(edited_lab_df)
@@ -717,14 +608,16 @@ def render():
             except ValueError as exc:
                 masses_valid = False
                 st.error(f"{slurry}: {exc}. Correct the lab mass before confirming or exporting.")
-            try:
-                validate_lab_collection_results(qc)
-                collection_valid = True
-            except ValueError as exc:
-                collection_valid = False
-                st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
+            collection_valid = True
+            if full_lab:
+                try:
+                    validate_lab_collection_results(qc)
+                    collection_valid = True
+                except ValueError as exc:
+                    collection_valid = False
+                    st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
             rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)
-            temperature_valid = lab_temperature_valid(qc["bhct"], bhst)
+            temperature_valid = lab_temperature_valid(bhct, bhst)
             review_matches = (comp_valid and temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)
                               and qc.get("review_signature") == lab_review_signature(qc, edited_lab_df)
@@ -757,21 +650,17 @@ def render():
             slurry_cement_params = st.session_state.get("cement_params", {}).get(slurry, {})
 
             # Expose consolidated clean lab payload for Phase X Word export
-            st.session_state[f"lab_payload_{slurry}"] = {
-                "grid": edited_lab_df,
-                "rheology": rheology,
-                "bhct": qc["bhct"],
-                "bhst": bhst,
-                "api_fl": qc["api_fl"] * 2.0,
-                "api_fl_collected": qc["api_fl"],
-                "free_water": qc["free_water"],
-                "free_water_45": qc["free_water_45"],
-                "surface_hardened_hours": qc["surface_hardened_hours"],
-                "compressive": compressive,
-                **{field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS},
+            payload = {
+                "grid": edited_lab_df, "rheology": rheology, "bhct": bhct, "bhst": bhst,
                 "bhsp": well_data.get("bhsp", ""),
                 "base_fluid": slurry_cement_params.get("base_fluid_gal_sk", ""),
                 "mix_water": slurry_cement_params.get("mix_water_gal_sk", ""),
                 "mix_fluid": slurry_cement_params.get("mix_fluid_gal_sk", ""),
-                "solution_density": materials_db.SOLUTION_DENSITY_PCF
+                "solution_density": materials_db.SOLUTION_DENSITY_PCF,
             }
+            if full_lab:
+                payload.update(api_fl=qc["api_fl"] * 2.0, api_fl_collected=qc["api_fl"],
+                               free_water=qc["free_water"], free_water_45=qc["free_water_45"],
+                               surface_hardened_hours=qc["surface_hardened_hours"], compressive=compressive,
+                               **{field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS})
+            st.session_state[f"lab_payload_{slurry}"] = payload

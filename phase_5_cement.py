@@ -294,7 +294,7 @@ def refresh_cement_calculations(state):
     """Rebuild derived tables from saved inputs; retain manual Yield/Water."""
     issues = []
     for slurry in state.get("fluids_config", {}).get("active", []):
-        if slurry not in {"Main", "Lead", "Lead #1", "Lead #2", "Tail"}:
+        if slurry not in materials_db.CEMENT_FORMULATION_FLUIDS:
             continue
         p = state.get("cement_params", {}).get(slurry)
         df = state.get("cement_additives_dfs", {}).get(slurry)
@@ -336,7 +336,7 @@ def render():
     
     # 1. Strict SSOT Tab Derivation: Directly from Phase IV ordered active sequence
     active_pipeline = st.session_state.get("fluids_config", {}).get("active", [])
-    slurry_archetypes = {"Main", "Lead", "Lead #1", "Lead #2", "Tail"}
+    slurry_archetypes = materials_db.CEMENT_FORMULATION_FLUIDS
     active_slurries = [f for f in active_pipeline if f in slurry_archetypes]
     
     fluid_data = st.session_state.get("fluid_data", {})
@@ -379,7 +379,7 @@ def render():
                                       ("mix_water", "Manual mix water", 0.0)):
                 if field in params:
                     bounded.append((params, field, f"{label} - {slurry}", low, None, False))
-        if params.get("top_mode") == "Depth (m MD)" and params.get("top_depth") is not None:
+        if slurry in materials_db.PLACEMENT_SLURRIES and params.get("top_mode") == "Depth (m MD)" and params.get("top_depth") is not None:
             bounded.append((params, "top_depth", f"Top depth - {slurry}", 0.0, None, False))
     if repair_invalid_inputs(bounded, f"phase5_{load_sig}"):
         return
@@ -532,57 +532,58 @@ def render():
                     help="Unpumpable liquid volume retained in the mixing tank."
                 )
 
-            st.markdown("#### Slurry Placement")
-            st.caption("Enter the approved top of cement for this slurry. Select Surface only when the planned top is the surface; an unknown top remains explicitly unreported.")
-            top_options = ["Not entered", "Depth (m MD)"]
-            if slurry != "Tail":
-                top_options.append("Surface")
-            top_mode = p.get("top_mode")
-            if slurry == "Tail" and top_mode == "Surface":
-                top_mode = "Not entered"
-            if top_mode not in top_options:
-                top_mode = "Depth (m MD)" if p.get("top_depth") not in (None, "", 0) else "Not entered"
-            if p.get("top_job_type") not in (None, job_type):
-                top_mode = "Not entered"
-                p.pop("draft_top_depth", None)
-            if p.get("draft_top_job_type") not in (None, job_type):
-                p.pop("draft_top_depth", None)
-            mode_key = f"_top_mode_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
-            p["top_mode"] = st.selectbox(f"Top of cement - {slurry}", top_options,
-                                         index=top_options.index(top_mode), key=mode_key,
-                                         on_change=_commit_cement_param,
-                                         args=(slurry, "top_mode", mode_key))
-            if p["top_mode"] == "Depth (m MD)":
-                initial_depth = p.get("top_depth") or p.get("draft_top_depth") or 0.0
-                if slurry == "Tail":
-                    initial_depth = None
-                    for value in (p.get("top_depth"), p.get("draft_top_depth")):
-                        _, depth = top_label({"top_mode": "Depth (m MD)", "top_depth": value})
-                        if depth is not None:
-                            initial_depth = depth
-                            break
-                    else:
-                        target = target_depth(st.session_state.get("hardware_table"), job_type,
-                                              st.session_state.get("placement_config", {}))
-                        if target is not None and target > 150.0:
-                            initial_depth = target - 150.0
-                topd_key = f"_top_depth_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
-                p["top_depth"] = st.number_input(
-                    f"Top of cement depth (m MD) - {slurry}",
-                    min_value=0.0, step=1.0, value=float(initial_depth) if initial_depth is not None else None,
-                    key=topd_key,
-                    on_change=_commit_cement_param,
-                    args=(slurry, "top_depth", topd_key),
-                    help="0 means the depth has not yet been entered."
-                )
-                if p["top_depth"] is not None and p["top_depth"] > 0.0:
-                    p["draft_top_depth"] = p["top_depth"]
-                    p["draft_top_job_type"] = job_type
-                else:
+            if slurry in materials_db.PLACEMENT_SLURRIES:
+                st.markdown("#### Slurry Placement")
+                st.caption("Enter the approved top of cement for this slurry. Select Surface only when the planned top is the surface; an unknown top remains explicitly unreported.")
+                top_options = ["Not entered", "Depth (m MD)"]
+                if slurry != "Tail":
+                    top_options.append("Surface")
+                top_mode = p.get("top_mode")
+                if slurry == "Tail" and top_mode == "Surface":
+                    top_mode = "Not entered"
+                if top_mode not in top_options:
+                    top_mode = "Depth (m MD)" if p.get("top_depth") not in (None, "", 0) else "Not entered"
+                if p.get("top_job_type") not in (None, job_type):
+                    top_mode = "Not entered"
                     p.pop("draft_top_depth", None)
-            else:
-                p["top_depth"] = 0.0 if p["top_mode"] == "Surface" else None
-            p["top_job_type"] = job_type
+                if p.get("draft_top_job_type") not in (None, job_type):
+                    p.pop("draft_top_depth", None)
+                mode_key = f"_top_mode_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
+                p["top_mode"] = st.selectbox(f"Top of cement - {slurry}", top_options,
+                                             index=top_options.index(top_mode), key=mode_key,
+                                             on_change=_commit_cement_param,
+                                             args=(slurry, "top_mode", mode_key))
+                if p["top_mode"] == "Depth (m MD)":
+                    initial_depth = p.get("top_depth") or p.get("draft_top_depth") or 0.0
+                    if slurry == "Tail":
+                        initial_depth = None
+                        for value in (p.get("top_depth"), p.get("draft_top_depth")):
+                            _, depth = top_label({"top_mode": "Depth (m MD)", "top_depth": value})
+                            if depth is not None:
+                                initial_depth = depth
+                                break
+                        else:
+                            target = target_depth(st.session_state.get("hardware_table"), job_type,
+                                                  st.session_state.get("placement_config", {}))
+                            if target is not None and target > 150.0:
+                                initial_depth = target - 150.0
+                    topd_key = f"_top_depth_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
+                    p["top_depth"] = st.number_input(
+                        f"Top of cement depth (m MD) - {slurry}",
+                        min_value=0.0, step=1.0, value=float(initial_depth) if initial_depth is not None else None,
+                        key=topd_key,
+                        on_change=_commit_cement_param,
+                        args=(slurry, "top_depth", topd_key),
+                        help="0 means the depth has not yet been entered."
+                    )
+                    if p["top_depth"] is not None and p["top_depth"] > 0.0:
+                        p["draft_top_depth"] = p["top_depth"]
+                        p["draft_top_job_type"] = job_type
+                    else:
+                        p.pop("draft_top_depth", None)
+                else:
+                    p["top_depth"] = 0.0 if p["top_mode"] == "Surface" else None
+                p["top_job_type"] = job_type
 
             st.markdown("---")
             st.markdown("#### Materials & Additives Formulation")

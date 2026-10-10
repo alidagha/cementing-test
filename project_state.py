@@ -13,11 +13,12 @@ from engineering_tools import (require_positive_density, require_bhsp_density, r
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, validate_thickening_test, parse_effective_numeric,
                                validate_lab_collection_results, THICKENING_TEST_FIELDS, validate_compressive_test,
+                               validate_lab_rheology, lab_temperature_valid, lab_review_signature,
                                MATERIAL_PROPERTY_SCHEMA, LEGACY_ADDITIVE_SG,
                                catalog_cement_sg, resolve_cement_sg, default_additive_density_gcm3,
                                is_salt_additive, SALT_MODEL_VERSION)
 
-SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
+SLURRIES = materials_db.CEMENT_FORMULATION_FLUIDS
 
 
 DOCUMENT_DETAIL_FIELDS = (
@@ -82,6 +83,7 @@ WELL_DATA_DEFAULTS = {
     "geo_md": None,
     "geo_tvd": None,
     "bhst": None,
+    "bhct": None,
     "geo_gradient": None,
     "bhsp": ""
 }
@@ -341,7 +343,8 @@ def refresh_fluids(state):
     'Review the current calculation inputs before export (...)': the operator
     was told WHAT was wrong but never WHERE to go (audit L8-03)."""
     cfg = state.get("fluids_config", {})
-    active = cfg.get("active", [])
+    active = sorted(cfg.get("active", []), key=materials_db.HYDRAULIC_EXECUTION_ORDER.index)
+    cfg["active"] = active
     if not active:
         raise ValueError("Phase IV: select and configure the fluid train before export")
     old = state.get("fluid_data", {})
@@ -429,6 +432,7 @@ def lab_source_signature(state, slurry):
                         "density": fluid.get("density", "118.0"),
                         "effective_density": fluid.get("effective_density"),
                         "bhst": well.get("bhst", state.get("bhst", "-")), "bhsp": well.get("bhsp", ""),
+                        "bhct": well.get("bhct", state.get("bhct")),
                         "additives": state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame())}
     additives = source["additives"]
     if isinstance(additives, pd.DataFrame) and any(
@@ -442,15 +446,19 @@ def lab_source_signature(state, slurry):
 def refresh_lab_payloads(state):
     issues = []
     for slurry in state.get("fluids_config", {}).get("active", []):
-        if slurry not in SLURRIES:
+        if slurry not in materials_db.RHEOLOGY_LAB_FLUIDS:
             continue
+        full_lab = slurry in materials_db.PLACEMENT_SLURRIES
         grid = state.get("lab_grid_dfs", {}).get(slurry)
         qc = state.get("lab_qc_params", {}).get(slurry)
         has_old_data = grid is not None or f"lab_payload_{slurry}" in state
         if not has_old_data:
-            continue  # An unentered lab section remains unprovided.
+            if not full_lab:
+                issues.append(f"{slurry}: open Phase VII to enter and review the internal Lab/Rheology data.")
+            continue
         if (not isinstance(grid, pd.DataFrame) or not isinstance(qc, dict)
                 or state.get("lab_source_signatures", {}).get(slurry) != lab_source_signature(state, slurry)):
+            state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: review Phase VII; the lab data has not been checked against the current formulation and well conditions.")
             continue
         required = ("Material", "Concentration", "Unit", "Mass")
@@ -459,7 +467,6 @@ def refresh_lab_payloads(state):
             def missing(field):
                 value = row.get(field)
                 return pd.isna(value) or str(value).strip().lower() in {"", "none", "nan", "<na>"}
-
             if any(not missing(field) for field in (*required, "Lot No")) and any(missing(field) for field in required):
                 issues.append(f"{slurry}: Phase VII lab row {row_number} is incomplete; enter Material, Concentration, Unit and Mass, or delete the row before Word export.")
                 incomplete_row = True
@@ -469,65 +476,57 @@ def refresh_lab_payloads(state):
             continue
         try:
             validate_lab_masses(grid)
+            rheology = validate_lab_rheology(qc, slurry)
         except ValueError as exc:
             state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII {exc}; correct the lab mass before Word export.")
+            issues.append(f"{slurry}: Phase VII {exc}; correct the Lab/Rheology data before Word export.")
             continue
-        try:
-            validate_lab_collection_results(qc)
-        except ValueError as exc:
+        extra = {}
+        if full_lab:
+            try:
+                validate_lab_collection_results(qc)
+            except ValueError as exc:
+                state.pop(f"lab_payload_{slurry}", None)
+                issues.append(f"{slurry}: Phase VII {exc}; review both Free Water measurements and Surface Sample Hours before Word export.")
+                continue
+            try:
+                thickening = validate_thickening_test(qc)
+            except ValueError as exc:
+                state.pop(f"lab_payload_{slurry}", None)
+                issues.append(f"{slurry}: Phase VII Thickening Time Test: {exc}.")
+                continue
+            try:
+                compressive = validate_compressive_test(qc)
+            except ValueError as exc:
+                state.pop(f"lab_payload_{slurry}", None)
+                issues.append(f"{slurry}: Phase VII {exc}.")
+                continue
+            api_fl = qc.get("api_fl", 0.0)
+            if isinstance(api_fl, bool) or not isinstance(api_fl, (int, float)) or not math.isfinite(api_fl):
+                issues.append(f"{slurry}: Phase VII api_fl must be a finite numeric value; review the lab QC input.")
+                continue
+            extra = {"api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
+                     "free_water": qc.get("free_water", "-"), "compressive": compressive,
+                     "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
+                     **thickening}
+        elif (not qc.get("reviewed", False)
+              or qc.get("review_signature") != lab_review_signature(qc, grid)):
             state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII {exc}; review both Free Water measurements and Surface Sample Hours before Word export.")
-            continue
-        try:
-            rheology = validate_rheology_results(qc)
-        except ValueError as exc:
-            state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII Rheology: {exc}; review the selected datasets before Word export.")
-            continue
-        try:
-            thickening = validate_thickening_test(qc)
-        except ValueError as exc:
-            state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII Thickening Time Test: {exc}.")
-            continue
-        try:
-            compressive = validate_compressive_test(qc)
-        except ValueError as exc:
-            state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII {exc}.")
+            issues.append(f"{slurry}: Phase VII internal lab results must be confirmed before Word export.")
             continue
         p = state.get("cement_params", {}).get(slurry, {})
         well = state.get("well_data", {})
-        api_fl = qc.get("api_fl", 0.0)
-        if isinstance(api_fl, bool) or not isinstance(api_fl, (int, float)) or not math.isfinite(api_fl):
-            issues.append(f"{slurry}: Phase VII api_fl must be a finite numeric value; review the lab QC input.")
-            continue
-        bhct = qc.get("bhct")
-        bhst = well.get("bhst", state.get("bhst", 200))
-        try:
-            if isinstance(bhct, bool) or isinstance(bhst, bool):
-                raise ValueError("temperature must be numeric")
-            circulating, static = float(bhct), float(bhst)
-            if not math.isfinite(circulating) or not math.isfinite(static):
-                raise ValueError("temperature must be finite")
-        except (TypeError, ValueError, OverflowError):
+        bhct = well.get("bhct", state.get("bhct"))
+        bhst = well.get("bhst", state.get("bhst"))
+        if not lab_temperature_valid(bhct, bhst):
             state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: review Phase VII; BHCT and BHST must be valid temperatures before Word export.")
-            continue
-        if circulating > static:
-            state.pop(f"lab_payload_{slurry}", None)
-            issues.append(f"{slurry}: Phase VII BHCT ({circulating:g}°F) cannot exceed BHST ({static:g}°F); correct the temperature before Word export.")
+            issues.append(f"{slurry}: Phase II & III BHCT and BHST must be finite, with BHCT <= BHST, before Lab review/export.")
             continue
         state[f"lab_payload_{slurry}"] = {
-            "grid": grid, "rheology": rheology, "bhct": qc.get("bhct", "-"), "bhst": well.get("bhst", state.get("bhst", "-")),
-            "api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
-            "free_water": qc.get("free_water", "-"), "compressive": compressive,
-            "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
-            **thickening,
+            "grid": grid, "rheology": rheology, "bhct": bhct, "bhst": bhst,
             "bhsp": well.get("bhsp", ""), "base_fluid": p.get("base_fluid_gal_sk", ""),
-            "mix_water": p.get("mix_water_gal_sk", ""),
-            "mix_fluid": p.get("mix_fluid_gal_sk", ""), "solution_density": materials_db.SOLUTION_DENSITY_PCF,
+            "mix_water": p.get("mix_water_gal_sk", ""), "mix_fluid": p.get("mix_fluid_gal_sk", ""),
+            "solution_density": materials_db.SOLUTION_DENSITY_PCF, **extra,
         }
     return issues
 

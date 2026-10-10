@@ -50,18 +50,15 @@ DEFAULT_HOLE_SIZES = {
     'TIE BACK LNR 5"': '6"'
 }
 
-FLUID_TYPES = [
-    "Pre Flush", 
-    "Spacer", 
-    "Spacer Ahead", 
-    "Spacer Behind", 
-    "Main", 
-    "Lead", 
-    "Lead #1", 
-    "Lead #2", 
-    "Tail", 
-    "Displacement Fluid"
-]
+# Roles are distinct: Scavenger is formulated and tested, never placed.
+PLACEMENT_SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
+CEMENT_FORMULATION_FLUIDS = ("Scavenger", *PLACEMENT_SLURRIES)
+RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
+HYDRAULIC_EXECUTION_ORDER = (
+    "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
+    "Spacer Behind", "Displacement Fluid",
+)
+FLUID_TYPES = list(HYDRAULIC_EXECUTION_ORDER)
 
 DEFAULT_MATERIAL_NAMES = {
     "Pre Flush": "Salt Saturated Water",
@@ -72,6 +69,7 @@ DEFAULT_MATERIAL_NAMES = {
     "Spacer": "Weighted Spacer",
     "Spacer Ahead": "Weighted Spacer",
     "Spacer Behind": "Weighted Spacer",
+    "Scavenger": "Cement Slurry",
     "Main": "Cement Slurry",
     "Lead": "Cement Slurry",
     "Lead #1": "Cement Slurry",

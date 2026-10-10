@@ -166,7 +166,7 @@ class AuditRegressions(unittest.TestCase):
     def configured_app(self, job, additives=False, optional_fluids=False):
         # Valid export fixtures explicitly supply the former well defaults.
         app = self.app({"mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
-                        "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "geo_gradient": 1.25})
+                        "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150, "geo_gradient": 1.25})
         app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
         app.text_input(key="_w_client").set_value("Regression Client").run()
@@ -210,8 +210,7 @@ class AuditRegressions(unittest.TestCase):
         self.phase(app, "phase6")
         app.session_state["lab_qc_params"] = {"Main": {"rheology": rheology_fixture(), **thickening_fixture(), **compressive_fixture()}}
         self.phase(app, "phase7")
-        for label, value in (("BHCT (°F) - Main", 150),
-                             ("Free Water Collected (45° angle) (ml) - Main", 0.0),
+        for label, value in (("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
             next(w for w in app.number_input if w.label == label).set_value(value).run()
         next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main").set_value("03:30").run()
@@ -780,8 +779,8 @@ class AuditRegressions(unittest.TestCase):
             valid = self.configured_app(job)
             self.export(valid)  # Single-slurry behavior remains valid.
             saved = round_trip(valid.session_state.to_dict())
-            for slurries, depths in ((["Lead", "Main"], {"Main": 2000.0, "Lead": 1000.0}),
-                                     (["Lead #1", "Lead #2", "Main"], {"Main": 2000.0, "Lead #2": 1000.0, "Lead #1": 500.0})):
+            for slurries, depths in ((["Lead", "Main"], {"Main": 1000.0, "Lead": 2000.0}),
+                                     (["Lead #1", "Lead #2", "Main"], {"Main": 500.0, "Lead #1": 1000.0, "Lead #2": 2000.0})):
                 with self.subTest(job=job, slurries=slurries):
                     project = deepcopy(saved)
                     project["fluids_config"]["active"] = [*slurries, "Displacement Fluid"]
@@ -791,7 +790,7 @@ class AuditRegressions(unittest.TestCase):
                         project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=depths[slurry], top_job_type=job)
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
-                            bhct=150, thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
+                            thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
                             rheology=rheology_fixture(), **thickening_fixture(), **compressive_fixture())
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
@@ -808,7 +807,8 @@ class AuditRegressions(unittest.TestCase):
                     with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
                         context = report.build_master_context()
                     expected, bottom = [], 3000.0
-                    for slurry in reversed(slurries):
+                    hydraulic_slurries = [name for name in materials_db.PLACEMENT_SLURRIES if name in slurries]
+                    for slurry in reversed(hydraulic_slurries):
                         expected.append((slurry, bottom, depths[slurry]))
                         bottom = depths[slurry]
                     payload = [(p["name"], float(p["bottom"].split()[0]), float(p["top"].split()[0]))
@@ -833,7 +833,7 @@ class AuditRegressions(unittest.TestCase):
                     self.assertEqual(word, expected_report)
                     # A top below the previous slurry's top must fail both gates.
                     invalid = round_trip(app.session_state.to_dict())
-                    invalid["cement_params"][slurries[0]]["top_depth"] = 2500.0
+                    invalid["cement_params"][hydraulic_slurries[0]]["top_depth"] = 2500.0
                     bad = self.app(invalid)
                     self.assertEqual(compute_phase_status(bad.session_state)["phase5"]["level"], "warning")
                     self.assert_export_blocked(bad)

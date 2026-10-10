@@ -284,7 +284,9 @@ def test_multislurry_inactive_archive_fresh_restore_and_word(valid_state):
 
 def test_only_compressive_authorized_text_changes_template_package():
     baseline=BytesIO(subprocess.check_output(['git','show','a713cef:master_template.docx']))
-    with zipfile.ZipFile(baseline) as old,zipfile.ZipFile('master_template.docx') as new:
+    completed=BytesIO(subprocess.check_output(['git','show','80353e4:master_template.docx']))
+    # Retain the complete closed-5-3 scope proof; Round 6 adds Section-VI tables.
+    with zipfile.ZipFile(baseline) as old,zipfile.ZipFile(completed) as new:
         assert old.namelist()==new.namelist()
         for name in old.namelist():
             if name!='word/document.xml':assert old.read(name)==new.read(name)
@@ -300,3 +302,5 @@ def test_only_compressive_authorized_text_changes_template_package():
         # Existing condition cells remain the same tags; only authorized data cells differ.
         old_rows=re.findall(rb'<w:tr[ >].*?</w:tr>',before.group(),re.S)
         assert rows[:3]==old_rows[:3]
+        with zipfile.ZipFile('master_template.docx') as current:
+            assert locate(current.read('word/document.xml')).group()==after.group()

@@ -130,17 +130,19 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol",))
         if "lab_qc_params" in draft:
+            if "bhct" in draft["lab_qc_params"]:
+                raise ValueError(f"inactive_slurry_drafts.{slurry}.lab_qc_params.bhct is not allowed; BHCT belongs to Well Data.")
             if "compressive" in draft["lab_qc_params"] or "comp_test" in draft["lab_qc_params"]:
                 compressive_inputs(draft["lab_qc_params"])
             _check_thickening_draft(draft["lab_qc_params"], f"inactive_slurry_drafts.{slurry}.lab_qc_params")
             if "rheology" in draft["lab_qc_params"]:
                 validate_rheology_inputs(draft["lab_qc_params"]["rheology"])
-            _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"),
+            _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "free_water_45", "surface_hardened_hours"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params",
-                                  nullable=("free_water_45", "surface_hardened_hours", "bhct"))
+                                  nullable=("free_water_45", "surface_hardened_hours"))
     # Empty well number inputs are valid unfinished drafts, not malformed numbers.
     for container, path in ((data, "project"), (data.get("well_data", {}), "well_data")):
-        _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst")
+        _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst", "bhct")
                                                if container.get(field) is not None), path)
     auto_fields = data.get("well_auto_fields", {})
     if (not isinstance(auto_fields, dict) or any(field not in ("geo_gradient", "bhsp")
@@ -152,13 +154,15 @@ def _validate_project(data):
         _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
                               f"cement_params.{name}", nullable=("dead_vol",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if "bhct" in params:
+            raise ValueError(f"lab_qc_params.{name}.bhct is not allowed; BHCT belongs to Well Data.")
         if "compressive" in params or "comp_test" in params:
             compressive_inputs(params)
         _check_thickening_draft(params, f"lab_qc_params.{name}")
         if "rheology" in params:
             validate_rheology_inputs(params["rheology"])
-        _check_numeric_fields(params, ("api_fl", "free_water", "bhct", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",
-                              nullable=("free_water_45", "surface_hardened_hours", "bhct"))
+        _check_numeric_fields(params, ("api_fl", "free_water", "free_water_45", "surface_hardened_hours"), f"lab_qc_params.{name}",
+                              nullable=("free_water_45", "surface_hardened_hours"))
     hardware_columns = {"Description", "MD (m)", "Size (in)", "ID (in)",
                         "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"}
     for key in ("hardware_table", "hardware_editor_draft"):

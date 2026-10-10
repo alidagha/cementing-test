@@ -99,10 +99,27 @@ def validate_compressive_test(qc):
 def lab_review_signature(qc, grid):
     """Identify precisely the QC readings and lab rows confirmed by an operator."""
     from project_state import fingerprint
-    compressive_inputs(qc)
+    if "compressive" in qc or "comp_test" in qc:
+        compressive_inputs(qc)
     return fingerprint({"qc": {key: value for key, value in qc.items()
                                if key not in ("reviewed", "review_signature", "thickening_endpoint")},
                         "grid": grid})
+
+
+def build_lab_rheology(qc, fluid):
+    """Existing Bingham builder with the Scavenger required-dataset policy."""
+    from rheology import build_rheology
+    result, issues = build_rheology(qc)
+    if fluid == "Scavenger" and not result["bhct_down"]["selected"]:
+        issues.append("Scavenger: BHCT — Ramp-Down Rheology is required")
+    return result, issues
+
+
+def validate_lab_rheology(qc, fluid):
+    result, issues = build_lab_rheology(qc, fluid)
+    if issues:
+        raise ValueError("; ".join(issues))
+    return result
 
 
 def lab_temperature_valid(bhct, bhst):
@@ -813,7 +830,7 @@ def compute_phase_status(ss) -> dict:
     about what "complete" means for a given phase — both call this one
     function instead of each keeping their own copy of the rules.
     """
-    slurry_names = ["Main", "Lead", "Lead #1", "Lead #2", "Tail"]
+    slurry_names = materials_db.CEMENT_FORMULATION_FLUIDS
     active = ss.get("fluids_config", {}).get("active", [])
     active_slurries = [s for s in active if s in slurry_names]
     status = {}
@@ -972,7 +989,8 @@ def compute_phase_status(ss) -> dict:
         missing = [s for s in active_slurries if not rows_complete(adds.get(s))]
         from placement import slurry_intervals
         intervals = slurry_intervals(ss.get("hardware_table"), ss.get("job_type", ""),
-                                     ss.get("placement_config", {}), active_slurries,
+                                     ss.get("placement_config", {}),
+                                     [s for s in active_slurries if s in materials_db.PLACEMENT_SLURRIES],
                                      ss.get("cement_params", {}))
         missing_tops = [slurry for slurry, interval in intervals.items()
                         if interval["top_depth"] is None or interval["bottom_depth"] is None]
@@ -1064,15 +1082,17 @@ def compute_phase_status(ss) -> dict:
                 missing.append(slurry)
                 continue
             try:
-                validate_lab_collection_results(qc[slurry])
-                validate_rheology_results(qc[slurry])
-                validate_thickening_test(qc[slurry])
-                validate_compressive_test(qc[slurry])
+                validate_lab_rheology(qc[slurry], slurry)
+                if slurry in materials_db.PLACEMENT_SLURRIES:
+                    validate_lab_collection_results(qc[slurry])
+                    validate_thickening_test(qc[slurry])
+                    validate_compressive_test(qc[slurry])
             except ValueError:
                 missing.append(slurry)
                 continue
             bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst", 200))
-            if not lab_temperature_valid(qc[slurry].get("bhct"), bhst):
+            bhct = ss.get("well_data", {}).get("bhct", ss.get("bhct"))
+            if not lab_temperature_valid(bhct, bhst):
                 missing.append(slurry)
                 continue
             if (not qc[slurry].get("reviewed", False)

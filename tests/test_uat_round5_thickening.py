@@ -84,7 +84,8 @@ def test_baseline_flc_temperature_already_uses_canonical_bhct():
     case = audit.AuditRegressions()
     state = project()
     qc = state['lab_qc_params']['Main']
-    qc['bhct'] = 167
+    state['bhct'] = state['well_data']['bhct'] = 167
+    state['lab_source_signatures']['Main'] = lab_source_signature(state, 'Main')
     qc['review_signature'] = lab_review_signature(qc, state['lab_grid_dfs']['Main'])
     app = case.app(state)
     case.export(app)
@@ -126,20 +127,21 @@ def test_bhct_edit_blocks_old_document_then_reconfirmation_updates_flc():
     app = case.app(project())
     case.export(app)
     assert '_compiled_doc_bytes' in app.session_state
-    case.phase(app, 'phase7')
-    next(w for w in app.number_input if w.label == 'BHCT (°F) - Main').set_value(166)
+    case.phase(app, 'phase2_3')
+    next(w for w in app.number_input if w.label == 'BHCT (degF)').set_value(166.0)
     case.phase(app, 'phase10')
     assert compute_phase_status(app.session_state)['phase7']['level'] != 'ok'
     assert '_compiled_doc_bytes' not in app.session_state
     assert next(b for b in app.button if b.label == 'Build Word Document').disabled
     case.phase(app, 'phase7')
+    next(b for b in app.button if b.label == 'Keep reviewed lab entries').click().run()
     next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
     # A cached old temperature must never win over the canonical source.
     app.session_state['lab_payload_Main']['bhct'] = 150
     case.export(app)
     doc = Document(BytesIO(app.session_state['_compiled_doc_bytes']))
     flc = next(t for t in doc.tables if t.rows[0].cells[0].text == 'Free Water Test')
-    assert flc.rows[1].cells[3].text == '166 degF'
+    assert flc.rows[1].cells[3].text == f"{app.session_state['bhct']} degF"
 
 
 @pytest.mark.parametrize('field', ['thickening_test_start', 'thickening_enter_time'])
@@ -262,13 +264,14 @@ def test_multislurry_archive_reactivation_flc_and_word():
     case = audit.AuditRegressions()
     state = project()
     state['fluids_config']['active'] = ['Lead', 'Tail', 'Displacement Fluid']
-    for slurry, bhct, top, start, cell in [('Lead', 155, 0, '08:20', 1.25), ('Tail', 177, 2850, '24:00', -2.5)]:
+    state['bhct'] = state['well_data']['bhct'] = 155
+    for slurry, top, start, cell in [('Lead', 0, '08:20', 1.25), ('Tail', 2850, '24:00', -2.5)]:
         state['fluids_config']['params'][slurry] = deepcopy(state['fluids_config']['params']['Main'])
         for key in ('cement_params', 'cement_additives_dfs', 'lab_grid_dfs', 'lab_qc_params'):
             state[key][slurry] = deepcopy(state[key]['Main'])
         state['cement_params'][slurry].update(top_mode='Surface' if slurry == 'Lead' else 'Depth (m MD)', top_depth=top)
         qc = state['lab_qc_params'][slurry]
-        qc.update(bhct=bhct, thickening_test_start=start, thickening_cell=cell)
+        qc.update(thickening_test_start=start, thickening_cell=cell)
         qc['review_signature'] = lab_review_signature(qc, state['lab_grid_dfs'][slurry])
     refresh_fluids(state)
     for slurry in ('Lead', 'Tail'): state['lab_source_signatures'][slurry] = lab_source_signature(state, slurry)
@@ -294,7 +297,7 @@ def test_multislurry_archive_reactivation_flc_and_word():
     doc = Document(BytesIO(data))
     flc = [t for t in doc.tables if t.rows[0].cells[0].text == 'Free Water Test']
     tt = [t for t in doc.tables if t.rows[0].cells[0].text == 'Thickening Time Test']
-    assert [t.rows[1].cells[3].text for t in flc] == ['155 degF', '177 degF']
+    assert [t.rows[1].cells[3].text for t in flc] == ['155 degF', '155 degF']
     assert [t.rows[3].cells[4].text for t in tt] == ['08:20', '24:00']
     assert [t.rows[3].cells[5].text for t in tt] == ['1.25', '-2.5']
     assert all(t.rows[3].cells[8].text == '03:30' for t in tt)
