@@ -318,6 +318,10 @@ _has_meaningful_data = (
            or str(params.get("pump_rate", "")).strip() != ""
            or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
            for name, params in st.session_state.get("fluid_data", {}).items())
+    or st.session_state.get("well_geometry", {}).get("type") is not None
+    or st.session_state.get("geothermal_config", {}).get("source") is not None
+    or st.session_state.get("geothermal_config", {}).get("surface_temp", 80.0) != 80.0
+    or _is_meaningful(st.session_state.get("well_geometry", {}).get("survey"))
     or bool(st.session_state.get("hole_size_customized"))
 )
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()

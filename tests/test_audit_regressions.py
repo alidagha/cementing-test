@@ -42,6 +42,19 @@ def round_trip(state):
                           namespace["deserialize_item"])
 
 
+def well_profile_fixture(md=3000.0, tvd=None, bhst=200.0, gradient=None):
+    """Explicit Round 7A canonical prerequisites for existing test scenarios."""
+    tvd = md if tvd is None else tvd
+    geometry = {"version": 1, "type": "Vertical", "td_m": md}
+    if md != tvd:
+        deviation = math.degrees(math.acos(tvd / md))
+        geometry = {"version": 1, "type": "Directional", "survey": pd.DataFrame(
+            [[0., deviation, 0.], [md, deviation, 0.]], columns=["MD", "Deviation", "Azimuth"])}
+    return {"well_geometry": geometry, "geothermal_config": {"version": 1,
+            "source": "BHST" if gradient is None else "Temperature Gradient",
+            "surface_temp": 80.0, "value": bhst if gradient is None else gradient}}
+
+
 def rheology_fixture():
     """Measured Rheology prerequisite for existing valid-export fixtures."""
     return {"surface_down": {"selected": True,
@@ -165,7 +178,7 @@ class AuditRegressions(unittest.TestCase):
 
     def configured_app(self, job, additives=False, optional_fluids=False):
         # Valid export fixtures explicitly supply the former well defaults.
-        app = self.app({"mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
+        app = self.app({**well_profile_fixture(), "mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
                         "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150, "geo_gradient": 1.25})
         app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
@@ -520,7 +533,7 @@ class AuditRegressions(unittest.TestCase):
                     self.export(app)
 
     def test_batch2_nested_restoration_and_flat_precedence(self):
-        nested = {"doc_control": {"job_type": 'CSG 9 5/8"', "well_name": "Nested Well",
+        nested = {**well_profile_fixture(3300., bhst=210.), "doc_control": {"job_type": 'CSG 9 5/8"', "well_name": "Nested Well",
                                   "client": "Nested Client", "hole_size": "Approved hole",
                                   "date": "2026-09-20", "prepared_by": "Nested Engineer"},
                   "well_data": {"mud_type": "OBM", "mud_density": "90-92", "plastic_viscosity": "50",
@@ -534,13 +547,13 @@ class AuditRegressions(unittest.TestCase):
                 self.assertEqual(restored["job_type"], flat.get("job_type", 'CSG 9 5/8"'))
                 self.assertEqual(restored["client"], flat.get("client", "Nested Client"))
                 self.assertEqual(restored["mud_density"], flat.get("mud_density", "90-92"))
-                self.assertEqual(restored["geo_md"], flat.get("geo_md", 3300.0))
+                self.assertEqual(restored["geo_md"], 3300.0)  # Canonical Geometry replaces flat/nested projection precedence.
                 self.assertEqual(restored["effective_mud_density"], 84.0 if flat else 91.0)
                 app = self.app(restored)
                 self.assertEqual(app.text_input(key="_w_well_name").value, restored["well_name"])
                 self.phase(app, "phase2_3")
                 self.assertEqual(app.text_input(key="_w_mud_density").value, restored["mud_density"])
-                self.assertEqual(app.number_input(key="_w_geo_md").value, restored["geo_md"])
+                self.assertEqual(app.number_input(key="_w_vertical_td").value, restored["geo_md"])
                 self.phase(app, "phase4")
                 self.phase(app, "phase1")
                 saved = round_trip(app.session_state.to_dict())
@@ -562,10 +575,13 @@ class AuditRegressions(unittest.TestCase):
                              ("yield_point", "20"), ("geo_md", 3300.0), ("geo_tvd", 2800.0),
                              ("bhst", 210), ("geo_gradient", 1.40), ("bhsp", "6000")):
             with self.subTest(field=field):
-                app = self.app()
+                app = self.app(well_profile_fixture())
                 self.phase(app, "phase2_3")
-                widget = next(w for w in [*app.text_input, *app.number_input, *app.selectbox]
-                              if w.key == f"_w_{field}")
+                if field == "geo_gradient":
+                    app.selectbox(key="_w_temperature_source").set_value("Temperature Gradient").run()
+                key = {"geo_md": "_w_vertical_td", "geo_tvd": "_w_vertical_td",
+                       "bhst": "_w_geothermal_bhst", "geo_gradient": "_w_geothermal_gradient"}.get(field, f"_w_{field}")
+                widget = next(w for w in [*app.text_input, *app.number_input, *app.selectbox] if w.key == key)
                 widget.set_value(value)
                 app.radio(key="_app_mode_key").set_value("phase1").run()
                 self.assertTrue(any("unsaved changes" in w.value for w in app.warning))

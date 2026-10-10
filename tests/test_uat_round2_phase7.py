@@ -181,6 +181,7 @@ class Round2LabUAT(unittest.TestCase):
         self.assertFalse(any('Suggested SQUEEZE' in c.value for c in app.caption))
         self.assertFalse(any(b.label.startswith('Apply ') for b in app.button))
         p=audit.round_trip(app.session_state.to_dict())
+        p['well_geometry']['td_m']=3100.
         p['geo_md']=p['geo_tvd']=3100.
         p['well_data']['geo_md']=p['well_data']['geo_tvd']=3100.
         app=self.app(p);self.phase(app,'phase2_3')

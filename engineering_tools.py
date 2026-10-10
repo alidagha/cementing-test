@@ -870,6 +870,9 @@ def compute_phase_status(ss) -> dict:
     else:
         status["phase1"] = {"level": "ok", "message": f"Well: {well_name} | Client: {client}"}
 
+    from well_profile import resolve_well_profile
+    _, _, profile_issues = resolve_well_profile(ss.get("well_geometry", {}), ss.get("geothermal_config", {}))
+
     # Phase II & III: Well Data
     hw = ss.get("hardware_table")
     hw_rows = len(hw) if hw is not None else 0
@@ -887,6 +890,10 @@ def compute_phase_status(ss) -> dict:
         status["phase2_3"] = {"level": "warning", "message": "Review pending hardware edits in Phase II & III before export."}
     elif geo_md is None or geo_tvd is None:
         status["phase2_3"] = {"level": "warning", "message": "MD/TVD is invalid; review Phase II & III."}
+    elif geo_tvd > geo_md:
+        status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
+    elif profile_issues:
+        status["phase2_3"] = {"level": "warning", "message": " ".join(profile_issues)}
     elif hw_rows == 0:
         status["phase2_3"] = {"level": "empty", "message": "Tubular/Casing Hardware table is empty."}
     elif geo_md <= 0 or geo_tvd <= 0:
@@ -1090,7 +1097,7 @@ def compute_phase_status(ss) -> dict:
             except ValueError:
                 missing.append(slurry)
                 continue
-            bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst", 200))
+            bhst = ss.get("well_data", {}).get("bhst", ss.get("bhst"))
             bhct = ss.get("well_data", {}).get("bhct", ss.get("bhct"))
             if not lab_temperature_valid(bhct, bhst):
                 missing.append(slurry)

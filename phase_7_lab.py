@@ -381,7 +381,7 @@ def render():
         st.warning("⚠ No cement slurries were selected in Phase IV.")
         return
         
-    bhst = st.session_state.get("well_data", {}).get("bhst", st.session_state.get("bhst", 200))
+    bhst = st.session_state.get("well_data", {}).get("bhst", st.session_state.get("bhst"))
     fluid_data = st.session_state.get("fluid_data", {})
     bhct = st.session_state.get("well_data", {}).get("bhct", st.session_state.get("bhct"))
 

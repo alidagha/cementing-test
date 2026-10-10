@@ -20,7 +20,7 @@ from engineering_tools import (lab_review_signature, catalog_cement_sg,
 from phase_5_cement import REQUIRED_ADDITIVE_COLUMNS, refresh_cement_calculations
 from phase_7_lab import build_lab_df_from_phase5
 from project_io import decode_project
-from project_state import (lab_source_signature, refresh_fluids,
+from project_state import (refresh_well_derived, lab_source_signature, refresh_fluids,
                            refresh_lab_payloads, prepare_calculations, purge_inactive_slurries)
 import test_audit_regressions as audit
 
@@ -32,6 +32,7 @@ ORDER = ("Pre Flush", "Spacer", "Spacer Ahead", "Scavenger", *PLACEMENT,
 def state_for(*names):
     """Explicit current-state prerequisites; no production defaults or migration."""
     state = {
+        **audit.well_profile_fixture(),
         "job_type": 'CSG 9 5/8"', "well_name": "Round 6", "client": "NIDC",
         "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150,
         "bhsp": "5603.88", "mud_density": "80-82", "plastic_viscosity": "45", "yield_point": "15",
@@ -270,6 +271,9 @@ def test_shared_well_source_edit_stales_all_six_fluids(field, value):
     state = state_for(*materials_db.CEMENT_FORMULATION_FLUIDS)
     previous = deepcopy(state["lab_source_signatures"])
     state[field] = state["well_data"][field] = value
+    if field == "bhst":
+        state["geothermal_config"]["value"] = value
+        refresh_well_derived(state)
     for name in materials_db.CEMENT_FORMULATION_FLUIDS:
         assert lab_source_signature(state, name) != previous[name]
     assert len(refresh_lab_payloads(state)) == 6

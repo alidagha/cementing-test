@@ -17,8 +17,8 @@ class Round3WellUAT(unittest.TestCase):
         for mud, basis in (('80-82',82.),('80/82',82.),('81',81.),('82/80/79.5',82.)):
             for md in (3500.,4000.):
                 with self.subTest(mud=mud, md=md):
-                    state={'geo_md':md,'geo_tvd':3000.,'bhst':200,'mud_density':mud,
-                           'well_auto_fields':{'bhsp':True,'geo_gradient':True},'well_data':{}}
+                    state={**audit.well_profile_fixture(md, 3000.), 'geo_md':md,'geo_tvd':3000.,'bhst':200,'mud_density':mud,
+                           'well_auto_fields':{'bhsp':True},'well_data':{}}
                     refresh_well_derived(state)
                     self.assertAlmostEqual(float(state['bhsp']),3000*basis*.02278)
                     self.assertEqual(state['well_data']['bhsp'],state['bhsp'])
@@ -30,7 +30,7 @@ class Round3WellUAT(unittest.TestCase):
             with self.subTest(raw=raw):
                 with self.assertRaises(ValueError):engineering.require_positive_density(raw)
                 with self.assertRaises(ValueError):engineering.require_bhsp_density(raw)
-                state={'geo_tvd':3000.,'mud_density':raw,'bhsp':'stale',
+                state={**audit.well_profile_fixture(), 'geo_tvd':3000.,'mud_density':raw,'bhsp':'stale',
                        'well_auto_fields':{'bhsp':True},'well_data':{'bhsp':'stale'}}
                 refresh_well_derived(state)
                 self.assertEqual(state['bhsp'],'')
@@ -48,9 +48,8 @@ class Round3WellUAT(unittest.TestCase):
         self.assertEqual(engineering.require_positive_pump_rate('3.5-5.0'),3.5)
 
     def test_first_edit_navigation_current_restore_and_manual_provenance(self):
-        app=self.app();self.phase(app,'phase2_3')
-        for field,value in (('geo_md',3500.),('geo_tvd',3000.),('bhst',200)):
-            app.number_input(key='_w_'+field).set_value(value).run()
+        app=self.app(audit.well_profile_fixture(3500.,3000.));self.phase(app,'phase2_3')
+        app.number_input(key='_w_geothermal_bhst').set_value(200.).run()
         app.text_input(key='_w_mud_density').set_value('80-82')
         self.phase(app,'phase1');self.phase(app,'phase2_3')
         self.assertEqual(app.text_input(key='_w_mud_density').value,'80-82')
@@ -62,8 +61,8 @@ class Round3WellUAT(unittest.TestCase):
         restored.text_input(key='_w_bhsp').set_value('7000+500')
         self.phase(restored,'phase1');self.phase(restored,'phase2_3')
         manual=self.app(audit.round_trip(restored.session_state.to_dict()));self.phase(manual,'phase2_3')
-        for field,value in (('geo_md',4000.),('geo_tvd',2800.)):
-            manual.number_input(key='_w_'+field).set_value(value).run()
+        manual.session_state['well_geometry'] = audit.well_profile_fixture(4000.,2800.)['well_geometry']
+        manual.run()
         manual.text_input(key='_w_mud_density').set_value('90-92').run()
         manual.run();self.phase(manual,'phase1');self.phase(manual,'phase2_3')
         self.assertFalse(manual.session_state['well_auto_fields']['bhsp'])
@@ -71,7 +70,7 @@ class Round3WellUAT(unittest.TestCase):
         self.assertEqual(manual.session_state['well_data']['bhsp'],'7000+500')
 
     def test_caption_distinguishes_valid_range_and_omits_invalid_upper_basis(self):
-        app=self.app({'geo_md':3500.,'geo_tvd':3000.,'bhst':200});self.phase(app,'phase2_3')
+        app=self.app(audit.well_profile_fixture(3500.,3000.));self.phase(app,'phase2_3')
         for raw in ('80-82','80/82'):
             app.text_input(key='_w_mud_density').set_value(raw).run()
             text='\n'.join(c.value for c in app.caption)
@@ -82,7 +81,7 @@ class Round3WellUAT(unittest.TestCase):
             self.assertFalse(any('BHSP density basis' in c.value for c in app.caption))
         app.text_input(key='_w_mud_density').set_value('80-82').run()
         for field,value in (('geo_md',3500.),('geo_tvd',3000.),('bhst',200)):
-            self.assertEqual(app.number_input(key='_w_'+field).value,value)
+            self.assertEqual(app.session_state[field],value)
         self.assertAlmostEqual(float(app.session_state['bhsp']),5603.88)
 
     def test_every_fluid_rate_minimum_and_cumulative_reconstruction(self):
@@ -119,7 +118,8 @@ class Round3WellUAT(unittest.TestCase):
             with self.subTest(job=job):
                 app=case.configured_app(job);self.phase(app,'phase2_3')
                 self.assertTrue(app.session_state['well_auto_fields']['bhsp'])
-                app.number_input(key='_w_geo_md').set_value(3500.).run()
+                app.session_state['well_geometry'] = audit.well_profile_fixture(3500.,3000.)['well_geometry']
+                app.run()
                 app.text_input(key='_w_mud_density').set_value('80-82').run()
                 self.assertAlmostEqual(float(app.session_state['bhsp']),5603.88)
                 self.phase(app,'phase4');self.phase(app,'phase7')

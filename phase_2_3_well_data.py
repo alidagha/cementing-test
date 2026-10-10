@@ -9,6 +9,7 @@ from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived,
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
+from well_profile import SURVEY_COLUMNS
 from engineering_tools import parse_effective_numeric, parse_fractional_size, require_bhsp_density
 
 HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
@@ -36,7 +37,7 @@ def get_well_data() -> dict:
 def _commit_well_widget(field):
     """Keep the flat input and export-facing well snapshot in step on blur."""
     st.session_state[field] = st.session_state[f"_w_{field}"]
-    if field in ("geo_gradient", "bhsp"):
+    if field in ("bhsp",):
         st.session_state["well_auto_fields"][field] = False
     for source, effective, default in (("mud_density", "effective_mud_density", None),
                                        ("plastic_viscosity", "effective_pv", None),
@@ -77,26 +78,86 @@ def _commit_placement(field, widget_key):
         placement.setdefault("manual_depth_m", 0.0)  # Existing "not entered" value.
 
 
+def _commit_profile_widget(record, field, key):
+    if key not in st.session_state:
+        return  # A source switch retired this widget before its queued callback.
+    config = st.session_state[record]
+    if record == "geothermal_config" and field == "source" and config.get(field) != st.session_state[key]:
+        config["value"] = None
+        for source_key in ("_w_geothermal_bhst", "_w_geothermal_gradient"):
+            st.session_state.pop(source_key, None)
+    config[field] = st.session_state[key]
+    refresh_well_derived(st.session_state)
+    invalidate_document(st.session_state)
+
+
+def _profile_number(label, record, field, key, **kwargs):
+    st.session_state[key] = st.session_state[record].get(field)
+    st.number_input(label, value=None, key=key, on_change=_commit_profile_widget,
+                    args=(record, field, key), **kwargs)
+
+
+def _render_well_profile():
+    geometry = st.session_state["well_geometry"]
+    geothermal = st.session_state["geothermal_config"]
+    st.session_state["_w_geometry_type"] = geometry.get("type")
+    st.selectbox("Well Geometry", ["Vertical", "Directional"], index=None,
+                 key="_w_geometry_type", on_change=_commit_profile_widget,
+                 args=("well_geometry", "type", "_w_geometry_type"))
+    if geometry.get("type") == "Vertical":
+        _profile_number("TD / MD (m)", "well_geometry", "td_m", "_w_vertical_td",
+                        min_value=0.0, step=10.0, format="%.1f")
+    elif geometry.get("type") == "Directional":
+        st.caption("Survey station order is authoritative. Start at MD 0 and use strictly increasing MD.")
+        key = f"_survey_editor_{st.session_state.get('last_loaded_hash', 'new')}"
+        persistent_data_editor(geometry["survey"], key=key, persist_to=("well_geometry", "survey"),
+                               num_rows="dynamic", hide_index=True,
+                               column_config={c: st.column_config.NumberColumn(c) for c in SURVEY_COLUMNS})
+    refresh_well_derived(st.session_state)
+    cols = st.columns(2)
+    for col, field, label in zip(cols, ("geo_md", "geo_tvd"), ("MD (m)", "TVD (m)")):
+        value = st.session_state[field]
+        col.metric(label, "—" if value is None else f"{value:.3f}")
+    if geometry.get("type") == "Directional" and not st.session_state["_survey_result"].empty:
+        st.dataframe(st.session_state["_survey_result"], hide_index=True)
+    _profile_number("Surface Temperature (degF)", "geothermal_config", "surface_temp",
+                    "_w_surface_temp", step=1.0, format="%.2f")
+    st.session_state["_w_temperature_source"] = geothermal.get("source")
+    st.selectbox("Temperature Source", ["BHST", "Temperature Gradient"], index=None,
+                 key="_w_temperature_source", on_change=_commit_profile_widget,
+                 args=("geothermal_config", "source", "_w_temperature_source"))
+    source = geothermal.get("source")
+    if source == "BHST":
+        _profile_number("BHST (degF)", "geothermal_config", "value", "_w_geothermal_bhst",
+                        step=1.0, format="%.2f")
+        field, label = "geo_gradient", "Gradient (degF/100ft)"
+    elif source == "Temperature Gradient":
+        _profile_number("Gradient (degF/100ft)", "geothermal_config", "value", "_w_geothermal_gradient",
+                        step=0.01, format="%.3f")
+        field, label = "bhst", "BHST (degF)"
+    else:
+        field, label = "bhst", "BHST (degF)"
+    refresh_well_derived(st.session_state)
+    value = st.session_state[field]
+    st.metric(label, "—" if value is None else f"{value:.3f}")
+    for issue in st.session_state["_well_profile_issues"]:
+        st.warning(issue)
+
+
 def render():
     st.header("Phase II & III: Well Data")
     st.markdown("Configure tubular hardware, drilling fluid properties, and geothermal temperature profile.")
     
     # 1. Canonical State Initialization (shadow keys — survive navigation)
     auto_fields = st.session_state.setdefault("well_auto_fields", {})
-    for field in ("geo_gradient", "bhsp"):
+    for field in ("bhsp",):
         # Restored explicit values are manual unless saved provenance says auto.
         auto_fields.setdefault(field, field not in st.session_state)
     defaults = WELL_DATA_DEFAULTS
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
-    bounded = [(st.session_state, field, label, minimum, None, integer)
-               for field, label, minimum, integer in (
-                   ("geo_md", "MD (m)", 0.0, False),
-                   ("geo_tvd", "TVD (m)", 0.0, False),
-                   ("bhst", "BHST (°F)", 0, True),
-                   ("geo_gradient", "Temperature gradient", 0.0, False))
-               if st.session_state.get(field) is not None]
+    bounded = []
     if st.session_state.get("bhct") is not None:
         bounded.append((st.session_state, "bhct", "BHCT (°F)", 60.0, 400.0, False))
     placement = st.session_state.get("placement_config", {})
@@ -109,7 +170,7 @@ def render():
     if repair_invalid_inputs(bounded, f"phase2_{st.session_state.get('last_loaded_hash', 'new')}"):
         return
     refresh_well_derived(st.session_state)
-    for field in ("geo_gradient", "bhsp"):
+    for field in ("bhsp",):
         if auto_fields[field]:
             st.session_state[f"_w_{field}"] = st.session_state[field]
         
@@ -429,22 +490,9 @@ def render():
     
     # --- SECTION 3: GEOTHERMAL TEMPERATURE PROFILE ---
     st.subheader("3. Geothermal Temperature Profile")
-    st.caption("NOTE 1: The Calculated Temperature is based on True Vertical Depth.")
-    
-    col_g1, col_g2, col_g3, col_bhct, col_g4, col_g5 = st.columns(6)
-    with col_g1:
-        _seed("_w_geo_md", "geo_md")
-        st.number_input("MD (m)", value=None, min_value=0.0, step=10.0, format="%.1f", key="_w_geo_md", on_change=_commit_well_widget, args=("geo_md",))
-        st.session_state["geo_md"] = st.session_state["_w_geo_md"]
-    with col_g2:
-        _seed("_w_geo_tvd", "geo_tvd")
-        st.number_input("TVD (m)", value=None, min_value=0.0, step=10.0, format="%.1f", key="_w_geo_tvd", on_change=_commit_well_widget, args=("geo_tvd",))
-        st.session_state["geo_tvd"] = st.session_state["_w_geo_tvd"]
-    with col_g3:
-        _seed("_w_bhst", "bhst")
-        st.number_input("BHST (degF)", value=None, min_value=0, step=1, key="_w_bhst", on_change=_commit_well_widget, args=("bhst",))
-        st.session_state["bhst"] = st.session_state["_w_bhst"]
-    with col_bhct:
+    _render_well_profile()
+    cols = st.columns(2)
+    with cols[0]:
         _seed("_w_bhct", "bhct")
         st.number_input("BHCT (degF)", value=None, min_value=60.0, max_value=400.0,
                         step=5.0, key="_w_bhct", on_change=_commit_well_widget, args=("bhct",),
@@ -461,23 +509,10 @@ def render():
         if (st.session_state["bhct"] is not None and st.session_state["bhst"] is not None
                 and st.session_state["bhct"] > st.session_state["bhst"]):
             st.error("BHCT cannot exceed BHST; correct the well temperature before Lab review.")
-    with col_g4:
-        _seed("_w_geo_gradient", "geo_gradient")
-        st.number_input("Gradient (degF/100ft)", value=None, min_value=0.0, step=0.01, format="%.2f", key="_w_geo_gradient", on_change=_commit_well_widget, args=("geo_gradient",))
-        st.session_state["geo_gradient"] = st.session_state["_w_geo_gradient"]
-    with col_g5:
+    with cols[1]:
         _seed("_w_bhsp", "bhsp")
-        st.text_input(
-            "BHSP (psi)", key="_w_bhsp", on_change=_commit_well_widget, args=("bhsp",),
-            help="Bottom Hole Static/Shut-in Pressure. Free text — supports compound values as shown in real reports (e.g. '7300+1000')."
-        )
-        st.session_state["bhsp"] = st.session_state["_w_bhsp"]
-
-    # Geothermal & Well Path Guardrails
-    if (st.session_state["geo_tvd"] is not None and st.session_state["geo_md"] is not None
-            and st.session_state["geo_tvd"] > st.session_state["geo_md"]):
-        st.error(f"✕ **Physical Inconsistency:** TVD ({st.session_state['geo_tvd']:.1f} m) cannot exceed MD ({st.session_state['geo_md']:.1f} m).")
-        
+        st.text_input("BHSP (psi)", key="_w_bhsp", on_change=_commit_well_widget, args=("bhsp",),
+                      help="Automatic pressure uses canonical TVD and the upper Mud Weight range value. A manual entry remains authoritative.")
     if st.session_state["bhst"] is not None and st.session_state["bhst"] < 80:
         st.warning("⚠ **Thermal Alert:** BHST appears unusually low for deep well operations.")
 

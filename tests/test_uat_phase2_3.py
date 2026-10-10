@@ -22,65 +22,66 @@ class Phase23UAT(unittest.TestCase):
         for field in ("mud_density", "plastic_viscosity", "yield_point", "bhsp"):
             self.assertEqual(app.text_input(key="_w_" + field).value, "")
         for field in ("geo_md", "geo_tvd", "bhst", "geo_gradient"):
-            self.assertIsNone(app.number_input(key="_w_" + field).value)
+            self.assertIsNone(app.session_state[field])
         for field in ("effective_mud_density", "effective_pv", "effective_yp"):
             self.assertIsNone(app.session_state[field])
         saved = audit.round_trip(app.session_state.to_dict())
         restored = self.app(saved)
         for phase in ("phase10", "phase2_3"):
             self.phase(restored, phase)
-        self.assertIsNone(restored.number_input(key="_w_geo_tvd").value)
+        self.assertIsNone(restored.session_state["geo_tvd"])
         self.assertFalse(any("saved or calculated" in e.value for e in restored.error))
         self.assertNotEqual(compute_phase_status(restored.session_state)["phase2_3"]["level"], "ok")
 
     def test_first_entries_autocalculate_from_tvd_and_follow_sources(self):
         app = self.app()
         self.phase(app, "phase2_3")
-        for field, value in (("geo_md", 3500.0), ("geo_tvd", 3000.0), ("bhst", 200)):
-            app.number_input(key="_w_" + field).set_value(value)
+        app.selectbox(key="_w_geometry_type").set_value("Vertical").run()
+        app.selectbox(key="_w_temperature_source").set_value("BHST").run()
+        for key, value in (("_w_vertical_td", 3000.), ("_w_geothermal_bhst", 200.)):
+            app.number_input(key=key).set_value(value)
             self.phase(app, "phase1")
             self.phase(app, "phase2_3")
-            self.assertEqual(app.number_input(key="_w_" + field).value, value)
+            self.assertEqual(app.number_input(key=key).value, value)
         app.text_input(key="_w_mud_density").set_value("80-82")
         self.phase(app, "phase1")
         self.phase(app, "phase2_3")
-        self.assertAlmostEqual(app.number_input(key="_w_geo_gradient").value, ((200-80)/(3000*3.28084))*100)
+        self.assertAlmostEqual(app.session_state["geo_gradient"], ((200-80)/(3000*3.28084))*100)
         self.assertAlmostEqual(float(app.text_input(key="_w_bhsp").value), 3000*82*0.02278)
-        app.number_input(key="_w_geo_tvd").set_value(2500.0).run()
+        app.number_input(key="_w_vertical_td").set_value(2500.).run()
         self.assertAlmostEqual(app.session_state["geo_gradient"], ((200-80)/(2500*3.28084))*100)
         self.assertAlmostEqual(float(app.session_state["bhsp"]), 2500*82*0.02278)
         restored = self.app(audit.round_trip(app.session_state.to_dict()))
         self.phase(restored, "phase2_3")
-        restored.number_input(key="_w_bhst").set_value(180).run()
+        restored.number_input(key="_w_geothermal_bhst").set_value(180.).run()
         self.assertAlmostEqual(restored.session_state["geo_gradient"], ((180-80)/(2500*3.28084))*100)
-        restored.number_input(key="_w_geo_tvd").set_value(None).run()
+        restored.number_input(key="_w_vertical_td").set_value(None).run()
         self.assertIsNone(restored.session_state["geo_gradient"])
         self.assertEqual(restored.session_state["bhsp"], "")
 
     def test_manual_overrides_survive_first_edit_navigation_and_restore(self):
-        app = self.app({"geo_md": 3500.0, "geo_tvd": 3000.0, "bhst": 200, "mud_density": "81"})
+        app = self.app({**audit.well_profile_fixture(3000., gradient=1.7), "mud_density": "81"})
         self.phase(app, "phase2_3")
-        app.number_input(key="_w_geo_gradient").set_value(1.7)
+        app.number_input(key="_w_geothermal_gradient").set_value(1.7)
         app.text_input(key="_w_bhsp").set_value("7300+1000")
         app.text_input(key="_w_plastic_viscosity").set_value("45-50")
         app.text_input(key="_w_yield_point").set_value("15")
         self.phase(app, "phase1")
         self.phase(app, "phase2_3")
-        app.number_input(key="_w_geo_tvd").set_value(2500.0).run()
-        app.number_input(key="_w_bhst").set_value(180).run()
+        app.number_input(key="_w_vertical_td").set_value(2500.).run()
         app.text_input(key="_w_mud_density").set_value("90").run()
-        saved = audit.round_trip(app.session_state.to_dict())
-        restored = self.app(saved)
+        restored = self.app(audit.round_trip(app.session_state.to_dict()))
         self.phase(restored, "phase2_3")
         for field, value in (("geo_gradient", 1.7), ("bhsp", "7300+1000"),
                              ("plastic_viscosity", "45-50"), ("yield_point", "15")):
             self.assertEqual(restored.session_state[field], value)
             self.assertEqual(restored.session_state["well_data"][field], value)
-        restored.number_input(key="_w_geo_gradient").set_value(None).run()
+        self.assertEqual(restored.session_state["geothermal_config"]["source"], "Temperature Gradient")
+        restored.number_input(key="_w_geothermal_gradient").set_value(None).run()
         restored.text_input(key="_w_bhsp").set_value("").run()
         self.phase(restored, "phase1")
         self.phase(restored, "phase2_3")
-        self.assertIsNone(restored.number_input(key="_w_geo_gradient").value)
+        self.assertIsNone(restored.number_input(key="_w_geothermal_gradient").value)
         self.assertEqual(restored.text_input(key="_w_bhsp").value, "")
 
     def test_restored_explicit_values_take_precedence(self):
@@ -88,10 +89,10 @@ class Phase23UAT(unittest.TestCase):
                 "geo_gradient": 1.4, "bhsp": "6000+500"}
         for nested in (False, True):
             with self.subTest(nested=nested):
-                app = self.app(audit.round_trip({"job_type": "CMT PLUG", **({"well_data": well.copy()} if nested else well)}))
+                app = self.app(audit.round_trip({"job_type": "CMT PLUG", **audit.well_profile_fixture(3000., gradient=1.4), **({"well_data": well.copy()} if nested else well)}))
                 self.phase(app, "phase2_3")
-                app.number_input(key="_w_geo_tvd").set_value(2500.0).run()
-                self.assertEqual(app.number_input(key="_w_geo_gradient").value, 1.4)
+                app.number_input(key="_w_vertical_td").set_value(2500.0).run()
+                self.assertEqual(app.number_input(key="_w_geothermal_gradient").value, 1.4)
                 self.assertEqual(app.text_input(key="_w_bhsp").value, "6000+500")
 
     def test_hardware_native_defaults_and_joint_override(self):
@@ -135,9 +136,13 @@ class Phase23UAT(unittest.TestCase):
                                  ("mud_density", "phase4"), ("bhst", "phase7")):
                 with self.subTest(job=job, field=field):
                     project = audit.round_trip(valid)
+                    if field in ("geo_md", "geo_tvd"):
+                        project["well_geometry"]["td_m"] = None
+                    elif field == "bhst":
+                        project["geothermal_config"]["value"] = None
                     project[field] = None if field in ("geo_md", "geo_tvd", "bhst", "geo_gradient") else ""
                     project["well_data"][field] = project[field]
-                    project["well_auto_fields"] = {"geo_gradient": False, "bhsp": False}
+                    project["well_auto_fields"] = {"bhsp": False}
                     restored = self.app(project)
                     self.phase(restored, phase)
                     self.assertNotEqual(compute_phase_status(restored.session_state)[phase]["level"], "ok")

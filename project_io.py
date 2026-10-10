@@ -4,6 +4,7 @@ import json
 import math
 import pandas as pd
 import materials_db
+from well_profile import validate_well_inputs
 from rheology import validate_rheology_inputs
 from engineering_tools import THICKENING_TEST_FIELDS, compressive_inputs
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
@@ -140,14 +141,15 @@ def _validate_project(data):
             _check_numeric_fields(draft["lab_qc_params"], ("api_fl", "free_water", "free_water_45", "surface_hardened_hours"),
                                   f"inactive_slurry_drafts.{slurry}.lab_qc_params",
                                   nullable=("free_water_45", "surface_hardened_hours"))
+    validate_well_inputs(data.get("well_geometry", {}), data.get("geothermal_config", {}))
     # Empty well number inputs are valid unfinished drafts, not malformed numbers.
     for container, path in ((data, "project"), (data.get("well_data", {}), "well_data")):
         _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst", "bhct")
                                                if container.get(field) is not None), path)
     auto_fields = data.get("well_auto_fields", {})
-    if (not isinstance(auto_fields, dict) or any(field not in ("geo_gradient", "bhsp")
+    if (not isinstance(auto_fields, dict) or any(field not in ("bhsp",)
             or not isinstance(enabled, bool) for field, enabled in auto_fields.items())):
-        raise ValueError("well_auto_fields must contain boolean Gradient/BHSP provenance.")
+        raise ValueError("well_auto_fields must contain boolean BHSP provenance.")
     for name, params in cfg.get("params", {}).items():
         _check_numeric_fields(params, ("volume",), f"fluids_config.params.{name}")
     for name, params in data.get("cement_params", {}).items():

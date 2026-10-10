@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pandas as pd
 import materials_db
+from well_profile import geometry_defaults, geothermal_defaults, resolve_well_profile
 from rheology import validate_rheology_results
 from engineering_tools import (require_positive_density, require_bhsp_density, require_positive_pump_rate,
                                require_preflush_material_name,
@@ -90,25 +91,36 @@ WELL_DATA_DEFAULTS = {
 
 
 def refresh_well_derived(state):
-    """Update only automatic values, using the same canonical/shadow pattern."""
-    tvd, bhst = safe_float(state.get("geo_tvd"), None), safe_float(state.get("bhst"), None)
-    gradient, pressure = None, ""
+    """Rebuild projections from explicit Round 7A sources, then automatic BHSP."""
+    geometry = state.setdefault("well_geometry", geometry_defaults())
+    geothermal = state.setdefault("geothermal_config", geothermal_defaults())
+    for record, defaults in ((geometry, geometry_defaults()), (geothermal, geothermal_defaults())):
+        if isinstance(record, dict):
+            for key, value in defaults.items():
+                record.setdefault(key, value)
+    signature = fingerprint({"geometry": geometry, "geothermal": geothermal})
+    if state.get("_well_profile_source") != signature:
+        invalidate_document(state)
+    state["_well_profile_source"] = signature
+    projections, survey, issues = resolve_well_profile(geometry, geothermal)
+    state.update(projections)
+    well = state.setdefault("well_data", {})
+    well.update(projections)
+    state["_survey_result"] = survey
+    state["_well_profile_issues"] = issues
+    auto = state.setdefault("well_auto_fields", {"bhsp": "bhsp" not in state})
+    auto.pop("geo_gradient", None)  # Temperature Source supersedes this provenance.
+    pressure = ""
+    tvd = projections["geo_tvd"]
     if tvd is not None and math.isfinite(tvd) and tvd > 0:
-        if bhst is not None and math.isfinite(bhst) and bhst >= 80:
-            gradient = ((bhst - 80) / (tvd * 3.28084)) * 100
-            if not math.isfinite(gradient):
-                gradient = None
         try:
-            mud_weight = require_bhsp_density(state.get("mud_density", ""))
-            pressure_value = tvd * mud_weight * 0.02278
+            pressure_value = tvd * require_bhsp_density(state.get("mud_density", "")) * 0.02278
             pressure = str(pressure_value) if math.isfinite(pressure_value) else ""
         except (TypeError, ValueError, OverflowError):
             pass  # Invalid/unfinished sources stay empty and block readiness.
-    for field, value in (("geo_gradient", gradient), ("bhsp", pressure)):
-        if state.get("well_auto_fields", {}).get(field, False):
-            state[field] = value
-            if isinstance(state.get("well_data"), dict):
-                state["well_data"][field] = value
+    if auto.get("bhsp", False):
+        state["bhsp"] = well["bhsp"] = pressure
+    return issues
 
 
 def restore_canonical_fields(state):
@@ -118,6 +130,8 @@ def restore_canonical_fields(state):
         if not isinstance(nested, dict):
             continue
         for key in defaults:
+            if key in ("geo_md", "geo_tvd", "bhst", "geo_gradient"):
+                continue
             if key not in state and key in nested:
                 state[key] = nested[key]
             if key in state:
@@ -137,7 +151,9 @@ def restore_canonical_fields(state):
             if field in state:
                 state[effective] = parse_effective_numeric(state[field], default=default)
                 well[effective] = state[effective]
-    refresh_well_derived(state)
+    if (any(key in state for key in ("well_geometry", "geothermal_config", "geo_md", "geo_tvd", "bhst", "geo_gradient"))
+            or any(key in well for key in ("geo_md", "geo_tvd", "bhst", "geo_gradient"))):
+        refresh_well_derived(state)
 
 
 def _canonical(value):
@@ -534,11 +550,13 @@ def refresh_lab_payloads(state):
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
     try:
+        well_issues = refresh_well_derived(state)
         migrate_material_properties(state)
         purge_inactive_slurries(state, state.get("fluids_config", {}).get("active", []))
         refresh_fluids(state)
         issues = (["Phase II & III: review pending hardware edits before Word export."]
                   if hardware_draft_pending(state) else [])
+        issues += [f"Phase II & III: {issue}" for issue in well_issues]
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         issues += refresh_lab_payloads(state)

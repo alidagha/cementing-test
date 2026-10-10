@@ -212,6 +212,8 @@ def test_interval_md_does_not_trigger_warning():
     seeded = {"hardware_table": _benchmark_hardware(),
               "geo_md": 3000.0, "geo_tvd": 3000.0,
               "job_type": 'CSG 9 5/8"'}
+    seeded.update(well_geometry={"version": 1, "type": "Vertical", "td_m": 3000.0},
+                  geothermal_config={"version": 1, "source": "BHST", "surface_temp": 80.0, "value": 200.0})
     status = compute_phase_status({**seeded,
                                    "placement_config": {"job_type": 'CSG 9 5/8"',
                                                         "target_row": TARGET_ROW}})

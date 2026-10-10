@@ -236,7 +236,7 @@ class Round2Phase23UAT(unittest.TestCase):
 
     def test_auto_gradient_word_only_formatting_preserves_formula_and_precision(self):
         app = self.configured_app('CSG 9 5/8"')
-        app.session_state['well_auto_fields']['geo_gradient'] = True
+        app.session_state['geothermal_config'].update(source='BHST', value=200.)
         self.phase(app, 'phase2_3')
         expected = ((200 - 80) / (3000 * 3.28084)) * 100
         self.assertEqual(app.session_state['geo_gradient'], expected)
@@ -248,31 +248,32 @@ class Round2Phase23UAT(unittest.TestCase):
         self.assertEqual(doc.tables[5].rows[2].cells[3].text, '1.22')
         self.assertEqual(app.session_state['geo_gradient'], expected)
         self.assertEqual(app.session_state['well_data']['geo_gradient'], expected)
-        self.assertTrue(app.session_state['well_auto_fields']['geo_gradient'])
+        self.assertEqual(app.session_state['geothermal_config']['source'], 'BHST')
 
     def test_manual_gradient_actual_word_two_decimals_and_provenance(self):
         app = self.configured_app('CSG 9 5/8"')
         for value, expected in ((1.23456789, '1.23'), (1.2, '1.20'), (0.9876, '0.99')):
             with self.subTest(value=value):
                 self.phase(app, 'phase2_3')
-                app.number_input(key='_w_geo_gradient').set_value(value)
+                app.selectbox(key='_w_temperature_source').set_value('Temperature Gradient').run()
+                app.number_input(key='_w_geothermal_gradient').set_value(value)
                 self.phase(app, 'phase1')
                 restored = self.app(audit.round_trip(app.session_state.to_dict()))
                 self.phase(restored, 'phase2_3')
                 self.assertEqual(restored.session_state['geo_gradient'], value)
-                self.assertFalse(restored.session_state['well_auto_fields']['geo_gradient'])
+                self.assertEqual(restored.session_state['geothermal_config']['source'], 'Temperature Gradient')
                 self.confirm_lab(restored)
                 self.export(restored)
                 doc = Document(BytesIO(restored.session_state['_compiled_doc_bytes']))
                 self.assertEqual(doc.tables[5].rows[2].cells[3].text, expected)
                 self.assertEqual(restored.session_state['geo_gradient'], value)
                 self.assertEqual(restored.session_state['well_data']['geo_gradient'], value)
-                self.assertFalse(restored.session_state['well_auto_fields']['geo_gradient'])
+                self.assertEqual(restored.session_state['geothermal_config']['source'], 'Temperature Gradient')
 
     def test_missing_gradient_retains_missing_context_and_actual_word(self):
         app = self.configured_app('CSG 9 5/8"')
         self.phase(app, 'phase2_3')
-        app.number_input(key='_w_geo_gradient').set_value(None).run()
+        app.number_input(key='_w_geothermal_bhst').set_value(None).run()
         self.assertIsNone(app.session_state['geo_gradient'])
         # Inspect the presentation boundary independently of the normal required-input gate.
         context = self.context(app, prepared=True)
@@ -282,7 +283,5 @@ class Round2Phase23UAT(unittest.TestCase):
         data = BytesIO();template.save(data)
         doc = Document(BytesIO(data.getvalue()))
         self.assertEqual(doc.tables[5].rows[2].cells[3].text, 'None')
-        self.export(app)
-        actual = Document(BytesIO(app.session_state['_compiled_doc_bytes']))
-        self.assertEqual(actual.tables[5].rows[2].cells[3].text, 'None')
+        self.assert_export_blocked(app)  # Missing canonical temperature source now blocks export.
         self.assertIsNone(app.session_state['geo_gradient'])

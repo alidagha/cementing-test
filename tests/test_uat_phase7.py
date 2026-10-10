@@ -26,7 +26,7 @@ class Phase7UAT(unittest.TestCase):
         return next(w for w in app.number_input if w.label == label)
 
     def lab(self, slurries=("Main",), qc=None, tvd=100.0, bhst=200, bhct=None):
-        app = self.app({"geo_md": tvd, "geo_tvd": tvd, "bhst": bhst, "bhct": bhct,
+        app = self.app({**audit.well_profile_fixture(tvd, bhst=bhst), "geo_md": tvd, "geo_tvd": tvd, "bhst": bhst, "bhct": bhct,
                         "fluids_config": {"active": list(slurries), "params": {
                             s: {"volume": 50.0, "density": "118", "pump_rate": "4"} for s in slurries}},
                         "lab_qc_params": qc or {}})
