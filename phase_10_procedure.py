@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
-from placement import (target_depth, host_label, slurry_intervals, EXCESS_FIELDS,
+from placement import (target_depth, top_label, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
                        hardware_row_metadata, target_row_metadata, hardware_context_label,
                        HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
@@ -297,6 +297,14 @@ def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_
     if interval is None:
         interval = slurry_intervals(hw_df, job_type, placement_config or {},
                                     [payload["name"]], {payload["name"]: slurry_params})[payload["name"]]
+    if job_type not in ("CMT PLUG", "CMT SQUEEZE"):
+        override, depth = top_label(slurry_params, job_type)
+        if depth is not None:
+            interval = {**interval, "top": override, "top_depth": depth}
+        if (slurry_params.get("top_job_type") in (None, job_type)
+                and slurry_params.get("report_bottom_depth") is not None):
+            depth = require_nonnegative_number(slurry_params["report_bottom_depth"], "Word Bottom override")
+            interval = {**interval, "bottom_depth": depth}
     bottom_depth = interval["bottom_depth"]
     payload["top"] = interval["top"] if interval["top_depth"] is not None else "...."
     payload["bottom"] = f"{bottom_depth:.1f} m MD" if bottom_depth is not None else "...."
@@ -512,7 +520,7 @@ def generate_executive_summary(
     placement_config = placement_config or {}
     target = target_depth(hw_df, job_type, placement_config)
     target_text = f"{target:.1f} m MD" if target is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
-    placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {})
+    placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {}, fluid_data)
     # Classification is per slurry: wet additives do not turn a dry design into two designs.
     dry_designs = []
     for slurry in active_slurries:
@@ -1162,7 +1170,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # active_slurries comes from active_slurry_names() above the F3 gate.
     slurries_payload = []
     placements = slurry_intervals(hw_df, job_type, st.session_state.get("placement_config", {}),
-                                 active_slurries, st.session_state.get("cement_params", {}))
+                                 active_slurries, st.session_state.get("cement_params", {}), fluid_data)
 
     # Document order is independent of the deepest-first placement traversal.
     for s in (name for name in REPORT_SLURRY_ORDER if name in placements):

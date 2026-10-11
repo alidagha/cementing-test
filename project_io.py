@@ -10,6 +10,7 @@ from engineering_tools import THICKENING_TEST_FIELDS, compressive_inputs
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
                            migrate_material_properties, validate_material_properties)
 from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
+from cement_chart_model import validate_chart_inputs
 
 
 def content_signature(raw_bytes):
@@ -50,7 +51,7 @@ def _check_finite(value, path="project"):
             _check_finite(item, f"{path}[{idx}]")
 
 
-def _check_numeric_fields(container, fields, path, nullable=()):
+def _check_numeric_fields(container, fields, path, nullable=(), nonnegative=()):
     """Reject malformed saved numbers before any session state is replaced."""
     for field in fields:
         if field not in container:
@@ -60,6 +61,8 @@ def _check_numeric_fields(container, fields, path, nullable=()):
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f"{path}.{field} must be a finite number (got {value!r}).")
+        if field in nonnegative and value < 0:
+            raise ValueError(f"{path}.{field} must be nonnegative.")
 
 
 def _check_thickening_draft(container, path):
@@ -127,9 +130,9 @@ def _validate_project(data):
             if field in draft and not required.issubset(draft[field].columns):
                 raise ValueError(f"inactive_slurry_drafts.{slurry}.{field} is missing required columns.")
         if "cement_params" in draft:
-            _check_numeric_fields(draft["cement_params"], ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
+            _check_numeric_fields(draft["cement_params"], ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg", "report_bottom_depth"),
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
-                                  nullable=("dead_vol",))
+                                  nullable=("dead_vol", "report_bottom_depth"), nonnegative=("report_bottom_depth",))
         if "lab_qc_params" in draft:
             if "bhct" in draft["lab_qc_params"]:
                 raise ValueError(f"inactive_slurry_drafts.{slurry}.lab_qc_params.bhct is not allowed; BHCT belongs to Well Data.")
@@ -144,6 +147,7 @@ def _validate_project(data):
     validate_well_inputs(data.get("well_geometry", {}), data.get("geothermal_config", {}))
     # Empty well number inputs are valid unfinished drafts, not malformed numbers.
     for container, path in ((data, "project"), (data.get("well_data", {}), "well_data")):
+        validate_chart_inputs(container, data.get("placement_config", {}))
         _check_numeric_fields(container, tuple(field for field in ("geo_md", "geo_tvd", "geo_gradient", "bhst", "bhct")
                                                if container.get(field) is not None), path)
     auto_fields = data.get("well_auto_fields", {})
@@ -153,8 +157,9 @@ def _validate_project(data):
     for name, params in cfg.get("params", {}).items():
         _check_numeric_fields(params, ("volume",), f"fluids_config.params.{name}")
     for name, params in data.get("cement_params", {}).items():
-        _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg"),
-                              f"cement_params.{name}", nullable=("dead_vol",))
+        _check_numeric_fields(params, ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg", "report_bottom_depth"),
+                              f"cement_params.{name}", nullable=("dead_vol", "report_bottom_depth"),
+                              nonnegative=("report_bottom_depth",))
     for name, params in data.get("lab_qc_params", {}).items():
         if "bhct" in params:
             raise ValueError(f"lab_qc_params.{name}.bhct is not allowed; BHCT belongs to Well Data.")

@@ -919,6 +919,13 @@ def compute_phase_status(ss) -> dict:
             status["phase2_3"] = {"level": "ok", "message": f"{hw_rows} hardware row(s); placement target selected."}
 
     placement = ss.get("placement_config", {})
+    if status["phase2_3"]["level"] == "ok":
+        from cement_chart_model import chart_readiness
+        chart = chart_readiness(ss)
+        if chart["issues"]:
+            status["phase2_3"] = {"level": "warning", "message": " ".join(chart["issues"])}
+        elif chart["warnings"]:
+            status["phase2_3"]["warnings"] = chart["warnings"]
     if placement.get("job_type") == ss.get("job_type"):
         try:
             for field, _, _ in EXCESS_FIELDS:
@@ -998,7 +1005,7 @@ def compute_phase_status(ss) -> dict:
         intervals = slurry_intervals(ss.get("hardware_table"), ss.get("job_type", ""),
                                      ss.get("placement_config", {}),
                                      [s for s in active_slurries if s in materials_db.PLACEMENT_SLURRIES],
-                                     ss.get("cement_params", {}))
+                                     ss.get("cement_params", {}), ss.get("fluids_config", {}).get("params", {}))
         missing_tops = [slurry for slurry, interval in intervals.items()
                         if interval["top_depth"] is None or interval["bottom_depth"] is None]
         invalid_calculations = []
@@ -1028,7 +1035,7 @@ def compute_phase_status(ss) -> dict:
         if missing:
             status["phase5"] = {"level": "warning", "message": f"Additive rows incomplete for: {', '.join(missing)}."}
         elif missing_tops:
-            status["phase5"] = {"level": "warning", "message": f"Top of cement missing or invalid for: {', '.join(missing_tops)}."}
+            status["phase5"] = {"level": "warning", "message": " ".join(dict.fromkeys(interval.get("issue", f"Top of cement missing or invalid for: {name}.") for name, interval in intervals.items() if name in missing_tops))}
         elif invalid_calculations:
             status["phase5"] = {"level": "warning", "message": f"Review Phase IV fluid data or Phase V mass balance for: {', '.join(invalid_calculations)}."}
         else:

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from io import BytesIO
 import re
+import math
 import unittest
 from unittest.mock import patch
 
@@ -15,7 +16,7 @@ from placement import (hardware_choices, hardware_context_label, target_row_meta
                        slurry_intervals, resolve_report_excess,
                        summary_config_for_job)
 from project_state import accept_report_text, restore_previous_text
-from engineering_tools import compute_phase_status
+from engineering_tools import compute_phase_status, BBL_TO_CUFT
 
 JOB = 'CSG 9 5/8"'
 P1 = ('Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention '
@@ -30,14 +31,19 @@ DRY = pd.DataFrame([
 
 
 def hardware():
-    return pd.DataFrame([{'Description': desc, 'MD (m)': str(depth), 'Size (in)': size}
-                         for desc, depth, size in [('Casing', 3030, '9 5/8'), ('Liner', 3000, '7'),
-                                                  ('Open Hole Size', 3200, '6 1/8'), ('Tie Back', 2838, '7')]])
+    return pd.DataFrame([{'Description': desc, 'MD (m)': str(depth), 'Size (in)': size, 'ID (in)': inner}
+                         for desc, depth, size, inner in [('Casing', 3030, '9 5/8', 8.535), ('Liner', 3000, '7', 6.276),
+                            ('Open Hole Size', 3200, '12 1/4', 12.25), ('Tie Back', 2838, '7', 6.276),
+                            ('Previous Casing', 1500, '13 3/8', 12.25), ('Drill Pipes', 1000, '5', 4.276),
+                            ('Liner Hanger', 1000, '9 5/8', 8.535), ('Liner', '3000-3300', '7', 6.276),
+                            ('Tie Back', '2838-3300', '7', 6.276)]])
 
 
 def tokens():
-    return {row['description']: token for token, row in hardware_choices(
-        hardware(), {'Casing', 'Liner', 'Open Hole Size', 'Tie Back'}).items()}
+    selected = {}
+    for token, row in hardware_choices(hardware(), {'Casing', 'Liner', 'Open Hole Size', 'Tie Back'}).items():
+        selected.setdefault(row['description'], token)
+    return selected
 
 
 def config(job=JOB, records=None, **fields):
@@ -52,6 +58,7 @@ def generate(job=JOB, active=('Lead', 'Tail'), metadata=None, adds=None, excess=
     if active == ('Lead', 'Tail'):
         params['Tail']['top_depth'] = 2830.
     placement = {'job_type': job, 'target_row': '__manual__', 'manual_depth_m': 3030.,
+                 'chart_excess_mode': 'ignore', 'host_row': tokens()['Casing'],
                  'excess_csg_oh_pct': 100. if excess else None, 'excess_csg_csg_pct': 20. if excess else None}
     return report.generate_executive_summary(job, fluids, list(active), adds or {},
         hardware() if table is None else table, cement_params=params, placement_config=placement,
@@ -61,12 +68,16 @@ def generate(job=JOB, active=('Lead', 'Tail'), metadata=None, adds=None, excess=
 class ExecutiveSummaryReferences(unittest.TestCase):
     def test_locked_paragraphs_and_sga043(self):
         text = generate(adds={'Lead': DRY})
+        capacity = math.pi/4*(12.25**2-9.625**2)/144/.3048/BBL_TO_CUFT
+        track = math.pi/4*8.535**2/144/.3048/BBL_TO_CUFT*12.2
+        tail_top = 3030.-(79.-track)/capacity
+        self.assertLess(tail_top-731./capacity, 0.)  # Official Lead volume fills the annulus and returns at Surface.
         self.assertEqual(text.split('\n\n')[:2], [P1, P2])
         self.assertEqual(text.split('\n\n')[2],
             '9 5/8" Casing will be set and cemented at 3030.0 m MD. '
             'Dry blend and neat cement design will be used to cement this casing; '
-            '123 pcf tail cement slurry will be cemented from the shoe at 3030.0 m to 2830.0 m '
-            'and 152 pcf lead cement slurry will be cemented from 2830.0 m to surface. '
+            f'123 pcf tail cement slurry will be cemented from the shoe at 3030.0 m to {tail_top:.1f} m '
+            f'and 152 pcf lead cement slurry will be cemented from {tail_top:.1f} m to surface. '
             'The calculated cement volume is based on 100% excess for OH-CSG and 20% excess for CSG-CSG, '
             'giving 731.0 bbl for lead slurry and 79.0 bbl for tail slurry.')
 
@@ -113,7 +124,7 @@ class ExecutiveSummaryReferences(unittest.TestCase):
                                     'liner_lap_host_row': tokens()['Casing']}},
                      placement_context_rows=[tokens()['Liner'], tokens()['Open Hole Size']])
         text = generate(job, ('Main',), cfg)
-        self.assertIn('inside 7" Liner and 6 1/8" Open Hole', text)
+        self.assertIn('inside 7" Liner and 12 1/4" Open Hole', text)
         self.assertIn('and 70.0 m liner lap inside 9 5/8" Casing', text)
 
     def test_liner_client_request_wet_stands_with_and_without_host(self):
@@ -125,7 +136,7 @@ class ExecutiveSummaryReferences(unittest.TestCase):
                 self.assertEqual('with 10 stands wet inside 7" Liner' in text, bool(host))
 
     def test_plug_one_and_multiple_contexts(self):
-        for contexts, expected in (([tokens()['Open Hole Size']], 'inside 6 1/8" Open Hole'),
+        for contexts, expected in (([tokens()['Open Hole Size']], 'inside 12 1/4" Open Hole'),
                                    ([tokens()['Liner'], tokens()['Casing']], 'inside 7" Liner and 9 5/8" Casing')):
             with self.subTest(contexts=contexts):
                 text = generate('CMT PLUG', ('Main',), config('CMT PLUG', placement_context_rows=contexts))
@@ -322,7 +333,7 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
         for i, name in enumerate(names):
             state['fluids_config']['params'][name] = deepcopy(state['fluids_config']['params']['Main'])
             state['cement_params'][name] = dict(state['cement_params']['Main'],
-                top_mode='Surface' if i == 0 else 'Depth (m MD)', top_depth=(0., 1500., 2850.)[i])
+                top_mode='Not entered', top_depth=None)
             state['cement_additives_dfs'][name] = state['cement_additives_dfs']['Main'].copy()
             state['lab_qc_params'][name] = dict(state['lab_qc_params']['Main'], reviewed=False)
         state['executive_summary_config'] = config(records={name: {'volume_basis': 'excess',
@@ -340,7 +351,7 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
         with patch.object(report.st, 'session_state', deepcopy(app.session_state.to_dict())):
             context = report.build_master_context()
         intervals = slurry_intervals(app.session_state['hardware_table'], JOB, app.session_state['placement_config'],
-                                     names, app.session_state['cement_params'])
+                                     names, app.session_state['cement_params'], app.session_state['fluids_config']['params'])
         for payload, name, pct in zip(context['slurries'], names, (100., 50., 25.)):
             self.assertEqual((payload['excess_oh'], payload['excess_csg']), (f'{pct:g}%', f'{pct / 10:g}%'))
             self.assertIn(f'{pct:g}% excess for OH-CSG and {pct / 10:g}% excess for CSG-CSG', context['exec_summary'])

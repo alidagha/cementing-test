@@ -85,6 +85,8 @@ WELL_DATA_DEFAULTS = {
     "geo_tvd": None,
     "bhst": None,
     "bhct": None,
+    "pore_gradient_emw_pcf": None,
+    "frac_gradient_emw_pcf": None,
     "geo_gradient": None,
     "bhsp": ""
 }
@@ -324,6 +326,7 @@ def purge_inactive_slurries(state, active):
         stems += ["_" + p for p in stems]
         stems += [f"_editor_additives_{token}_", f"_editor_lab_tbl_{token}_", f"_sync_btn_{token}_"]
         stems += [f"_rheo_{token}_", f"_comp_{token}_"]
+        stems += [f"_report_bottom_slurry_{token}_"]
         stems += [f"_qc_{p}_in_{token}_" for p in ("bhct", "fl", "fw", "fw45", "surface_hours", "comp", "tt", "tt_endpoint")]
         stems += [f"_qc_{field}_in_{token}_" for field, _, _ in THICKENING_TEST_FIELDS]
         # BUG-15: the phase V/VI editors additionally keep a revision counter
@@ -549,6 +552,7 @@ def refresh_lab_payloads(state):
 
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
+    from cement_chart_model import chart_readiness, PORE_FIELD, FRAC_FIELD
     try:
         well_issues = refresh_well_derived(state)
         migrate_material_properties(state)
@@ -560,6 +564,23 @@ def prepare_calculations(state):
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         issues += refresh_lab_payloads(state)
+        chart_source = fingerprint({
+            "job": state.get("job_type"), "geometry": state.get("well_geometry"),
+            "hardware": state.get("hardware_table"), "placement": state.get("placement_config"),
+            "fluids": state.get("fluids_config"), "cement_placement": {
+                name: {key: record.get(key) for key in ("top_mode", "top_depth", "top_job_type", "report_bottom_depth")}
+                for name, record in state.get("cement_params", {}).items()
+                if name in materials_db.PLACEMENT_SLURRIES},
+            "mud_density": state.get("mud_density"),
+            **{key: state.get(key, state.get("well_data", {}).get(key)) for key in (PORE_FIELD, FRAC_FIELD)},
+        })
+        if state.get("_cement_chart_source") != chart_source:
+            invalidate_document(state)
+        state["_cement_chart_source"] = chart_source
+        chart = chart_readiness(state, include_fluids=True)
+        state["_cement_chart_model"] = chart["model"]
+        state["_cement_chart_warnings"] = chart["warnings"]
+        issues += [f"Cementing chart: {issue}" for issue in chart["issues"]]
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

@@ -115,6 +115,16 @@ def _seed_session():
         "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": TARGET_ROW,
                              "excess_csg_oh_pct": 30.0, "excess_csg_csg_pct": 10.5},
     }
+    # Round 8A export prerequisites, local to this prepared-context fixture.
+    # Preserve the original interval row and the shared BUG-12 benchmark/token.
+    original = seed["hardware_table"].iloc[0].to_dict()
+    seed["hardware_table"] = pd.DataFrame([
+        {**original, "MD (m)": "1200.0"}, original,
+        {**original, "Description": "Previous Casing", "MD (m)": "1200.0",
+         "Size (in)": "13.375", "ID (in)": 12.25},
+        {**original, "Description": "Open Hole Size", "MD (m)": "2816.0",
+         "Size (in)": "12.25", "ID (in)": 12.25}])
+    seed["placement_config"]["chart_excess_mode"] = "ignore"
     for key, value in seed.items():
         st.session_state[key] = value
     return st.session_state
@@ -214,9 +224,19 @@ def test_interval_md_does_not_trigger_warning():
               "job_type": 'CSG 9 5/8"'}
     seeded.update(well_geometry={"version": 1, "type": "Vertical", "td_m": 3000.0},
                   geothermal_config={"version": 1, "source": "BHST", "surface_temp": 80.0, "value": 200.0})
+    # Round 8A prerequisites; retain the original interval row and BUG-12 assertions.
+    original = seeded["hardware_table"].iloc[0].to_dict()
+    seeded["hardware_table"] = pd.DataFrame([
+        {**original, "MD (m)": "1200.0"}, original,
+        {**original, "Description": "Previous Casing", "MD (m)": "1200.0",
+         "Size (in)": "13.375", "ID (in)": 12.25},
+        {**original, "Description": "Open Hole Size", "MD (m)": "2816.0",
+         "Size (in)": "12.25", "ID (in)": 12.25}])
+    seeded.update(pore_gradient_emw_pcf=70.0, frac_gradient_emw_pcf=160.0)
     status = compute_phase_status({**seeded,
                                    "placement_config": {"job_type": 'CSG 9 5/8"',
-                                                        "target_row": TARGET_ROW}})
+                                                        "target_row": TARGET_ROW,
+                                                        "chart_excess_mode": "ignore"}})
     assert status["phase2_3"]["level"] == "ok", \
         f"Interval MD still flagged: {status['phase2_3']['message']}"
     status2 = compute_phase_status({**seeded, "placement_config": {}})

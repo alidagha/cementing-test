@@ -42,25 +42,24 @@ class TailPlacementUAT(unittest.TestCase):
         self.phase(app, 'phase5')
         return app
 
-    def test_tail_options_and_both_target_sources_seed_2850(self):
+    def test_tail_report_override_has_no_target_based_prefill(self):
         for source in ('manual', 'hardware'):
             with self.subTest(source=source):
                 project = deepcopy(self.project)
                 if source == 'hardware':
-                    project['hardware_table'].loc[0, 'Description'] = 'Casing'
                     project['placement_config']['target_row'] = next(iter(hardware_choices(
                         project['hardware_table'], target_descriptions(project['job_type']))))
                 app = self.start(project)
-                self.assertEqual(self.mode(app).options, ['Not entered', 'Depth (m MD)'])
+                self.assertEqual(self.mode(app).options, ['Not entered', 'Depth (m MD)', 'Surface'])
                 self.assertIsNone(app.session_state['cement_params']['Tail']['top_depth'])
                 self.mode(app).set_value('Depth (m MD)').run()
                 self.healthy(app)
-                self.assertEqual(self.depth(app).value, 2850.)
+                self.assertIsNone(self.depth(app).value)
 
     def test_manual_first_edit_navigation_restore_and_target_change(self):
         app = self.start()
         self.mode(app).set_value('Depth (m MD)').run()
-        self.assertEqual(self.depth(app).value, 2850.)
+        self.assertIsNone(self.depth(app).value)
         self.depth(app).set_value(2800.)
         app.radio(key='_app_mode_key').set_value('phase2_3').run()
         self.healthy(app)
@@ -107,17 +106,20 @@ class TailPlacementUAT(unittest.TestCase):
                 app = self.start(project)
                 self.mode(app).set_value('Depth (m MD)').run()
                 self.healthy(app)
-                self.assertEqual(self.depth(app).value, 2850.)
+                self.assertIsNone(self.depth(app).value)
 
-    def test_restored_surface_is_unfinished_and_blocked(self):
+    def test_restored_surface_is_report_only_and_does_not_block_placement(self):
         project = deepcopy(self.project)
         project['cement_params']['Tail'].update(top_mode='Surface', top_depth=0.)
         app = self.start(project)
-        self.assertEqual(self.mode(app).value, 'Not entered')
-        self.assertNotIn('Surface', self.mode(app).options)
-        self.assertIsNone(app.session_state['cement_params']['Tail']['top_depth'])
-        self.assertNotEqual(compute_phase_status(app.session_state)['phase5']['level'], 'ok')
-        self.assert_export_blocked(app)
+        self.assertEqual(self.mode(app).value, 'Surface')
+        self.assertIn('Surface', self.mode(app).options)
+        self.assertEqual(app.session_state['cement_params']['Tail']['top_depth'], 0.)
+        self.assertEqual(compute_phase_status(app.session_state)['phase5']['level'], 'ok')
+        state = app.session_state.to_dict()
+        interval = slurry_intervals(state['hardware_table'], state['job_type'], state['placement_config'],
+            ['Tail'], state['cement_params'], state['fluids_config']['params'])['Tail']
+        self.assertGreater(interval['top_depth'], 0.)
 
     def test_non_tail_surface_and_unset_depth_remain_unchanged(self):
         for slurry in ('Main', 'Lead', 'Lead #1', 'Lead #2'):
@@ -131,7 +133,7 @@ class TailPlacementUAT(unittest.TestCase):
                 self.assertEqual(self.mode(app, slurry).options, ['Not entered', 'Depth (m MD)', 'Surface'])
                 self.mode(app, slurry).set_value('Depth (m MD)').run()
                 self.assertEqual(next(w for w in app.number_input if w.label ==
-                    f'Top of cement depth (m MD) - {slurry}').value, 0.)
+                    f'Top of cement depth (m MD) - {slurry}').value, None)
                 self.mode(app, slurry).set_value('Surface').run()
                 self.assertEqual(app.session_state['cement_params'][slurry]['top_depth'], 0.)
 
@@ -148,8 +150,12 @@ class TailPlacementUAT(unittest.TestCase):
         self.export(app)
         state = app.session_state.to_dict()
         interval = slurry_intervals(state['hardware_table'], state['job_type'],
-            state['placement_config'], ['Tail'], state['cement_params'])['Tail']
-        self.assertEqual((interval['top_depth'], interval['bottom_depth']), (2800., 3000.))
+            state['placement_config'], ['Tail'], state['cement_params'], state['fluids_config']['params'])['Tail']
+        from cement_chart_model import resolve_chart_geometry
+        geometry = resolve_chart_geometry(state)
+        top = 3000.-(50.-geometry['shoe_track_bbl'])/geometry['capacity_segments'][-1]['bbl_per_m']
+        self.assertEqual((interval['top_depth'], interval['bottom_depth']), (top, 3000.))
+        self.assertNotEqual(interval['top_depth'], 2800.)
         doc = Document(BytesIO(state['_compiled_doc_bytes']))
         table = next(t for t in doc.tables if t.rows[0].cells[0].text == 'Tail Cement Slurry Data')
         text = '\n'.join(c.text for row in table.rows for c in row.cells)

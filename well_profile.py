@@ -1,5 +1,6 @@
 """Round 7A inputs and v2.2 radius-of-curvature survey, without chart code."""
 import math
+from bisect import bisect_left
 from numbers import Real
 
 import pandas as pd
@@ -91,8 +92,7 @@ def integrate_survey(frame):
             dm = md - float(previous["MD"])
             a1, a2 = math.radians(float(previous["Deviation"])), math.radians(inc)
             p1, p2 = math.radians(float(previous["Azimuth"])), math.radians(azi)
-            tvd += (dm*(math.sin(a2)-math.sin(a1))/(a2-a1)
-                    if abs(a2-a1) > EPS else dm*math.cos(a1))
+            tvd += _interval_tvd(dm, a1, a2)
             dpsi = (p2-p1+math.pi) % (2*math.pi)-math.pi
             ki = (a2-a1)/dm if dm > EPS else 0.0
             kp = dpsi/dm if dm > EPS else 0.0
@@ -110,6 +110,70 @@ def integrate_survey(frame):
         results.append({"MD": md, "TVD": tvd, "DLS (deg/100 m)": dls,
                         "North": north, "East": east, "Horizontal Departure": math.hypot(north, east)})
     return pd.DataFrame(results)
+
+
+def _interval_tvd(dm, a1, a2, fraction=1.0):
+    """The v2.2 inclination integral, including partial intervals.
+
+    Use the original interval's EPS branch and exact endpoint for fraction=1;
+    survey station outputs retain the same arithmetic as Round 7A.
+    """
+    endpoint = a2 if fraction == 1.0 else a1 + (a2-a1)*fraction
+    return (dm*(math.sin(endpoint)-math.sin(a1))/(a2-a1)
+            if abs(a2-a1) > EPS else dm*fraction*math.cos(a1))
+
+
+def tvd_at_md(geometry, depths):
+    """Resolve MD boundaries with the same v2.2 interval authority, never interpolation."""
+    validate_well_inputs(geometry, {})
+    if geometry.get("type") == "Vertical":
+        td = _number(geometry.get("td_m"), "Vertical TD")
+        if td <= 0:
+            raise ValueError("Enter positive Vertical TD/MD.")
+        md = [0.0, td]
+        result = None
+    elif geometry.get("type") == "Directional":
+        frame = geometry.get("survey")
+        result = integrate_survey(frame)
+        md = result["MD"].tolist()
+    else:
+        raise ValueError("Choose Well Geometry explicitly.")
+    values = []
+    for depth in depths:
+        depth = _number(depth, "Query MD")
+        if not 0 <= depth <= md[-1]:
+            raise ValueError("Query MD is outside the canonical trajectory.")
+        if result is None:
+            values.append(depth)
+            continue
+        index = bisect_left(md, depth)
+        if depth == md[index]:
+            values.append(float(result.iloc[index]["TVD"]))
+        else:
+            start, end = frame.iloc[index-1], frame.iloc[index]
+            dm = md[index]-md[index-1]
+            values.append(float(result.iloc[index-1]["TVD"]) + _interval_tvd(
+                dm, math.radians(float(start["Deviation"])), math.radians(float(end["Deviation"])),
+                (depth-md[index-1])/dm))
+    return values
+
+
+def trajectory_tvd_decreases(geometry, bottom_md):
+    """Check the continuous v2.2 derivative, not just station TVD endpoints."""
+    tvd_at_md(geometry, [bottom_md])  # Shared validation/bounds authority.
+    if geometry["type"] == "Vertical":
+        return False
+    frame = geometry["survey"]
+    for index in range(1, len(frame)):
+        start, end = frame.iloc[index-1], frame.iloc[index]
+        if float(start["MD"]) >= bottom_md:
+            break
+        a1, a2 = math.radians(float(start["Deviation"])), math.radians(float(end["Deviation"]))
+        fraction = min(1.0, (bottom_md-float(start["MD"]))/float(end["MD"]-start["MD"]))
+        maximum = a1 if abs(a2-a1) <= EPS else max(a1, a1+(a2-a1)*fraction)
+        if maximum > math.pi/2:
+            return True
+    return False
 
 
 def resolve_well_profile(geometry, geothermal):

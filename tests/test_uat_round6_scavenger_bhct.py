@@ -33,13 +33,15 @@ def state_for(*names):
     """Explicit current-state prerequisites; no production defaults or migration."""
     state = {
         **audit.well_profile_fixture(),
+        **audit.chart_fixture('CSG 9 5/8"'),
         "job_type": 'CSG 9 5/8"', "well_name": "Round 6", "client": "NIDC",
         "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150,
         "bhsp": "5603.88", "mud_density": "80-82", "plastic_viscosity": "45", "yield_point": "15",
         "well_data": {"geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200,
                       "bhct": 150, "bhsp": "5603.88", "mud_density": "80-82", "geo_gradient": 1.2},
         "material_property_schema": 1,
-        "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": "__manual__", "manual_depth_m": 3000.0},
+        "placement_config": {"job_type": 'CSG 9 5/8"', "target_row": "__manual__", "manual_depth_m": 3000.0,
+                             "chart_excess_mode": "ignore"},
         "fluids_config": {"active": list(names), "params": {}},
         "cement_params": {}, "cement_additives_dfs": {},
         "lab_qc_params": {}, "lab_grid_dfs": {}, "lab_source_signatures": {},
@@ -357,8 +359,16 @@ def test_template_package_is_unchanged_outside_exact_section_vi_insertion():
 
 
 def test_protected_algorithms_and_properties_are_byte_or_ast_identical():
-    for filename in ("rheology.py", "bhct_helper.py", "placement.py"):
+    for filename in ("rheology.py", "bhct_helper.py"):
         assert Path(filename).read_bytes() == subprocess.check_output(["git", "show", "80353e4:" + filename])
+    # Round 8A supersedes only the Top-driven slurry_intervals authority.
+    for source in (subprocess.check_output(["git", "show", "80353e4:placement.py"]), Path("placement.py").read_bytes()):
+        tree = ast.parse(source)
+        tree.body = [node for node in tree.body if not (isinstance(node, ast.FunctionDef) and node.name == "slurry_intervals")]
+        if source == Path("placement.py").read_bytes():
+            assert ast.dump(tree) == placement_ast
+        else:
+            placement_ast = ast.dump(tree)
     before = ast.parse(subprocess.check_output(["git", "show", "80353e4:engineering_tools.py"]))
     after = ast.parse(Path("engineering_tools.py").read_text())
     functions = ("calculate_slurry_from_components", "calculate_salt_field_amounts", "resolve_additive_density",
@@ -447,9 +457,14 @@ def test_normal_placement_chaining_ignores_scavenger_in_new_hydraulic_order():
     refresh_fluids(state)
     assert state["fluids_config"]["active"] == ["Scavenger", "Lead", "Tail"]
     intervals = slurry_intervals(state.get("hardware_table"), state["job_type"], state["placement_config"],
-                                ["Lead", "Tail"], state["cement_params"])
-    assert (intervals["Tail"]["top_depth"], intervals["Tail"]["bottom_depth"]) == (2850.0, 3000.0)
-    assert (intervals["Lead"]["top_depth"], intervals["Lead"]["bottom_depth"]) == (0.0, 2850.0)
+                                ["Lead", "Tail"], state["cement_params"], state["fluids_config"]["params"])
+    from cement_chart_model import resolve_chart_geometry
+    geometry = resolve_chart_geometry(state)
+    capacity = geometry["capacity_segments"][-1]["bbl_per_m"]
+    tail_top = 3000. - (30. - geometry["shoe_track_bbl"])/capacity
+    assert (intervals["Tail"]["top_depth"], intervals["Tail"]["bottom_depth"]) == (tail_top, 3000.0)
+    assert (intervals["Lead"]["top_depth"], intervals["Lead"]["bottom_depth"]) == (tail_top-30./capacity, tail_top)
+    assert state["cement_params"]["Tail"]["top_depth"] == 2850.
     assert compute_phase_status(state)["phase5"]["level"] == "ok"
 
 

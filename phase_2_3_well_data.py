@@ -11,6 +11,7 @@ from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from well_profile import SURVEY_COLUMNS
 from engineering_tools import parse_effective_numeric, parse_fractional_size, require_bhsp_density
+from cement_chart_model import chart_job_kind, chart_readiness, PORE_FIELD, FRAC_FIELD
 
 HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
 MUD_TYPES = ["WBM", "OBM"]
@@ -74,6 +75,7 @@ def _apply_bhct_suggestion():
 def _commit_placement(field, widget_key):
     placement = st.session_state.setdefault("placement_config", {})
     placement.update(job_type=st.session_state.get("job_type", ""), **{field: st.session_state[widget_key]})
+    invalidate_document(st.session_state)
     if field == "target_row" and placement[field] == "__manual__":
         placement.setdefault("manual_depth_m", 0.0)  # Existing "not entered" value.
 
@@ -419,6 +421,13 @@ def render():
             key=widget_key, on_change=_commit_placement, args=(field, widget_key),
             help="Enter percentage points (25 means 25%). Leave blank if not supplied."
         )
+    if job_type in materials_db.JOB_TYPES and chart_job_kind(job_type) is not None:
+        widget_key = f"_placement_chart_excess_mode_{load_sig}"
+        st.session_state[widget_key] = placement.get("chart_excess_mode")
+        st.selectbox("Chart Capacity Excess Mode", ["apply", "ignore"], index=None,
+                     format_func=lambda value: "Apply Excess" if value == "apply" else "Ignore Excess",
+                     key=widget_key, on_change=_commit_placement, args=("chart_excess_mode", widget_key),
+                     help="Choose explicitly. Annular capacity and modelled cement placement use this mode.")
     if placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
         st.warning("Enter the actual target depth before citing it in the executive summary.")
 
@@ -485,6 +494,20 @@ def render():
     st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=None)
     st.session_state["effective_pv"] = parse_effective_numeric(st.session_state["plastic_viscosity"], default=None)
     st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=None)
+
+    if job_type in materials_db.JOB_TYPES and chart_job_kind(job_type) is not None:
+        for column, field, label in zip(st.columns(2), (PORE_FIELD, FRAC_FIELD),
+                                        ("Pore Gradient (pcf EMW)", "Fracture Gradient (pcf EMW)")):
+            with column:
+                _seed(f"_w_{field}", field)
+                st.number_input(label, value=None, step=1.0, key=f"_w_{field}",
+                                on_change=_commit_well_widget, args=(field,),
+                                help="One finite positive equivalent mud weight; Pore must be less than Fracture.")
+        chart = chart_readiness(st.session_state)
+        for issue in chart["issues"]:
+            st.warning(issue)
+        for warning in chart["warnings"]:
+            st.warning(warning)
 
     st.markdown("---")
     

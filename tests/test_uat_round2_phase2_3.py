@@ -192,15 +192,25 @@ class Round2Phase23UAT(unittest.TestCase):
     def test_chained_placement_unchanged_with_global_excess(self):
         for job in ('CSG 9 5/8"', 'LNR 7"'):
             with self.subTest(job=job):
-                cfg = {'job_type': job, 'target_row': '__manual__', 'manual_depth_m': 3000.0}
+                from cement_chart_model import resolve_chart_geometry
+                state = audit.chart_fixture(job)
+                cfg, table = state['placement_config'], state['hardware_table']
                 params = {s: {'top_mode': 'Depth (m MD)', 'top_depth': d, 'top_job_type': job}
                           for s, d in (('Lead', 1000.0), ('Tail', 1500.0), ('Main', 2000.0))}
-                before = slurry_intervals(pd.DataFrame(), job, cfg, list(params), params)
+                # Official volumes place three 100 m intervals; report tops
+                # remain unrelated. Ignore Excess preserves nominal placement.
+                state['job_type'] = job
+                geometry = resolve_chart_geometry(state)
+                capacity = geometry['capacity_segments'][-1]['bbl_per_m']
+                fluid_data = {s: {'volume': 100.*capacity, 'density': '118'} for s in params}
+                fluid_data['Tail']['volume'] += geometry['shoe_track_bbl']
+                before = slurry_intervals(table, job, cfg, list(params), params, fluid_data)
                 cfg.update(dict(zip(FIELDS, (25.0, 10.5))))
-                after = slurry_intervals(pd.DataFrame(), job, cfg, list(params), params)
+                after = slurry_intervals(table, job, cfg, list(params), params, fluid_data)
                 self.assertEqual(after, before)
                 self.assertEqual([(s, p['bottom_depth'], p['top_depth']) for s, p in after.items()],
-                                 [('Main', 3000.0, 2000.0), ('Tail', 2000.0, 1500.0), ('Lead', 1500.0, 1000.0)])
+                                 [('Tail', 3000.0, 2900.0), ('Lead', 2900.0, 2800.0), ('Main', 2800.0, 2700.0)])
+                self.assertEqual([params[s]['top_depth'] for s in params], [1000., 1500., 2000.])
 
     def test_actual_word_distinct_optional_zero_excess_for_five_workflows(self):
         for job in audit.BATCH1_JOBS:

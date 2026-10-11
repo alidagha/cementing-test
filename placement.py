@@ -95,8 +95,28 @@ def top_label(params, job_type=None, target=None):
     return text, depth
 
 
-def slurry_intervals(table, job_type, config, active_slurries, cement_params):
-    """Share the summary's established deepest-first chain with readiness/Word."""
+def slurry_intervals(table, job_type, config, active_slurries, cement_params, fluid_data=None):
+    """One engineering projection; Plug/Squeeze retain their independent tops.
+
+    Incomplete report contexts keep explicit missing values. Normal readiness
+    and export use the same resolver and block its controlled issues.
+    """
+    from cement_chart_model import chart_job_kind, resolve_cement_placement
+    try:
+        rows = None
+        if chart_job_kind(job_type) is not None:
+            state = {"job_type": job_type, "hardware_table": table, "placement_config": config,
+                     "fluids_config": {"active": active_slurries, "params": fluid_data or {}}}
+            rows = resolve_cement_placement(state)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        return {name: {"top": ".... m [PLACEMENT INCOMPLETE]", "top_depth": None,
+                       "bottom": ".... m [PLACEMENT INCOMPLETE]", "bottom_depth": None,
+                       "issue": str(exc)} for name in reversed(active_slurries)}
+    if rows is not None:
+        return {row["fluid"]: {"top": "surface" if row["top_md"] == 0 else f"{row['top_md']:.1f} m",
+                              "top_depth": row["top_md"], "bottom": f"{row['bottom_md']:.1f} m MD",
+                              "bottom_depth": row["bottom_md"], "returned_bbl": row["returned_bbl"]}
+                for row in rows}
     target = target_depth(table, job_type, config)
     target_text = (f"{target:.1f} m MD" if target is not None
                    else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]")

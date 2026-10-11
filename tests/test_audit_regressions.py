@@ -55,6 +55,40 @@ def well_profile_fixture(md=3000.0, tvd=None, bhst=200.0, gradient=None):
             "surface_temp": 80.0, "value": bhst if gradient is None else gradient}}
 
 
+def chart_fixture(job, target=3000.0):
+    """Explicit Round 8A Hardware/input prerequisites, never production defaults."""
+    casing = {
+        'CSG 30"': (30., 28., 36., 34.), 'CSG 24"': (24., 22., 30., 28.),
+        'CSG 20"': (20., 18., 26., 24.), 'CSG 18 5/8"': (18.625, 17., 24., 22.),
+        'CSG 13 3/8"': (13.375, 12.25, 20., 18.),
+        'CSG 9 5/8"': (9.625, 8.535, 13.375, 12.25), 'CSG 7"': (7., 6.276, 9.625, 8.535),
+    }
+    liner = {'LNR 7"': (7., 6.276), 'LNR 5"': (5., 4.276)}
+    tieback = {'TIE BACK LNR 7"': (7., 6.276), 'TIE BACK LNR 5"': (5., 4.276)}
+    extent = max(3300., target)
+    if job in casing:
+        od, inner, outer_od, outer_id = casing[job]
+        rows = [("Previous Casing", 1500., outer_od, outer_id),
+                ("Casing", extent, od, inner), ("Open Hole Size", extent, outer_id, outer_id)]
+    elif job in liner:
+        od, inner = liner[job]
+        rows = [("Previous Casing", 1500., 13.375, 12.25),
+                ("Liner", extent, od, inner), ("Open Hole Size", extent, 12.25, 12.25),
+                ("Liner Hanger", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
+    elif job in tieback:
+        od, inner = tieback[job]
+        rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back", extent, od, inner)]
+    else:
+        rows = [("Previous Casing", target, 20., 18.)]
+    table = pd.DataFrame([{"Description": desc, "MD (m)": str(md), "Size (in)": str(size),
+                          "ID (in)": inner, "Joint (m)": 12., "Weight (ppf)": 100.,
+                          "Grade": "K-55", "Collapse (psi)": 1000., "Burst (psi)": 2000.}
+                         for desc, md, size, inner in rows])
+    return {"hardware_table": table, "pore_gradient_emw_pcf": 70., "frac_gradient_emw_pcf": 160.,
+            "placement_config": {"job_type": job, "target_row": "__manual__", "manual_depth_m": target,
+                                 **({"chart_excess_mode": "ignore"} if job in casing or job in liner or job in tieback else {})}}
+
+
 def rheology_fixture():
     """Measured Rheology prerequisite for existing valid-export fixtures."""
     return {"surface_down": {"selected": True,
@@ -183,11 +217,8 @@ class AuditRegressions(unittest.TestCase):
         app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
         app.text_input(key="_w_client").set_value("Regression Client").run()
-        columns = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)",
-                   "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
-        app.session_state["hardware_table"] = pd.DataFrame([
-            ["Previous Casing", "3000", "20", 18.0, 12.0, 100.0, "K-55", 1000.0, 2000.0],
-        ], columns=columns)
+        for key, value in chart_fixture(job).items():
+            app.session_state[key] = value
         self.phase(app, "phase2_3")
         next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__").run()
         next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
@@ -491,6 +522,12 @@ class AuditRegressions(unittest.TestCase):
             compiled = {key: valid.session_state[key] for key in
                         ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature")}
             for action in actions:
+                edited_md = "3350" if "TIE BACK" in job else "2950"
+                if "edited_rows" in action:
+                    # The selected Tie Back host must still enclose the target.
+                    action = {"edited_rows": {"0": {"MD (m)": edited_md}}}
+                if "deleted_rows" in action:
+                    action = {"deleted_rows": list(range(len(saved["hardware_table"])))}
                 with self.subTest(job=job, action=action):
                     app = self.app({**deepcopy(saved), **compiled})
                     self.phase(app, "phase2_3")
@@ -509,11 +546,12 @@ class AuditRegressions(unittest.TestCase):
                     self.phase(app, "phase2_3")
                     if "added_rows" in action:
                         self.assertTrue(hardware_draft_pending(app.session_state))
-                        self.hardware_event(app, {"edited_rows": {"1": {
-                            "Description": "Open Hole Size", "Size (in)": "12.25", "ID (in)": 12.25,
+                        added_index = str(len(original))
+                        self.hardware_event(app, {"edited_rows": {added_index: {
+                            "Description": "Open Hole Size", "MD (m)": "3500", "Size (in)": "12.25", "ID (in)": 12.25,
                             "Joint (m)": 3.0, "Weight (ppf)": 30.0, "Grade": "L-80",
                             "Collapse (psi)": 100.0, "Burst (psi)": 200.0}}})
-                        open_hole = app.session_state["hardware_table"].iloc[1]
+                        open_hole = app.session_state["hardware_table"].iloc[len(original)]
                         for field in ("Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"):
                             self.assertEqual(open_hole[field], 0.0)
                         self.assertEqual(open_hole["Grade"], "-")
@@ -522,7 +560,7 @@ class AuditRegressions(unittest.TestCase):
                         self.assertNotEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
                         self.hardware_event(app, {"added_rows": original.to_dict("records")})
                     else:
-                        self.assertEqual(app.session_state["hardware_table"].iloc[0]["MD (m)"], "2950")
+                        self.assertEqual(app.session_state["hardware_table"].iloc[0]["MD (m)"], edited_md)
                     self.assertFalse(hardware_draft_pending(app.session_state))
                     if "TIE BACK" in job:
                         # A changed/deleted host must be selected again after review.
@@ -666,14 +704,14 @@ class AuditRegressions(unittest.TestCase):
         mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
         self.assertEqual(mode.value, "Not entered")
         self.assertIsNone(app.session_state["cement_params"]["Main"]["top_depth"])
-        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
         mode.set_value("Depth (m MD)").run()
         self.healthy(app)
         depth = next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main")
-        self.assertEqual(depth.value, 0.0)
+        self.assertIsNone(depth.value)
         self.assertFalse(any(w.label.startswith("Correct Top depth") for w in app.text_input))
-        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
-        self.assert_export_blocked(app)
+        self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+        self.export(app)
         self.phase(app, "phase5")
         next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main").set_value(2100.0)
         app.radio(key="_app_mode_key").set_value("phase10").run()
@@ -689,8 +727,8 @@ class AuditRegressions(unittest.TestCase):
                 app = self.app(round_trip(project))
                 self.phase(app, "phase5")
                 if value is None:
-                    self.assertEqual(next(w for w in app.number_input if w.label.startswith("Top of cement depth")).value, 0.0)
-                    self.assertNotEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                    self.assertIsNone(next(w for w in app.number_input if w.label.startswith("Top of cement depth")).value)
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
                 elif value == 2100.0:
                     self.assertEqual(next(w for w in app.number_input if w.label.startswith("Top of cement depth")).value, value)
                     self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], value)
@@ -698,7 +736,7 @@ class AuditRegressions(unittest.TestCase):
                 else:
                     repair = next(w for w in app.text_input if w.label.startswith("Correct Top depth"))
                     self.assertEqual(app.session_state["cement_params"]["Main"]["top_depth"], value)
-                    self.assertNotEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
                     repair.set_value("2100").run()
                     next(b for b in app.button if b.label == "Apply corrected values").click().run()
                     self.healthy(app)
@@ -732,20 +770,34 @@ class AuditRegressions(unittest.TestCase):
                 self.assertEqual(app.session_state["cement_params"]["Main"]["top_job_type"], job)
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
                 self.assert_export_blocked(app)
-                # Reviewing the new job target alone cannot bless the old top.
+                # Supply the selected job's explicit current geometry; the old
+                # report override still belongs to its original job.
+                current = round_trip(app.session_state.to_dict())
+                current.update(chart_fixture(next_job))
+                app = self.app(current)
                 self.phase(app, "phase2_3")
                 next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__").run()
                 next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
                 if "TIE BACK" in next_job:
                     next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
                 self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
-                self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "warning")
+                volume_driven = next_job not in ("CMT PLUG", "CMT SQUEEZE")
+                self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if volume_driven else "warning")
                 restored = round_trip(app.session_state.to_dict())
                 app = self.app(restored)
-                self.assert_export_blocked(app)
                 with patch.object(report.st, "session_state", deepcopy(restored)):
-                    with self.assertRaises(ValueError):
-                        report.build_master_context()
+                    if volume_driven:
+                        from cement_chart_model import resolve_cement_placement
+                        placement = resolve_cement_placement(restored)
+                        context = report.build_master_context()
+                        self.assertEqual(context["slurries"][0]["top"], f"{placement[0]['top_md']:.1f} m")
+                    else:
+                        with self.assertRaises(ValueError):
+                            report.build_master_context()
+                if volume_driven:
+                    self.export(app)
+                else:
+                    self.assert_export_blocked(app)
                 self.phase(app, "phase5")
                 mode = next(w for w in app.selectbox if w.label == "Top of cement - Main")
                 self.assertEqual(mode.value, "Not entered")
@@ -765,8 +817,20 @@ class AuditRegressions(unittest.TestCase):
                     project = deepcopy(saved)
                     project["cement_params"]["Main"].update(top_mode="Depth (m MD)", top_depth=depth, top_job_type=job)
                     app = self.app(round_trip(project))
-                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if accepted else "warning")
-                    if accepted:
+                    volume_driven = job not in ('CMT PLUG', 'CMT SQUEEZE')
+                    self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if accepted or volume_driven else "warning")
+                    if volume_driven:
+                        self.export(app)
+                        from cement_chart_model import resolve_cement_placement
+                        baseline_placement = resolve_cement_placement(saved)
+                        self.assertEqual(resolve_cement_placement(app.session_state), baseline_placement)
+                        with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                            context = report.build_master_context()
+                        expected_top = (f"{depth:.1f} m" if isinstance(depth, (float, int)) and depth > 0 else
+                                        f"{baseline_placement[0]['top_md']:.1f} m")
+                        self.assertEqual(context["slurries"][0]["top"], expected_top)
+                        self.assertEqual(context["slurries"][0]["bottom"], "3000.0 m MD")
+                    elif accepted:
                         self.export(app)
                         with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
                             context = report.build_master_context()
@@ -791,7 +855,7 @@ class AuditRegressions(unittest.TestCase):
 
     def test_batch3_chained_word_placement_matches_summary(self):
         import phase_10_procedure as report
-        for job in ('CSG 9 5/8"', 'LNR 7"'):
+        for job in ('CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"'):
             valid = self.configured_app(job)
             self.export(valid)  # Single-slurry behavior remains valid.
             saved = round_trip(valid.session_state.to_dict())
@@ -803,7 +867,7 @@ class AuditRegressions(unittest.TestCase):
                     for slurry in slurries:
                         project["fluids_config"]["params"][slurry] = deepcopy(project["fluids_config"]["params"]["Main"])
                         project["cement_params"][slurry] = deepcopy(saved["cement_params"]["Main"])
-                        project["cement_params"][slurry].update(top_mode="Depth (m MD)", top_depth=depths[slurry], top_job_type=job)
+                        project["cement_params"][slurry].update(top_mode="Not entered", top_depth=None, top_job_type=job)
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
                             thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
@@ -822,11 +886,10 @@ class AuditRegressions(unittest.TestCase):
                     self.export(app)
                     with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
                         context = report.build_master_context()
-                    expected, bottom = [], 3000.0
+                    from cement_chart_model import resolve_cement_placement
                     hydraulic_slurries = [name for name in materials_db.PLACEMENT_SLURRIES if name in slurries]
-                    for slurry in reversed(hydraulic_slurries):
-                        expected.append((slurry, bottom, depths[slurry]))
-                        bottom = depths[slurry]
+                    expected = [(row['fluid'], round(row['bottom_md'], 1), round(row['top_md'], 1))
+                                for row in resolve_cement_placement(app.session_state)]
                     payload = [(p["name"], float(p["bottom"].split()[0]), float(p["top"].split()[0]))
                                for p in context["slurries"]]
                     # Chained upper bottoms use a top label, without the MD suffix.
@@ -837,7 +900,9 @@ class AuditRegressions(unittest.TestCase):
                     expected_report = [next(row for row in expected if row[0] == name) for name in slurries]
                     self.assertEqual(payload, expected_report)
                     self.assertEqual(summary, expected)
-                    self.assertIn("will be set and cemented at 3000.0 m MD", context["exec_summary"])
+                    opening = ("Tie Back cementing will be set at 3000.0 m MD" if "TIE BACK" in job
+                               else "will be set and cemented at 3000.0 m MD")
+                    self.assertIn(opening, context["exec_summary"])
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
                     word = []
                     for table in doc.tables:
@@ -847,15 +912,16 @@ class AuditRegressions(unittest.TestCase):
                             word.append((title.removesuffix(" Cement Slurry Data"),
                                          float(row.cells[1].text.split()[0]), float(row.cells[3].text.split()[0])))
                     self.assertEqual(word, expected_report)
-                    # A top below the previous slurry's top must fail both gates.
+                    # Word-only overrides cannot change the calculated chain or export readiness.
                     invalid = round_trip(app.session_state.to_dict())
                     invalid["cement_params"][hydraulic_slurries[0]]["top_depth"] = 2500.0
                     bad = self.app(invalid)
-                    self.assertEqual(compute_phase_status(bad.session_state)["phase5"]["level"], "warning")
-                    self.assert_export_blocked(bad)
+                    self.assertEqual(compute_phase_status(bad.session_state)["phase5"]["level"], "ok")
+                    self.assertEqual(resolve_cement_placement(bad.session_state), resolve_cement_placement(app.session_state))
+                    self.export(bad)
         # Sibling jobs retain independent target-based bottoms, without chaining.
         from placement import slurry_intervals
-        for job in ('CMT PLUG', 'CMT SQUEEZE', 'TIE BACK LNR 7"'):
+        for job in ('CMT PLUG', 'CMT SQUEEZE'):
             intervals = slurry_intervals(None, job, {"job_type": job, "target_row": "__manual__", "manual_depth_m": 3000.0},
                                          ["Lead", "Main"], {"Lead": {"top_mode": "Depth (m MD)", "top_depth": 1000.0},
                                                             "Main": {"top_mode": "Depth (m MD)", "top_depth": 2000.0}})

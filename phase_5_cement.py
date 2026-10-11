@@ -18,10 +18,10 @@ from engineering_tools import (
     calculate_salt_field_amounts,
     BBL_TO_CUFT, WATER_DENSITY_PCF, catalog_cement_sg, resolve_cement_sg
 )
-from project_state import fingerprint, migrate_material_properties
+from project_state import fingerprint, migrate_material_properties, invalidate_document
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
-from placement import target_depth, top_label
+from placement import target_depth, top_label, slurry_intervals
 
 REQUIRED_ADDITIVE_COLUMNS = ["Material Type", "Name", "Physical State", "Mix Method", "User Input"]
 
@@ -82,6 +82,8 @@ def _commit_cement_param(slurry: str, field: str, widget_key: str) -> None:
     entry = st.session_state.get("cement_params", {}).get(slurry)
     if isinstance(entry, dict):
         entry[field] = value
+        if field in ("top_mode", "top_depth", "report_bottom_depth"):
+            invalidate_document(st.session_state)
         if field == "cmt_sg":
             entry["cmt_sg_source"] = "manual"
         elif field == "base_cement" and entry.get("cmt_sg_source") == "catalog":
@@ -534,12 +536,35 @@ def render():
 
             if slurry in materials_db.PLACEMENT_SLURRIES:
                 st.markdown("#### Slurry Placement")
-                st.caption("Enter the approved top of cement for this slurry. Select Surface only when the planned top is the surface; an unknown top remains explicitly unreported.")
+                volume_driven = job_type not in ("CMT PLUG", "CMT SQUEEZE")
+                if volume_driven:
+                    if p.get("top_job_type") not in (None, job_type):
+                        p["report_bottom_depth"] = None
+                    interval = slurry_intervals(st.session_state.get("hardware_table"), job_type,
+                        st.session_state.get("placement_config", {}),
+                        [name for name in active_pipeline if name in materials_db.PLACEMENT_SLURRIES],
+                        st.session_state["cement_params"], st.session_state.get("fluids_config", {}).get("params", {}))[slurry]
+                    if "issue" in interval:
+                        st.warning(interval["issue"])
+                    else:
+                        st.caption(f"Modelled placement: {interval['top']} → {interval['bottom']}. "
+                                   f"Returned/dumped at Surface: {interval['returned_bbl']:.2f} bbl.")
+                    st.caption("Optional Word Top/Bottom overrides below affect presentation only. "
+                               "Engineering placement uses Phase IV volume and explicit Hardware capacity; "
+                               "it is theoretical, not measured field TOC.")
+                    bottom_key = f"_report_bottom_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
+                    st.number_input(f"Word Bottom override (m MD) - {slurry}", min_value=0.0,
+                                    value=p.get("report_bottom_depth"), step=1.0, key=bottom_key,
+                                    on_change=_commit_cement_param,
+                                    args=(slurry, "report_bottom_depth", bottom_key),
+                                    help="Leave blank to use calculated placement; zero means Surface.")
+                else:
+                    st.caption("Enter the approved top of cement for this slurry. Select Surface only when the planned top is the surface; an unknown top remains explicitly unreported.")
                 top_options = ["Not entered", "Depth (m MD)"]
-                if slurry != "Tail":
+                if volume_driven or slurry != "Tail":
                     top_options.append("Surface")
                 top_mode = p.get("top_mode")
-                if slurry == "Tail" and top_mode == "Surface":
+                if not volume_driven and slurry == "Tail" and top_mode == "Surface":
                     top_mode = "Not entered"
                 if top_mode not in top_options:
                     top_mode = "Depth (m MD)" if p.get("top_depth") not in (None, "", 0) else "Not entered"
@@ -554,8 +579,15 @@ def render():
                                              on_change=_commit_cement_param,
                                              args=(slurry, "top_mode", mode_key))
                 if p["top_mode"] == "Depth (m MD)":
-                    initial_depth = p.get("top_depth") or p.get("draft_top_depth") or 0.0
-                    if slurry == "Tail":
+                    initial_depth = p.get("top_depth") or p.get("draft_top_depth") or (None if volume_driven else 0.0)
+                    if volume_driven:
+                        initial_depth = None
+                        for value in (p.get("top_depth"), p.get("draft_top_depth")):
+                            _, depth = top_label({"top_mode": "Depth (m MD)", "top_depth": value})
+                            if depth is not None:
+                                initial_depth = depth
+                                break
+                    if not volume_driven and slurry == "Tail":
                         initial_depth = None
                         for value in (p.get("top_depth"), p.get("draft_top_depth")):
                             _, depth = top_label({"top_mode": "Depth (m MD)", "top_depth": value})

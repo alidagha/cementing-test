@@ -33,7 +33,7 @@ class Round2ReportUAT(unittest.TestCase):
             project['fluids_config']['params'][slurry] = deepcopy(project['fluids_config']['params']['Main'])
             project['cement_params'][slurry] = deepcopy(project['cement_params']['Main'])
             placement_index = ['Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail'].index(slurry)
-            project['cement_params'][slurry].update(top_mode='Depth (m MD)', top_depth=500. + placement_index * 500,
+            project['cement_params'][slurry].update(top_mode='Not entered', top_depth=None,
                                                     top_job_type=project['job_type'])
             project['cement_additives_dfs'][slurry] = pd.DataFrame([
                 {'Material Type': 'Extender', 'Name': 'Micro Silica', 'Physical State': 'Powder',
@@ -86,10 +86,14 @@ class Round2ReportUAT(unittest.TestCase):
                 with self.subTest(job=job, subset=subset):
                     state = deepcopy(self.state)
                     state['job_type'] = state['doc_control']['job_type'] = job
+                    state.update(audit.chart_fixture(job))
                     state['placement_config'].update(job_type=job, host_row=next(iter(hardware_choices(state['hardware_table'], HOST_DESCRIPTIONS))))
                     state['fluids_config']['active'] = [*subset, 'Displacement Fluid']
                     for slurry in subset:
                         state['cement_params'][slurry].update(top_job_type=job, last_job_type=job)
+                        if job in ('CMT PLUG', 'CMT SQUEEZE'):
+                            state['cement_params'][slurry].update(top_mode='Depth (m MD)',
+                                top_depth=500. + HYDRAULIC_SLURRIES.index(slurry)*500.)
                     # Current well/formulation inputs remain unchanged; report text is auto-generated.
                     state.pop('procedure_text', None); state.pop('exec_summary_text', None)
                     state.pop('report_text_state', None)
@@ -112,13 +116,14 @@ class Round2ReportUAT(unittest.TestCase):
             with self.subTest(job=job):
                 state = deepcopy(self.state)
                 state['job_type'] = state['doc_control']['job_type'] = job
+                state.update(audit.chart_fixture(job))
                 state['placement_config']['job_type'] = job
                 for p in state['cement_params'].values():
                     p.update(top_job_type=job, last_job_type=job)
                 state.pop('procedure_text', None); state.pop('exec_summary_text', None)
                 state.pop('report_text_state', None)
                 intervals = slurry_intervals(state['hardware_table'], job, state['placement_config'],
-                                             HYDRAULIC_SLURRIES, state['cement_params'])
+                                             HYDRAULIC_SLURRIES, state['cement_params'], state['fluids_config']['params'])
                 self.assertEqual(list(intervals), list(reversed(HYDRAULIC_SLURRIES)))
                 context = self.context(state)
                 for payload in context['slurries']:
