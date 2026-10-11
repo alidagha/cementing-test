@@ -186,7 +186,8 @@ def resolve_chart_geometry(state):
                 for s in active if s["bottom_md"] > collar)
     return {"kind": kind, "shoe_md": shoe, "float_collar_md": collar,
             "landing_collar_md": shoe-LANDING_COLLAR_OFFSET_M,
-            "active_string": active, "capacity_segments": capacities, "shoe_track_bbl": track}
+            "active_string": active, "enclosing_string": outer,
+            "capacity_segments": capacities, "shoe_track_bbl": track}
 
 
 def interval_volume(segments, top, bottom):

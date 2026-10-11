@@ -9,6 +9,7 @@ import re
 from collections import deque
 from pathlib import Path
 from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
+from cement_chart_report import prepared_cement_report
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, top_label, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
@@ -1490,6 +1491,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "note_vertical": note_ctx["note_vertical"],
         "well_profile_source": fingerprint(canonical_report_source(st.session_state)),
         "well_profile_report": prepared_well_report(st.session_state),
+        "cement_chart_report": prepared_cement_report(st.session_state),
         
         "executive_summary": exec_summary_text,
         "exec_summary": exec_summary_text,
@@ -1813,7 +1815,7 @@ def render():
                         filename = f"Cementing_Program_{safe_label}_{datetime.today().strftime('%Y%m%d_%H%M')}.docx"
                         
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
-                                                              master_context["note_vertical"])
+                                                              master_context["note_vertical"], master_context["cement_chart_report"])
                         st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature

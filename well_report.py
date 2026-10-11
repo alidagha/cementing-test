@@ -218,7 +218,7 @@ def render_chart_png(payload):
         figure.clear()
 
 
-def postprocess_well_report(rendered_bytes, payload, vertical_note):
+def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
     from docx.text.paragraph import Paragraph
@@ -226,6 +226,21 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note):
     from docx.oxml.ns import qn
     doc = Document(BytesIO(rendered_bytes))
     paragraphs = [Paragraph(element, doc._body) for element in doc._element.body.xpath(".//w:p")]
+    cement_anchor = None
+    if cement_report is not None:
+        from cement_chart_report import CHART_ANCHOR as cement_text
+        matches = [p for p in paragraphs if p.text == cement_text]
+        if len(matches) != 1 or matches[0]._p.getparent() is not doc._element.body:
+            raise ValueError(f"Word report requires exactly one anchor: {cement_text}")
+        cement_anchor = matches[0]
+        elements = list(doc._element.body)
+        iv = [p for p in doc.paragraphs if p.text.strip() == "IV. Fluids Sequence"]
+        v = [p for p in doc.paragraphs if p.text.strip() == "V. Cementing Program"]
+        if (len(iv) != 1 or len(v) != 1 or not
+                elements.index(iv[0]._p) < elements.index(cement_anchor._p) < elements.index(v[0]._p)):
+            raise ValueError("The diagnostic chart anchor must be inside the existing Section IV.")
+        if cement_report["kind"] is not None and cement_report["model"] is None:
+            raise ValueError("A prepared Round 8A chart model is required.")
     anchors = {}
     for text in (CHART_ANCHOR, SURVEY_ANCHOR):
         matches = [paragraph for paragraph in paragraphs if paragraph.text == text]
@@ -303,6 +318,26 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note):
         survey_anchor._p.getparent().remove(survey_anchor._p)
     for spacer in spacers:
         doc._element.body.remove(spacer)
+    if cement_anchor is not None:
+        from cement_chart_report import render_chart_png as render_cement_png, NOT_APPLICABLE
+        if cement_report["kind"] is None:
+            # Preserve paragraph/run properties while replacing the exact text.
+            runs = cement_anchor.runs
+            (runs[0] if runs else cement_anchor.add_run()).text = NOT_APPLICABLE
+            for run in runs[1:]:
+                cement_anchor._p.remove(run._r)
+        else:
+            for element in list(doc._element.body)[list(doc._element.body).index(cement_anchor._p):]:
+                section_xml = element if element.tag == qn("w:sectPr") else element.find(".//"+qn("w:sectPr"))
+                if section_xml is not None:
+                    break
+            if section_xml is None:
+                raise ValueError("Cannot resolve the diagnostic chart's existing page geometry.")
+            section = Section(section_xml, doc.part)
+            png = render_cement_png(cement_report["model"])
+            run = cement_anchor.clear().add_run()
+            picture = run.add_picture(BytesIO(png), width=section.page_width-section.left_margin-section.right_margin)
+            picture._inline.docPr.set("descr", "Static Well Security and Fluid Sequence")
     result = BytesIO()
     doc.save(result)
     return result.getvalue()
