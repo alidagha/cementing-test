@@ -301,3 +301,38 @@ def test_round8c_panel_titles_share_rendered_baseline():
         assert bounds[0].y0==pytest.approx(bounds[1].y0,abs=0.01)
         assert bounds[0].y1==pytest.approx(bounds[1].y1,abs=0.01)
     finally:figure.clear()
+
+
+@pytest.mark.parametrize('job', ['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
+def test_round8c1_inside_mud_follows_resolved_string_to_collar(job):
+    from matplotlib.colors import to_hex
+    m=prepared(job)['_cement_chart_model']
+    original=deepcopy(m)
+    figure=renderer().build_chart_figure(m)
+    try:
+        axis=figure.axes[1]
+        mud=[p for p in axis.patches if p.get_gid()=='inside:Mud']
+        expected=[(s['top_md'],min(s['bottom_md'],m['float_collar_md']),s['id_in'])
+                  for s in m['active_string'] if s['top_md']<m['float_collar_md']]
+        assert len(mud)==len(expected)
+        scale=2./max(s['od_in'] for s in m['enclosing_string'])
+        for band,(top,bottom,inner) in zip(mud,expected):
+            assert band.get_y()==top
+            assert band.get_height()==bottom-top
+            assert band.get_width()==inner*scale
+            assert band.get_x()==-inner*scale/2
+            assert to_hex(band.get_facecolor()).upper()=='#8B1010'
+        assert mud[0].get_y()==0
+        assert all(a.get_y()+a.get_height()==b.get_y() for a,b in zip(mud,mud[1:]))
+        assert mud[-1].get_y()+mud[-1].get_height()==m['float_collar_md']
+        if job.startswith('LNR'):
+            assert [s['description'] for s in m['active_string']]==['Drill Pipes','Liner']
+            assert len(mud)==2
+        track=[p for p in axis.patches if p.get_gid()=='shoe-track']
+        assert track and track[0].get_y()==m['float_collar_md']
+        assert track[-1].get_y()+track[-1].get_height()==m['shoe_md']
+        assert all(to_hex(p.get_facecolor()).upper()==renderer().COLORS[m['shoe_track_fluid']]
+                   for p in track)
+        assert not any(t.get_text().startswith('Shoe Track:') for t in axis.texts)
+        assert m==original
+    finally:figure.clear()

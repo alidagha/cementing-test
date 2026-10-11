@@ -83,9 +83,11 @@ def build_chart_figure(model):
                     a, b = half(inner,"od_in"), half(enclosing,outer_field)
                     for side in (-1,1):
                         rectangle(-b if side<0 else a,b-a,top,bottom,color,"annulus:"+fluid["fluid"])
-        # Interior above the collar is intentionally unfilled: Round 8A does not
-        # resolve an inside-string fluid ladder. Do not invent a Mud interval.
         for segment in active:
+            top, bottom = segment["top_md"],min(segment["bottom_md"],model["float_collar_md"])
+            if bottom>top:
+                radius=half(segment,"id_in")
+                rectangle(-radius,2*radius,top,bottom,COLORS["Mud"],"inside:Mud")
             top, bottom = max(segment["top_md"],model["float_collar_md"]),segment["bottom_md"]
             if bottom>top:
                 radius=half(segment,"id_in")
