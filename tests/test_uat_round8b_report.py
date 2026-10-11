@@ -110,7 +110,8 @@ def test_all_final_fluids_shoe_track_and_excluded_stages():
         for name in ['Pre Flush','Spacer','Spacer Ahead','Scavenger','Lead #1','Tail','Mud']:
             assert name in labels
         assert 'Spacer Behind' not in labels and 'Displacement Fluid' not in labels
-        assert 'Shoe Track: Tail' in labels
+        assert not any(text.startswith('Shoe Track:') for text in labels)
+        assert any(p.get_gid() == 'shoe-track' for p in figure.axes[1].patches)
     finally:figure.clear()
 
 
@@ -268,3 +269,35 @@ def test_ui_build_and_direct_rebuilt_chart_image_are_identical(project):
         rid=p._p.xpath('.//a:blip')[0].get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
         return doc.part.related_parts[rid].blob
     assert image(direct)==image(app.session_state['_compiled_doc_bytes'])
+
+
+@pytest.mark.parametrize('fluid,color', [('Mud','#8B1010'),('Scavenger','#C6D2BD')])
+def test_round8c_fluid_colors_are_shared_by_all_bands_and_key(fluid,color):
+    from matplotlib.colors import to_hex
+    state=prepared()
+    state['fluids_config']['active'].insert(0,'Scavenger')
+    state['fluids_config']['params']['Scavenger']={'volume':10.,'density':'118','pump_rate':'4'}
+    figure=renderer().build_chart_figure(model.build_chart_model(state))
+    try:
+        axis=figure.axes[1]
+        bands=[p for p in axis.patches if p.get_gid()=='annulus:'+fluid]
+        assert bands and all(to_hex(p.get_facecolor()).upper()==color for p in bands)
+        labels=[t.get_text() for t in axis.texts]
+        keys=[line for line in axis.lines if line.get_transform()==axis.transAxes]
+        assert to_hex(keys[labels.index(fluid)].get_color()).upper()==color
+        assert renderer().COLORS[fluid]==color
+    finally:figure.clear()
+
+
+def test_round8c_panel_titles_share_rendered_baseline():
+    figure=renderer().build_chart_figure(prepared()['_cement_chart_model'])
+    try:
+        figure.canvas.draw()
+        left,right=figure.axes
+        assert left.title.get_text()=='Static Well Security'
+        assert right.title.get_text()=='Fluid Sequence'
+        assert left.title.get_position()[1]==right.title.get_position()[1]
+        bounds=[axis.title.get_window_extent(figure.canvas.get_renderer()) for axis in (left,right)]
+        assert bounds[0].y0==pytest.approx(bounds[1].y0,abs=0.01)
+        assert bounds[0].y1==pytest.approx(bounds[1].y1,abs=0.01)
+    finally:figure.clear()

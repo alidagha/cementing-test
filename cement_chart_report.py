@@ -6,8 +6,8 @@ from cement_chart_model import chart_job_kind
 
 CHART_ANCHOR = "Pressure and fluid sequence charts: Not provided."
 NOT_APPLICABLE = "Pressure and fluid sequence charts: Not applicable for this job type."
-COLORS = {"Mud": "#C9C9C9", "Pre Flush": "#0066E0", "Spacer": "#00C000",
-          "Spacer Ahead": "#00C000", "Scavenger": "#6E6E6E", "Main": "#6E6E6E",
+COLORS = {"Mud": "#8B1010", "Pre Flush": "#0066E0", "Spacer": "#00C000",
+          "Spacer Ahead": "#00C000", "Scavenger": "#C6D2BD", "Main": "#6E6E6E",
           "Lead": "#ABABAB", "Lead #1": "#B8B8B8", "Lead #2": "#A2A2A2", "Tail": "#6E6E6E"}
 
 
@@ -113,14 +113,12 @@ def build_chart_figure(model):
             y=.97-index*.047
             right.text(1.03,y,name,transform=right.transAxes,fontsize=8,va="top",color="black")
             right.plot([.99,1.02],[y-.009,y-.009],transform=right.transAxes,color=COLORS[name],lw=5,clip_on=False)
-        right.text(.5,-.055,"Shoe Track: "+model["shoe_track_fluid"],transform=right.transAxes,
-                   ha="center",fontsize=8)
         right.set_ylim(shoe*1.04,-shoe*.025)
         right.set_xlim(-1.12,1.12)
         right.set_ylabel("MD (m)")
         right.set_xticks([])
         right.spines[["top","right","bottom"]].set_visible(False)
-        right.set_title("Fluid Sequence",y=-.14)
+        right.set_title("Fluid Sequence",y=-.10)
         # Reserve room for the fluid key within the canvas.
         figure.subplots_adjust(right=.83)
         return figure
