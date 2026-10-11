@@ -8,6 +8,7 @@ import os
 import re
 from collections import deque
 from pathlib import Path
+from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
@@ -180,7 +181,8 @@ def build_ordered_notes(
     slurries_payload: list,
     has_open_hole_notes: bool,
     freshwater_note_style: str = "total hardness",
-    scavenger_payload: dict = None
+    scavenger_payload: dict = None,
+    is_vertical: bool = False
 ) -> dict:
     """
     Generates every NOTE in this report, in the single validated order found
@@ -262,6 +264,7 @@ def build_ordered_notes(
         hours_text = str(int(hours)) if hours.is_integer() else str(hours)
         lab["note_thickening"] = counter.next(f"Surface Sample: Hardened Condition Observed After {hours_text} Hours")
 
+    notes["note_vertical"] = counter.next("The Well is Considered Vertical") if is_vertical else ""
     notes["slurries"] = slurries_payload
     notes["all_notes"] = (
         [notes["note_geothermal"], notes["note_densities"], notes["note_maxpump"], notes["note_dispvol"]]
@@ -269,6 +272,7 @@ def build_ordered_notes(
         + [s["note_mix"] for s in slurries_payload]
         + ([scavenger_payload["note_mix"]] if scavenger_payload is not None else [])
         + [x for s in slurries_payload for x in (s["lab"]["note_freshwater"], s["lab"]["note_rheology"], s["lab"]["note_thickening"])]
+        + ([notes["note_vertical"]] if is_vertical else [])
     )
     return notes
 
@@ -1058,7 +1062,8 @@ def _load_template_bytes(template_path: str, mtime: float) -> bytes:
 def document_signature(context, template_path):
     mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
-    return fingerprint({"context": {k: v for k, v in context.items() if k != "generated_timestamp"},
+    return fingerprint({"context": {k: v for k, v in context.items()
+                                   if k not in ("generated_timestamp", "well_profile_report")},
                         "template": template_hash})
 
 
@@ -1398,7 +1403,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         total_pump_time_min=st.session_state.get("total_pump_time_min", 0.0),
         slurries_payload=slurries_payload,
         has_open_hole_notes=has_open_hole_notes,
-        scavenger_payload=scavenger_payload
+        scavenger_payload=scavenger_payload,
+        is_vertical=st.session_state.get("well_geometry", {}).get("type") == "Vertical"
     )
 
     proc_text = st.session_state.get("procedure_text", "")
@@ -1473,6 +1479,9 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "note_hydrostatic": note_ctx["note_hydrostatic"],
         "note_porefrac": note_ctx["note_porefrac"],
         "all_notes": note_ctx["all_notes"],
+        "note_vertical": note_ctx["note_vertical"],
+        "well_profile_source": fingerprint(canonical_report_source(st.session_state)),
+        "well_profile_report": prepared_well_report(st.session_state),
         
         "executive_summary": exec_summary_text,
         "exec_summary": exec_summary_text,
@@ -1795,7 +1804,9 @@ def render():
                         safe_label = "".join(c for c in well_label if c.isalnum() or c in ("-", "_")).strip() or "Untitled"
                         filename = f"Cementing_Program_{safe_label}_{datetime.today().strftime('%Y%m%d_%H%M')}.docx"
                         
-                        st.session_state["_compiled_doc_bytes"] = doc_io.getvalue()
+                        final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
+                                                              master_context["note_vertical"])
+                        st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature
                         st.success("✓ Document generated.")

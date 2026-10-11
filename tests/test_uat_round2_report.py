@@ -183,12 +183,12 @@ class Round2ReportUAT(unittest.TestCase):
     def test_note_counter_sequence_and_slurry_association(self):
         context = self.context()
         numbers = [int(re.match(r'NOTE (\d+):', n).group(1)) for n in context['all_notes']]
-        self.assertEqual(numbers, [n for n in range(1, 28) if n != 20])
+        self.assertEqual(numbers, [n for n in range(1, 29) if n != 20])
         self.assertEqual(len(numbers), len(set(numbers)))
         for i, s in enumerate(context['slurries']):
             self.assertTrue(s['note_mix'].startswith(f'NOTE {7 + i}:'))
             self.assertTrue(s['lab']['note_thickening'].endswith(f'After {8+i} Hours'))
-        doc = self.word(context)
+        doc = Document(BytesIO(self.state['_compiled_doc_bytes']))
         actual = [int(re.match(r'NOTE (\d+):', p.text.strip()).group(1)) for p in doc.paragraphs
                   if re.match(r'NOTE \d+:', p.text.strip())]
         self.assertEqual(actual, numbers + [20])

@@ -10,3 +10,4 @@ pyarrow==25.0.1
 docxtpl==0.20.2
 python-docx==1.2.0
 Jinja2==3.1.6
+matplotlib==3.10.8
