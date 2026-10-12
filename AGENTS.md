@@ -53,6 +53,24 @@ Additional rules:
 - For non-trivial changes, run relevant regression checks before declaring the task complete.
 - If engineering intent cannot be determined with confidence, do not guess or silently rewrite the calculation; report the uncertainty and request owner clarification.
 
+## Known current integration authorities
+
+This list is non-exhaustive: absence from it never authorizes a new parallel authority.
+
+- Well trajectory, MD→TVD and geothermal projection: `well_profile.py`.
+- Slurry formulation mass balance and additive classification: `engineering_tools.calculate_slurry_from_components` and `normalize_additive_mix`.
+- CEMCADE-compatible Bingham rheology: `rheology.calculate_cemcade_bingham` / `build_rheology`.
+- Placement/report projection: `placement.target_depth` / `slurry_intervals`. For CSG/LNR/Tie Back, `slurry_intervals` delegates to `cement_chart_model.resolve_cement_placement`; Plug/Squeeze retain their existing `placement.py` semantics.
+- Round-8 chart-job geometry/final static annulus: `cement_chart_model.resolve_chart_geometry` / `resolve_final_fluid_intervals`.
+- Phase completion/status: `engineering_tools.compute_phase_status`.
+- Export calculation rebuild/blocking: `project_state.prepare_calculations`.
+- Project save/load trust boundary: `project_state.is_project_key`; `main.py` `serialize_item` / `deserialize_item` / `get_serializable_state`; `project_io.decode_project` / `replace_project_state`.
+- Word report pipeline: `phase_10_procedure.build_master_context` → `DocxTemplate` render → `well_report.postprocess_well_report`.
+
+New modules must trace and consume existing authorities before creating logic; do not duplicate, fork, shadow or bypass an existing authority without explicit owner authorization.
+
+Before implementing a new module, declare only relevant, non-empty items: Reads; Writes; existing authorities consumed; behavior owned; persistence/schema; report; template; dependency impact.
+
 ## Cementing water/additive semantics
 
 Unless an explicit owner-approved specification says otherwise:
