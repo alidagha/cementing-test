@@ -1,10 +1,12 @@
-"""Official Centralizer catalog/product adapter only; no UI or calculations."""
+"""Pure Centralizer product/geometry projections; no UI or solver execution."""
 import json
 import math
 from numbers import Real
 from pathlib import Path
 
 import materials_db
+import cement_chart_model
+import well_profile
 from centralizer_optimizer_engine import Gravity
 from engineering_tools import parse_fractional_size
 
@@ -92,17 +94,93 @@ def resolve_official_product(products, nr):
     return matches[0]
 
 
-def filter_official_products(products, pipe_size_in):
-    """Return candidates in catalog order; no Hole Size rule or automatic choice."""
+def _positive_pipe_size(pipe_size_in):
     if isinstance(pipe_size_in, str) and pipe_size_in.replace('"', "").strip().startswith("-"):
         raise ValueError("Pipe size must be greater than zero.")
     size = parse_fractional_size(pipe_size_in) if isinstance(pipe_size_in, str) else pipe_size_in
     size = _number(size, "Pipe size")
     if size <= 0:
         raise ValueError("Pipe size must be greater than zero.")
+    return size
+
+
+def filter_official_products(products, pipe_size_in):
+    """Return candidates in catalog order; no Hole Size rule or automatic choice."""
+    size = _positive_pipe_size(pipe_size_in)
     return [product for product in products if product["pipe_size_in"] == size]
 
 
 def centralizer_applicable(job_type):
     """Exact current supported jobs only; no guessed future-job applicability."""
     return job_type in materials_db.JOB_TYPES and job_type not in ("CMT PLUG", "CMT SQUEEZE")
+
+
+def to_engine_geometry(state):
+    """Project canonical geometry/survey to v1.2.9, or None for an N/A job.
+
+    The frozen engine supports one uniform active string and one scalar
+    diameter on each side of the previous shoe. Reject richer geometry;
+    never approximate it or calculate a replacement trajectory.
+    """
+    job = state.get("job_type")
+    kind = cement_chart_model.chart_job_kind(job)  # Reject unknown/future jobs.
+    if not centralizer_applicable(job):
+        return None
+    geometry = cement_chart_model.resolve_chart_geometry(state)
+    shoe = geometry["shoe_md"]
+    trajectory = state.get("well_geometry", {})
+    # Reuse the trajectory completion/bounds authority; its TVD is not output.
+    well_profile.tvd_at_md(trajectory, [shoe])
+    if trajectory["type"] == "Vertical":
+        survey = {"md": [0.0, float(trajectory["td_m"])],
+                  "inc_deg": [0.0, 0.0], "azi_deg": [0.0, 0.0]}
+    else:
+        frame = trajectory["survey"]
+        survey = {output: frame[column].tolist() for output, column in
+                  zip(("md", "inc_deg", "azi_deg"), well_profile.SURVEY_COLUMNS)}
+
+    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[kind]
+    active = [s for s in geometry["active_string"] if s["description"] == description]
+    rows = [r for r in state["hardware_table"].to_dict("records") if r["Description"] == description]
+    # resolve_chart_geometry preserves source row order and clips a prefix at
+    # the shoe. Pair that prefix with its source Weight/Joint fields only.
+    properties = []
+    for segment, row in zip(active, rows):
+        _positive_pipe_size(row.get("Size (in)"))
+        values = (segment["od_in"], segment["id_in"],
+                  _number(row.get("Weight (ppf)"), "Active string Weight (ppf)"),
+                  _number(row.get("Joint (m)"), "Active string Joint (m)"))
+        if any(value <= 0 for value in values) or values[1] >= values[0]:
+            raise ValueError("Active string requires OD > ID > 0, Weight > 0 and Joint Length > 0.")
+        properties.append(values)
+    if not properties or len(properties) != len(active):
+        raise ValueError("Active Centralizer string Hardware is unresolved.")
+    if any(values != properties[0] for values in properties[1:]):
+        raise ValueError("Tapered Centralizer string unsupported: OD, ID, Weight and Joint Length must be uniform.")
+    od, inner, weight, joint = properties[0]
+    casing = {"od": od * INCH_TO_M, "id": inner * INCH_TO_M,
+              "weight_kg_m": weight * 0.45359237 / 0.3048, "joint_length": joint}
+    for field, value in casing.items():
+        if _number(value, f"casing.{field}") <= 0:
+            raise ValueError(f"casing.{field} must be greater than zero after SI conversion.")
+
+    outer = geometry["enclosing_string"]
+    cased = [s for s in outer if s["description"] != "Open Hole Size"]
+    holes = [s for s in outer if s["description"] == "Open Hole Size"]
+    if not cased or len({s["id_in"] for s in cased}) != 1:
+        raise ValueError("Centralizer enclosing cased geometry requires one identical scalar ID.")
+    previous_id = cased[0]["id_in"]
+    if kind == "tieback":
+        previous_shoe, hole = shoe, previous_id
+    else:
+        if outer != cased + holes or not holes or len({s["od_in"] for s in holes}) != 1:
+            raise ValueError("Centralizer requires one cased to open-hole transition and one scalar open-hole diameter.")
+        previous_shoe, hole = cased[-1]["bottom_md"], holes[0]["od_in"]
+
+    return {
+        "job_type": kind, "survey": survey,
+        "casing": casing,
+        "wellbore": {"prev_casing_id": previous_id * INCH_TO_M, "hole_size": hole * INCH_TO_M,
+                     "prev_shoe_depth": previous_shoe, "open_hole_top": previous_shoe,
+                     "open_hole_bottom": shoe, "string_top": active[0]["top_md"], "string_shoe": shoe},
+    }
