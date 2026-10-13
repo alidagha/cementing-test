@@ -1,4 +1,4 @@
-"""Pure Centralizer product, geometry and displacement projections; no UI or solver execution."""
+"""Pure Centralizer projections and frozen-engine Static execution; no UI or state writes."""
 import json
 import math
 from collections.abc import Sequence
@@ -9,6 +9,7 @@ from pathlib import Path
 import materials_db
 import cement_chart_model
 import well_profile
+import centralizer_optimizer_engine as centralizer_engine
 from centralizer_optimizer_engine import Gravity
 from engineering_tools import parse_fractional_size, require_positive_density
 
@@ -338,3 +339,89 @@ def build_fluid_snapshot(state, *, override=None):
                       "displaced_bbl": min(entered, capacities["total"])},
         overflow_kind="surface_dump" if engine_geometry["job_type"] == "casing" else "overlap_excess")
     return result
+
+
+def build_static_payload(state, zones, products, *, override=None):
+    """Fresh v1.2.9 Static payload, or None for a Centralizer N/A job.
+
+    Explicit zone records require top_md, bottom_md, density (certified p/q),
+    target_standoff_pct and product_nr. Products are caller-provided official
+    catalog records; this path never loads/selects a product automatically.
+    """
+    geometry = to_engine_geometry(state)
+    if geometry is None:
+        return None
+    if not isinstance(zones, Sequence) or isinstance(zones, (str, bytes)) or not zones:
+        raise ValueError("Explicit Centralizer zones must be a non-empty ordered sequence.")
+    if not isinstance(products, Sequence) or isinstance(products, (str, bytes)):
+        raise ValueError("Official products must be catalog records.")
+    for product in products:
+        if not isinstance(product, dict):
+            raise ValueError("Official products must be catalog records.")
+        _nr(product)
+    ladder = tuple(f"{p}/{q}" for p, q in centralizer_engine._DENSITY_LADDER)
+    bounds = geometry["wellbore"]
+    mapped_zones, mapped_products = [], {}
+    previous_bottom = bounds["string_top"]
+    for index, zone in enumerate(zones):
+        if not isinstance(zone, dict):
+            raise ValueError(f"Zone {index + 1} must be an explicit record.")
+        top = _number(zone.get("top_md"), f"Zone {index + 1} Top MD")
+        bottom = _number(zone.get("bottom_md"), f"Zone {index + 1} Bottom MD")
+        if not bounds["string_top"] <= top < bottom <= bounds["string_shoe"]:
+            raise ValueError(f"Zone {index + 1} requires Top < Bottom within the active Centralizer string.")
+        if top < previous_bottom:
+            raise ValueError("Centralizer zones must be shallow-to-deep and non-overlapping; gaps are allowed.")
+        density = zone.get("density")
+        if density not in ladder:
+            raise ValueError(f"Zone {index + 1} Design Density must use the certified density ladder.")
+        percent = _number(zone.get("target_standoff_pct"), f"Zone {index + 1} Target Standoff %")
+        if not 0 < percent <= 100:
+            raise ValueError(f"Zone {index + 1} Target Standoff must be > 0 and <= 100%.")
+        target = percent / 100.
+        if target == 0:
+            raise ValueError("Target Standoff cannot be represented as a positive engine fraction.")
+        product = to_engine_product(resolve_official_product(products, zone.get("product_nr")))
+        mapped_products[product["name"]] = product
+        mapped_zones.append({"top_md": top, "bottom_md": bottom, "density": density,
+                             "target_standoff": target, "product_name": product["name"]})
+        previous_bottom = bottom
+    snapshot = build_fluid_snapshot(state, override=override)
+    return deepcopy({**geometry, "fluids": snapshot["fluids"], "zones": mapped_zones,
+                     "products": list(mapped_products.values()),
+                     "settings": {"calculation_mode": "static", "include_hydrostatic": True}})
+
+
+def solve_static(state, zones, products, *, mode, override=None):
+    """Execute only the chosen frozen API; target misses remain valid results.
+
+    Fractions and profile arrays retain engine precision. Optimize's probe
+    minimum has no corresponding depth in its contract: min_depth is None;
+    the untouched final profile separately retains its official zones_min.
+    """
+    if mode not in ("direct", "optimize"):
+        raise ValueError("Static placement mode must be 'direct' or 'optimize'.")
+    payload = build_static_payload(state, zones, products, override=override)
+    if payload is None:
+        return None
+    profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
+               else centralizer_engine.optimize_placement(payload))
+    products_by_name = {product["name"]: product for product in payload["products"]}
+    normalized = []
+    for index, zone in enumerate(payload["zones"]):
+        product = products_by_name[zone["product_name"]]
+        row = {"top_md": zone["top_md"], "bottom_md": zone["bottom_md"],
+               "density_design": zone["density"], "target": zone["target_standoff"],
+               "product_nr": int(product["code"]), "product_name": product["name"],
+               "product_kind": product["kind"]}
+        if mode == "direct":
+            minimum = profile["zones_min"][index]
+            row.update(density_computed=zone["density"], min_stdf=minimum["min_stdf"],
+                       min_depth=minimum["min_depth"],
+                       meets_target=minimum["min_stdf"] >= zone["target_standoff"])
+        else:
+            optimized = profile["zones"][index]
+            row.update({field: optimized[field] for field in
+                        ("density_computed", "count", "min_stdf", "meets_target")}, min_depth=None)
+        normalized.append(row)
+    return {"mode": mode, "zones": normalized, "profile": profile}
