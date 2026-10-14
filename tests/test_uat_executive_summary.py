@@ -245,6 +245,7 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
         app = cls.case.configured_app(JOB)
         cls.case.export(app)
         cls.state = audit.round_trip(app.session_state.to_dict())
+        audit.ensure_current_centralizer(cls.state)
 
     def test_summary_metadata_changes_only_summary_source_and_document(self):
         state = deepcopy(self.state)

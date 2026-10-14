@@ -172,18 +172,21 @@ def test_phase9_navigation_and_help_no_automatic_solver(catalog):
         assert "API RP 13D" in app.radio(key="_centralizer_physics").proto.help
 
 
-def test_phase9_advisory_readiness_deep_link_and_baseline_word_retention():
+def test_phase9_required_readiness_deep_link_and_current_word_retention():
     case = audit.AuditRegressions()
     app = case.configured_app('CSG 9 5/8"')
+    del app.session_state["_centralizer_result"]
+    del app.session_state["_centralizer_signature"]
     case.phase(app, "phase10")
     assert any("Phase IX" in item.value for item in app.warning), "Advisory Phase IX is missing from readiness"
     deep_link = next((button for button in app.button if button.label == "→ Phase IX"), None)
     assert deep_link is not None, "Phase IX readiness deep-link is missing"
-    assert not next(button for button in app.button if button.label == "Build Word Document").disabled, [e.value for e in app.error]
-    case.export(app)  # Existing export helper and fixture stay unchanged.
-    assert "_compiled_doc_bytes" in app.session_state
+    assert next(button for button in app.button if button.label == "Build Word Document").disabled
     app.button(key="_rescue_phase9").click().run()
     assert not app.exception and app.radio(key="_app_mode_key").value == "phase9"
+    audit.ensure_current_centralizer(app.session_state)
+    case.export(app)  # Existing export helper and fixture stay unchanged.
+    assert "_compiled_doc_bytes" in app.session_state
 
 
 @pytest.mark.parametrize("field", ["pipe_size_in", "hole_size_in", "max_od_in", "min_od_in",

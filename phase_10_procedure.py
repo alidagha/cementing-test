@@ -9,6 +9,8 @@ import re
 from collections import deque
 from pathlib import Path
 from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
+from centralizer_report import prepare_report as prepare_centralizer_report, NOTE_BODY as CENTRALIZER_NOTE_BODY
+from centralizer_adapter import centralizer_applicable
 from cement_chart_report import prepared_cement_report
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, top_label, host_label, slurry_intervals, EXCESS_FIELDS,
@@ -202,8 +204,7 @@ def build_ordered_notes(
     added inside each slurry's "lab" sub-dict. Also returns the fixed/global
     notes and a flat "all_notes" list (document order) for convenience.
     """
-    # Section IX, including its existing NOTE 20, is preserved by user request.
-    counter = NoteCounter(reserved_numbers={20})
+    counter = NoteCounter()
     notes = {}
 
     # --- Notes 1-4: always present ---
@@ -266,6 +267,7 @@ def build_ordered_notes(
         lab["note_thickening"] = counter.next(f"Surface Sample: Hardened Condition Observed After {hours_text} Hours")
 
     notes["note_vertical"] = counter.next("The Well is Considered Vertical") if is_vertical else ""
+    notes["note_centralizer"] = counter.next(CENTRALIZER_NOTE_BODY) if centralizer_applicable(job_type) else ""
     notes["slurries"] = slurries_payload
     notes["all_notes"] = (
         [notes["note_geothermal"], notes["note_densities"], notes["note_maxpump"], notes["note_dispvol"]]
@@ -274,6 +276,7 @@ def build_ordered_notes(
         + ([scavenger_payload["note_mix"]] if scavenger_payload is not None else [])
         + [x for s in slurries_payload for x in (s["lab"]["note_freshwater"], s["lab"]["note_rheology"], s["lab"]["note_thickening"])]
         + ([notes["note_vertical"]] if is_vertical else [])
+        + ([notes["note_centralizer"]] if notes["note_centralizer"] else [])
     )
     return notes
 
@@ -1003,9 +1006,8 @@ def synchronize_report_texts():
 
 def validate_manual_numbering(state, specs, generated_notes):
     """Reject collisions in reviewed edits without rewriting the engineer's text."""
-    reserved = {20}
-    reserved.update(int(n) for note in generated_notes
-                    for n in re.findall(r"(?mi)^\s*NOTE\s+(\d+)\s*:", note))
+    reserved = {int(n) for note in generated_notes
+                for n in re.findall(r"(?mi)^\s*NOTE\s+(\d+)\s*:", note)}
     added_notes = set()
     for key, label in (("exec_summary_text", "Executive summary"),
                        ("procedure_text", "Cementing procedure")):
@@ -1433,6 +1435,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         _proc_all_lines = _proc_all_lines[1:]
     procedure_steps = _proc_all_lines
 
+    centralizer_report = prepare_centralizer_report(st.session_state)
+    centralizer_report["note"] = note_ctx["note_centralizer"]
     gradient = safe_float(well_data.get("geo_gradient"), None)
     context = {
         "job_type": doc_ctrl.get("job_type", ""),
@@ -1492,6 +1496,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "well_profile_source": fingerprint(canonical_report_source(st.session_state)),
         "well_profile_report": prepared_well_report(st.session_state),
         "cement_chart_report": prepared_cement_report(st.session_state),
+        "centralizer_report": centralizer_report,
+        "note_centralizer": note_ctx["note_centralizer"],
         
         "executive_summary": exec_summary_text,
         "exec_summary": exec_summary_text,
@@ -1640,7 +1646,7 @@ def render():
             else:
                 st.markdown(line)
 
-    # Advisory only in 9F. Centralizer report integration/export blocking is a later batch.
+    # Phase IX retains its repair deep-link and now participates in Word prerequisites.
     if _status["phase9"]["level"] != "ok":
         st.button("→ Phase IX", on_click=_go_to_phase, args=("phase9",), key="_rescue_phase9")
 
@@ -1822,7 +1828,8 @@ def render():
                         filename = f"Cementing_Program_{safe_label}_{datetime.today().strftime('%Y%m%d_%H%M')}.docx"
                         
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
-                                                              master_context["note_vertical"], master_context["cement_chart_report"])
+                                                              master_context["note_vertical"], master_context["cement_chart_report"],
+                                                              master_context["centralizer_report"])
                         st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature

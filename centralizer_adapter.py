@@ -492,6 +492,7 @@ def _normalized_solver_result(payload, profile, mode, *, zone_sources=None):
             minimum = profile["zones_min"][index]
             row.update(density_computed=zone["density"], min_stdf=minimum["min_stdf"],
                        min_depth=minimum["min_depth"],
+                       count=_direct_zone_count(payload, index),
                        meets_target=minimum["min_stdf"] >= zone["target_standoff"])
         else:
             optimized = profile["zones"][index]
@@ -499,6 +500,21 @@ def _normalized_solver_result(payload, profile, mode, *, zone_sources=None):
                         ("density_computed", "count", "min_stdf", "meets_target")}, min_depth=None)
         normalized.append(row)
     return {"mode": mode, "zones": normalized, "profile": profile}
+
+
+def _direct_zone_count(payload, index):
+    """Exact frozen placement/anchor calls from compute_standoff_profile, not MD inference."""
+    settings = payload["settings"]
+    defaults = centralizer_engine.OptimizationSettings()
+    placed = centralizer_engine.place_zone_centralizers(
+        payload["zones"][index], float(payload["casing"]["joint_length"]),
+        anchor=centralizer_engine._zone_anchor(payload["job_type"], payload["zones"], index, []),
+        joint_position=float(settings.get("joint_position", .5)),
+        shoe_md=payload["wellbore"]["string_shoe"],
+        min_zone_joints=int(settings.get("min_zone_joints", defaults.min_zone_joints)),
+        shoe_buffer_m=float(settings.get("shoe_buffer_m", defaults.shoe_buffer_m) or 0.),
+        collar_mds=payload["wellbore"].get("collar_mds") or None)
+    return placed["count"]
 
 
 def _dynamic_fann(readings, fluid):

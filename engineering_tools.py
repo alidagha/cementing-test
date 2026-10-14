@@ -818,8 +818,8 @@ def calculate_slurry_from_components(
     }
 
 
-# Round 9F advisory status; the later Centralizer Word/Export batch owns the hard gate.
-WORD_ADVISORY_PHASES = frozenset({"phase9"})
+# Round 9G: all applicable phases, including current Phase IX, are Word prerequisites.
+WORD_ADVISORY_PHASES = frozenset()
 
 
 def compute_phase_status(ss) -> dict:
@@ -1125,7 +1125,7 @@ def compute_phase_status(ss) -> dict:
             else {"level": "ok", "message": f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies)."}
         )
 
-    # Phase IX completion is canonical; Word export consumes it as advisory in 9F.
+    # Phase IX completion is canonical and required by Word for applicable jobs.
     from centralizer_adapter import centralizer_applicable
     from phase_9_centralizer import result_is_current
     job = ss.get("job_type")

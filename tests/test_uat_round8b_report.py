@@ -22,6 +22,7 @@ import test_audit_regressions as audit
 from test_uat_round8a_chart_model import chart_state, hardware
 from test_uat_round7b_report import rendered
 from project_state import prepare_calculations
+from centralizer_fixtures import ensure_current_centralizer
 
 ANCHOR = 'Pressure and fluid sequence charts: Not provided.'
 PUMPING = 'Pumping simulation charts: Not provided.'
@@ -55,7 +56,9 @@ def project():
 
 
 def context(state):
-    with patch.object(report.st, 'session_state', deepcopy(state)):
+    prepared=deepcopy(state)
+    ensure_current_centralizer(prepared)
+    with patch.object(report.st, 'session_state', prepared):
         return report.build_master_context()
 
 
@@ -219,7 +222,13 @@ def test_incomplete_model_is_controlled_and_no_image_rendered(project):
 def test_template_dependency_and_protected_sources_identical():
     import subprocess
     for name in ['master_template.docx','requirements.txt','well_profile.py','placement.py','rheology.py','bhct_helper.py','test_regression_guardrails.py']:
-        assert Path(name).read_bytes()==subprocess.check_output(['git','show','a61d61e:'+name])
+        if name == 'test_regression_guardrails.py':
+            # Owner-approved 9G sequential-note/prerequisite fixture changes only;
+            # retain byte-level protection at this explicitly reviewed checkpoint.
+            import hashlib
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '38c2ae0a7926d7b7a7aaa286981cb4bca6fa72d71f04efd8c8406794a5cf6231'
+        else:
+            assert Path(name).read_bytes()==subprocess.check_output(['git','show','a61d61e:'+name])
 
 
 def test_complete_word_preserves_unrelated_sections_xml_and_notes(project):
