@@ -6,7 +6,7 @@ import math
 import materials_db
 import pandas as pd
 from datetime import date, datetime
-from engineering_tools import compute_phase_status
+from engineering_tools import compute_phase_status, WORD_ADVISORY_PHASES
 from project_state import (is_project_key, invalidate_document, restore_canonical_fields,
                            DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS, migrate_material_properties)
 from project_io import content_signature, decode_project, replace_project_state
@@ -108,7 +108,7 @@ def get_serializable_state():
 # render after the phase so they see its latest canonical inputs.
 _project_manager_slot = st.sidebar.container()
 _navigation_slot = st.sidebar.container()
-_PHASE_ORDER = ["phase1", "phase2_3", "phase4", "phase5", "phase6", "phase7", "phase10"]
+_PHASE_ORDER = ["phase1", "phase2_3", "phase4", "phase5", "phase6", "phase7", "phase9", "phase10"]
 _PHASE_LABELS = {
     "phase1": "Phase I: Document Control",
     "phase2_3": "Phase II & III: Well Data",
@@ -116,6 +116,7 @@ _PHASE_LABELS = {
     "phase5": "Phase V: Cement Program",
     "phase6": "Phase VI: Pre-flush & Spacer",
     "phase7": "Phase VII: Lab Report",
+    "phase9": "Phase IX: Centralizer",
     "phase10": "Phase X: Procedure & Export",
 }
 _PHASE_ICONS = {"ok": "✅", "warning": "⚠️", "empty": "⚪"}
@@ -173,6 +174,9 @@ elif app_mode == "Phase VI: Pre-flush & Spacer":
 elif app_mode == "Phase VII: Lab Report":
     import phase_7_lab
     phase_7_lab.render()
+elif app_mode == "Phase IX: Centralizer":
+    import phase_9_centralizer
+    phase_9_centralizer.render()
 elif app_mode == "Phase X: Procedure & Export":
     import phase_10_procedure
     phase_10_procedure.render()
@@ -183,7 +187,11 @@ elif app_mode == "Phase X: Procedure & Export":
 # and its formatted options remain constant, so this rerun preserves the
 # browser's selected phase while refreshing the separate status captions.
 _current_phase_status = compute_phase_status(st.session_state)
-if (any(v["level"] != "ok" for key, v in _current_phase_status.items() if key != "phase6")
+# Round 9F: Phase IX is advisory until the Centralizer Word/Export batch.
+# That batch must require current successful execution (target misses remain valid),
+# and block never-executed/stale/failed designs; Plug/Squeeze stay N/A.
+if (any(v["level"] != "ok" for key, v in _current_phase_status.items()
+        if key != "phase6" and key not in WORD_ADVISORY_PHASES)
         or _current_phase_status["phase6"]["level"] == "warning"):
     invalidate_document(st.session_state)
 if _current_phase_status != _phase_status:
@@ -323,6 +331,7 @@ _has_meaningful_data = (
     or st.session_state.get("geothermal_config", {}).get("surface_temp", 80.0) != 80.0
     or _is_meaningful(st.session_state.get("well_geometry", {}).get("survey"))
     or bool(st.session_state.get("hole_size_customized"))
+    or bool(st.session_state.get("centralizer_config"))
 )
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
 if _has_meaningful_data and st.session_state.get("_saved_sig") != _current_sig:

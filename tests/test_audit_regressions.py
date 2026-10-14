@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import materials_db
-from engineering_tools import compute_phase_status, lab_review_signature, round_half_up, BBL_TO_CUFT
+from engineering_tools import compute_phase_status, lab_review_signature, round_half_up, BBL_TO_CUFT, WORD_ADVISORY_PHASES
 from project_io import decode_project
 from project_state import is_project_key, prepare_calculations, hardware_draft_pending
 
@@ -317,7 +317,8 @@ class AuditRegressions(unittest.TestCase):
                 # The stale Phase VI cache still looks complete: the calculation
                 # failure itself must block export, independently of status.
                 self.assertTrue(all(s["level"] == "ok"
-                                    for s in compute_phase_status(app.session_state).values()))
+                                    for phase, s in compute_phase_status(app.session_state).items()
+                                    if phase not in WORD_ADVISORY_PHASES))
                 self.assert_export_blocked(app)
                 self.assertTrue(app.error)
                 self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))

@@ -119,6 +119,65 @@ def filter_official_products(products, pipe_size_in):
     return [product for product in products if product["pipe_size_in"] == size]
 
 
+def validate_custom_products(products):
+    """Saved project products have explicit kind; official Rule R* never applies."""
+    fields = {"custom_id", "identification", "manufacturer", "description", "pipe_size_in",
+              "hole_size_in", "kind", "bows", "max_od_in", "min_od_in",
+              "starting_force_lbf", "running_force_lbf", "restoring_force_lbf"}
+    if not isinstance(products, Sequence) or isinstance(products, (str, bytes)) or len(products) > 5:
+        raise ValueError("A project may save at most five Custom Centralizers.")
+    seen = set()
+    for product in products:
+        if not isinstance(product, dict) or set(product) != fields:
+            raise ValueError("Custom Centralizer requires all saved product fields, and no derived fields.")
+        for field in ("custom_id", "identification", "manufacturer", "description"):
+            if not isinstance(product[field], str) or not product[field].strip():
+                raise ValueError(f"Custom Centralizer {field} must be nonblank text.")
+        if product["custom_id"] in seen:
+            raise ValueError("Custom Centralizer identities must be unique within the project.")
+        seen.add(product["custom_id"])
+        if product["kind"] not in ("rigid", "spring"):
+            raise ValueError("Custom Centralizer kind must be rigid or spring.")
+        if type(product["bows"]) is not int or product["bows"] < 0:
+            raise ValueError("Custom Centralizer bows must be an integer >= 0.")
+        for field in ("pipe_size_in", "hole_size_in", "max_od_in", "min_od_in"):
+            if _number(product[field], field) <= 0:
+                raise ValueError(f"Custom Centralizer {field} must be greater than zero.")
+        if product["min_od_in"] > product["max_od_in"]:
+            raise ValueError("Custom Centralizer Min OD cannot exceed Max OD.")
+        for field in ("starting_force_lbf", "running_force_lbf", "restoring_force_lbf"):
+            if _number(product[field], field) < 0:
+                raise ValueError(f"Custom Centralizer {field} must be nonnegative.")
+
+
+def to_engine_custom_product(product):
+    """Fresh SI contract with a source-distinct, project-owned opaque identity."""
+    validate_custom_products([product])
+    mapped = {"name": f"CUSTOM-CENT-{product['custom_id']}", "code": product["custom_id"],
+              **{field: product[field] for field in ("kind", "bows", "manufacturer", "description")}}
+    for source, target, factor in (("max_od_in", "max_od", INCH_TO_M),
+            ("min_od_in", "min_od", INCH_TO_M), ("hole_size_in", "rated_hole", INCH_TO_M),
+            ("starting_force_lbf", "starting_force", LBF_TO_N),
+            ("running_force_lbf", "running_force", LBF_TO_N),
+            ("restoring_force_lbf", "restoring_force", LBF_TO_N)):
+        mapped[target] = _number(product[source] * factor, target)
+    return mapped
+
+
+def resolve_zone_product(zone, products, custom_products=()):
+    """One explicit source-aware binding; never infer identity from display text."""
+    nr, custom_id = zone.get("product_nr"), zone.get("custom_product_id")
+    if (nr is None) == (custom_id is None):
+        raise ValueError("Each zone must select exactly one Official or Custom Centralizer.")
+    if nr is not None:
+        return to_engine_product(resolve_official_product(products, nr))
+    validate_custom_products(custom_products)
+    matches = [product for product in custom_products if product["custom_id"] == custom_id]
+    if len(matches) != 1:
+        raise ValueError(f"Custom Centralizer {custom_id!r} is missing or ambiguous; reselect the zone product.")
+    return to_engine_custom_product(matches[0])
+
+
 def centralizer_applicable(job_type):
     """Exact current supported jobs only; no guessed future-job applicability."""
     return job_type in materials_db.JOB_TYPES and job_type not in ("CMT PLUG", "CMT SQUEEZE")
@@ -347,7 +406,7 @@ def build_fluid_snapshot(state, *, override=None):
     return result
 
 
-def build_static_payload(state, zones, products, *, override=None):
+def build_static_payload(state, zones, products, *, override=None, custom_products=()):
     """Fresh v1.2.9 Static payload, or None for a Centralizer N/A job.
 
     Explicit zone records require top_md, bottom_md, density (certified p/q),
@@ -365,6 +424,7 @@ def build_static_payload(state, zones, products, *, override=None):
         if not isinstance(product, dict):
             raise ValueError("Official products must be catalog records.")
         _nr(product)
+    validate_custom_products(custom_products)
     ladder = tuple(f"{p}/{q}" for p, q in centralizer_engine._DENSITY_LADDER)
     bounds = geometry["wellbore"]
     mapped_zones, mapped_products = [], {}
@@ -387,7 +447,7 @@ def build_static_payload(state, zones, products, *, override=None):
         target = percent / 100.
         if target == 0:
             raise ValueError("Target Standoff cannot be represented as a positive engine fraction.")
-        product = to_engine_product(resolve_official_product(products, zone.get("product_nr")))
+        product = resolve_zone_product(zone, products, custom_products)
         mapped_products[product["name"]] = product
         mapped_zones.append({"top_md": top, "bottom_md": bottom, "density": density,
                              "target_standoff": target, "product_name": product["name"]})
@@ -398,7 +458,7 @@ def build_static_payload(state, zones, products, *, override=None):
                      "settings": {"calculation_mode": "static", "include_hydrostatic": True}})
 
 
-def solve_static(state, zones, products, *, mode, override=None):
+def solve_static(state, zones, products, *, mode, override=None, custom_products=()):
     """Execute only the chosen frozen API; target misses remain valid results.
 
     Fractions and profile arrays retain engine precision. Optimize's probe
@@ -407,15 +467,15 @@ def solve_static(state, zones, products, *, mode, override=None):
     """
     if mode not in ("direct", "optimize"):
         raise ValueError("Static placement mode must be 'direct' or 'optimize'.")
-    payload = build_static_payload(state, zones, products, override=override)
+    payload = build_static_payload(state, zones, products, override=override, custom_products=custom_products)
     if payload is None:
         return None
     profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
                else centralizer_engine.optimize_placement(payload))
-    return _normalized_solver_result(payload, profile, mode)
+    return _normalized_solver_result(payload, profile, mode, zone_sources=zones)
 
 
-def _normalized_solver_result(payload, profile, mode):
+def _normalized_solver_result(payload, profile, mode, *, zone_sources=None):
     """Read-only projection shared by Static/Dynamic; preserve the raw profile."""
     products_by_name = {product["name"]: product for product in payload["products"]}
     normalized = []
@@ -423,8 +483,11 @@ def _normalized_solver_result(payload, profile, mode):
         product = products_by_name[zone["product_name"]]
         row = {"top_md": zone["top_md"], "bottom_md": zone["bottom_md"],
                "density_design": zone["density"], "target": zone["target_standoff"],
-               "product_nr": int(product["code"]), "product_name": product["name"],
+               "product_nr": (zone_sources[index].get("product_nr") if zone_sources is not None
+                              else int(product["code"])), "product_name": product["name"],
                "product_kind": product["kind"]}
+        if zone_sources is not None and zone_sources[index].get("custom_product_id") is not None:
+            row["custom_product_id"] = zone_sources[index]["custom_product_id"]
         if mode == "direct":
             minimum = profile["zones_min"][index]
             row.update(density_computed=zone["density"], min_stdf=minimum["min_stdf"],
@@ -460,7 +523,7 @@ def _dynamic_fann(readings, fluid):
                          f"{exc}") from None
 
 
-def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None):
+def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None, custom_products=()):
     """Return fresh engine payload and transient diagnostics, or None for N/A.
 
     Completeness follows all active Phase-IV fluids, including inside-only or
@@ -469,7 +532,7 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
     """
     if override is not None:
         raise ValueError("Dynamic Tier-2 fluid columns are unsupported: they do not carry fluid identity.")
-    payload = build_static_payload(state, zones, products)
+    payload = build_static_payload(state, zones, products, custom_products=custom_products)
     if payload is None:
         return None
     config = state.get("fluids_config", {})
@@ -518,14 +581,16 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
             "rheology": per_active, "stages_rheology": deepcopy(stages)}}
 
 
-def solve_dynamic(state, zones, products, *, mode, aux_rheology=None, override=None):
+def solve_dynamic(state, zones, products, *, mode, aux_rheology=None, override=None, custom_products=()):
     """Execute the chosen frozen Dynamic API; target misses remain valid."""
     if mode not in ("direct", "optimize"):
         raise ValueError("Dynamic placement mode must be 'direct' or 'optimize'.")
-    prepared = build_dynamic_payload(state, zones, products, aux_rheology=aux_rheology, override=override)
+    prepared = build_dynamic_payload(state, zones, products, aux_rheology=aux_rheology, override=override,
+                                     custom_products=custom_products)
     if prepared is None:
         return None
     payload = prepared["payload"]
     profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
                else centralizer_engine.optimize_placement(payload))
-    return {**_normalized_solver_result(payload, profile, mode), "diagnostics": prepared["diagnostics"]}
+    return {**_normalized_solver_result(payload, profile, mode, zone_sources=zones),
+            "diagnostics": prepared["diagnostics"]}

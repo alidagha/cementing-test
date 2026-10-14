@@ -18,7 +18,7 @@ from placement import (target_depth, top_label, host_label, slurry_intervals, EX
 from datetime import datetime
 import materials_db
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
-                               resolve_physical_state, compute_phase_status, safe_float,
+                               resolve_physical_state, compute_phase_status, WORD_ADVISORY_PHASES, safe_float,
                                parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm)
 try:
     from docxtpl import DocxTemplate
@@ -1520,6 +1520,7 @@ def _go_to_phase(phase_key):
 # Longest/most-specific tokens first: "Phase VI" is a substring of
 # "Phase VII", and "Phase V" of both.
 _PHASE_DEEP_LINK_ORDER = (
+    ("Phase IX", "phase9"),
     ("Phase II & III", "phase2_3"), ("Phase VII", "phase7"),
     ("Phase VI", "phase6"), ("Phase IV", "phase4"), ("Phase V", "phase5"),
     ("Phase II", "phase2_3"), ("Phase III", "phase2_3"), ("Phase I:", "phase1"),
@@ -1620,6 +1621,7 @@ def render():
         "phase1": "I: Document Control", "phase2_3": "II & III: Well Data",
         "phase4": "IV: Fluids Sequence", "phase5": "V: Cement Program",
         "phase6": "VI: Pre-flush & Spacer", "phase7": "VII: Lab Report",
+        "phase9": "IX: Centralizer",
     }
     _selected_fluids = st.session_state.get("fluids_config", {}).get("active", [])
     _phase6_optional = not any(name in _selected_fluids
@@ -1637,6 +1639,10 @@ def render():
                 st.warning(line)
             else:
                 st.markdown(line)
+
+    # Advisory only in 9F. Centralizer report integration/export blocking is a later batch.
+    if _status["phase9"]["level"] != "ok":
+        st.button("→ Phase IX", on_click=_go_to_phase, args=("phase9",), key="_rescue_phase9")
 
     if issues:
         # BUG-02 (confirmed): the early return here used to hide the whole
@@ -1758,7 +1764,8 @@ def render():
     # full expander a second time.
     _status_pre_build = compute_phase_status(st.session_state)
     _unresolved = [v["message"] for k, v in _status_pre_build.items()
-                   if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
+                   if k not in WORD_ADVISORY_PHASES and v["level"] != "ok"
+                   and not (k == "phase6" and _phase6_optional)]
     _unresolved.extend(issues)
     if _unresolved:
         st.warning("⚠️ **Before building:** " + " | ".join(_unresolved))
