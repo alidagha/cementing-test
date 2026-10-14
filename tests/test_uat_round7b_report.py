@@ -19,6 +19,7 @@ from PIL import Image
 import phase_10_procedure as report
 import test_audit_regressions as audit
 import well_report as output
+from centralizer_fixtures import ensure_current_centralizer
 from project_state import refresh_well_derived
 
 
@@ -26,7 +27,9 @@ from project_state import refresh_well_derived
 def project():
     case = audit.AuditRegressions()
     app = case.configured_app('CSG 9 5/8"')
-    return audit.round_trip(app.session_state.to_dict())
+    restored = audit.round_trip(app.session_state.to_dict())
+    ensure_current_centralizer(restored)
+    return restored
 
 
 def directional(project, count=31):
@@ -39,6 +42,8 @@ def directional(project, count=31):
 
 
 def context(state):
+    state = deepcopy(state)
+    ensure_current_centralizer(state)
     with patch.object(report.st, "session_state", deepcopy(state)):
         return report.build_master_context()
 
@@ -48,6 +53,7 @@ def source_context(state):
     # condition; actual export tests retain the normal prepare/review gate.
     prepared = deepcopy(state)
     refresh_well_derived(prepared)
+    ensure_current_centralizer(prepared)
     with patch.object(report.st, "session_state", prepared):
         return report.build_master_context(calculations_prepared=True)
 
@@ -100,13 +106,13 @@ def test_incomplete_geometry_context_does_not_fabricate_report_data(project, geo
     state["well_geometry"] = deepcopy(geometry)
     refresh_well_derived(state)
     with patch.object(output, "render_chart_png", side_effect=AssertionError("Incomplete chart rendered")) as renderer:
-        with patch.object(report.st, "session_state", state):
-            ctx = report.build_master_context(calculations_prepared=True)
-        assert ctx["well_profile_report"] is None
-        assert ctx["well_data"]["geo_md"] is None
-        assert ctx["well_data"]["geo_tvd"] is None
-        assert ctx["well_data"]["geo_gradient"] is None
-        assert ctx["well_data"]["bhst"] == state["geothermal_config"]["value"]
+        assert output.prepared_well_report(state) is None
+        assert state["well_data"]["geo_md"] is None
+        assert state["well_data"]["geo_tvd"] is None
+        assert state["well_data"]["geo_gradient"] is None
+        assert state["well_data"]["bhst"] == state["geothermal_config"]["value"]
+        with patch.object(report.st, "session_state", state), pytest.raises(ValueError, match="Phase IX"):
+            report.build_master_context(calculations_prepared=True)
         renderer.assert_not_called()
 
 
@@ -175,9 +181,10 @@ def test_full_geothermal_source_changes_document_signature(project):
 
 def test_vertical_note_uses_global_sequence_after_lab_notes(project):
     ctx = context(project)
-    assert ctx["all_notes"][-1].endswith("The Well is Considered Vertical")
+    assert ctx["all_notes"][-2].endswith("The Well is Considered Vertical")
+    assert ctx["all_notes"][-1].endswith("Recommended Centralizer Performance Data is Based on API 10D Specifications.")
     numbers = [int(note.split(":", 1)[0].split()[1]) for note in ctx["all_notes"]]
-    assert numbers == [n for n in range(1, numbers[-1]+1) if n != 20]
+    assert numbers == list(range(1, numbers[-1]+1))
 
 
 @pytest.mark.parametrize("count", [2, 19, 20, 21, 31, 101])

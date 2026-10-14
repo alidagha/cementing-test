@@ -22,9 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import materials_db
-from engineering_tools import compute_phase_status, lab_review_signature, round_half_up, BBL_TO_CUFT
+from engineering_tools import compute_phase_status, lab_review_signature, round_half_up, BBL_TO_CUFT, WORD_ADVISORY_PHASES
 from project_io import decode_project
 from project_state import is_project_key, prepare_calculations, hardware_draft_pending
+from centralizer_fixtures import ensure_current_centralizer
 
 # Use the application's serializers without running its top-level UI.
 tree = ast.parse((ROOT / "main.py").read_text())
@@ -259,10 +260,12 @@ class AuditRegressions(unittest.TestCase):
             next(w for w in app.number_input if w.label == label).set_value(value).run()
         next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main").set_value("03:30").run()
         next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
+        ensure_current_centralizer(app.session_state)
         self.healthy(app)
         return app
 
     def export(self, app):
+        ensure_current_centralizer(app.session_state)
         self.phase(app, "phase10")
         self.assertFalse(app.error, [e.value for e in app.error])
         build = next(b for b in app.button if b.label == "Build Word Document")
@@ -317,7 +320,8 @@ class AuditRegressions(unittest.TestCase):
                 # The stale Phase VI cache still looks complete: the calculation
                 # failure itself must block export, independently of status.
                 self.assertTrue(all(s["level"] == "ok"
-                                    for s in compute_phase_status(app.session_state).values()))
+                                    for phase, s in compute_phase_status(app.session_state).items()
+                                    if phase not in WORD_ADVISORY_PHASES))
                 self.assert_export_blocked(app)
                 self.assertTrue(app.error)
                 self.assertTrue(prepare_calculations(deepcopy(app.session_state.to_dict())))
@@ -785,6 +789,7 @@ class AuditRegressions(unittest.TestCase):
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if volume_driven else "warning")
                 restored = round_trip(app.session_state.to_dict())
                 app = self.app(restored)
+                ensure_current_centralizer(restored)
                 with patch.object(report.st, "session_state", deepcopy(restored)):
                     if volume_driven:
                         from cement_chart_model import resolve_cement_placement

@@ -125,8 +125,16 @@ def _seed_session():
         {**original, "Description": "Open Hole Size", "MD (m)": "2816.0",
          "Size (in)": "12.25", "ID (in)": 12.25}])
     seed["placement_config"]["chart_excess_mode"] = "ignore"
+    seed["well_geometry"] = {"version": 1, "type": "Vertical", "td_m": 3000.0}
+    seed["geothermal_config"] = {"version": 1, "source": "BHST", "surface_temp": 80.0, "value": 200.0}
+    seed["mud_density"] = "80"
+    seed["hardware_table"]["Joint (m)"] = 12.2
     for key, value in seed.items():
         st.session_state[key] = value
+    from project_state import refresh_well_derived
+    refresh_well_derived(st.session_state)
+    from tests.centralizer_fixtures import execute_centralizer
+    execute_centralizer(st.session_state)
     return st.session_state
 
 
@@ -376,6 +384,8 @@ def test_preflush_payload_recomputed_at_export_time():
                               "effective_density": 75.0, "water_bbl": 80.0,
                               "nacl_lbs": 10080.0, "wash_gal": 240.0,
                               "nacl_multiplier": 126.0, "wash_multiplier": 3.0}
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    ensure_current_centralizer(state)
     ctx2 = build_master_context(calculations_prepared=True)
     assert ctx2["preflush"]["volume"] == 25.0, \
         "Word payload reused the stale Phase VI preflush_calc snapshot (P0-01)"
@@ -434,11 +444,14 @@ def test_spacer_densities_sort_numerically():
     state["spacer_dfs"]["Spacer Ahead"] = pd.DataFrame(
         [{"Chemical": "Bentonite", "User Input (% or gal)": 2.0,
           "Weighting Agent Type": "-"}])
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    ensure_current_centralizer(state)
     ctx = build_master_context(calculations_prepared=True)
     assert ctx["spacer_density_note"] == "95.0, 100.0", \
         ctx["spacer_density_note"]
 
     state["fluid_data"]["Spacer"]["density"] = "115-118"
+    ensure_current_centralizer(state)
     ctx2 = build_master_context(calculations_prepared=True)
     assert ctx2["spacer_density_note"] == "95.0, 115-118", \
         ctx2["spacer_density_note"]
@@ -774,13 +787,13 @@ def test_invariant_additive_forcing():
 
 
 def test_invariant_word_notes_counter_and_escaping():
-    """§5 Word notes: NoteCounter stays sequential and preserves reserved NOTE 20."""
+    """§5 Word notes: owner-approved full sequence includes the Centralizer note."""
     import phase_10_procedure as p10
-    counter = p10.NoteCounter(reserved_numbers=(20,))
+    counter = p10.NoteCounter()
     notes = [counter.next("x") for _ in range(25)]
     numbers = [int(n.split()[1].rstrip(":")) for n in notes]
-    assert numbers == [n for n in range(1, 27) if n != 20], numbers
-    assert "NOTE 20" not in notes
+    assert numbers == list(range(1, 26)), numbers
+    assert "NOTE 20: x" in notes
     escaped = p10._escape_xml_special_chars('A&B<C>"D"')
     assert "&amp;" in escaped and "&lt;" in escaped and "&gt;" in escaped
 

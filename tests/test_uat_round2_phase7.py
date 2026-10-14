@@ -50,7 +50,9 @@ class Round2LabUAT(unittest.TestCase):
         return next(w for w in app.text_input if w.label == '70 Bc (HH:MM) - '+s)
 
     def context(self, state, prepared=False):
-        with patch.object(report.st, 'session_state', deepcopy(state)):
+        current = deepcopy(state)
+        audit.ensure_current_centralizer(current)
+        with patch.object(report.st, 'session_state', current):
             return report.build_master_context(calculations_prepared=prepared)
 
     def test_all_archetypes_blank_no_endpoint_and_review_disabled(self):

@@ -218,7 +218,108 @@ def render_chart_png(payload):
         figure.clear()
 
 
-def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None):
+def _postprocess_centralizer(doc, prepared):
+    """Guarded Section IX replacement in the rendered copy; preserve its page transition."""
+    import re
+    from docx.text.paragraph import Paragraph
+    from docx.oxml.ns import qn
+    from centralizer_report import NOTE_BODY, WARNING, NOT_APPLICABLE, render_chart_png
+    headings = {}
+    for title in ("IX. Centralizer Placement Recommendation", "X. Cementing Procedure"):
+        found = [p for p in doc.paragraphs if p.text == title]
+        if len(found) != 1:
+            raise ValueError(f"Centralizer report requires exactly one heading: {title}")
+        headings[title] = found[0]._p
+    elements = list(doc._element.body)
+    start, end = [elements.index(headings[title]) for title in headings]
+    if start >= end:
+        raise ValueError("Centralizer Section IX must precede Section X.")
+    region = elements[start+1:end]
+    tables = [table for table in doc.tables if table._tbl in region]
+    if (len(tables) != 2 or len(tables[0].rows) != 4 or len(tables[1].rows) != 4 or
+            tables[0].cell(0, 0).text != "Centralizer Data" or
+            tables[1].cell(0, 0).text.strip() != "Centralizer Placement"):
+        raise ValueError("Section IX requires the two approved Centralizer tables and sample-row structure.")
+    data, placement = tables
+    labels = [[cell.text.replace("\xa0", " ") for cell in row.cells] for row in data.rows[1:]]
+    if [row[::2] for row in labels] != [["Top Cent. MD", "NB of Cent. Used"],
+            ["Bottom Cent. MD", "NB of Rigid Cent. Used"], ["Casing Shoe", "NB of Spring Cent. Used"]]:
+        raise ValueError("Centralizer Data labels differ from the approved template.")
+    if [cell.text.strip() for cell in placement.rows[1].cells] != ["Bottom MD (m)", "Number",
+            "Cent. / Joint", "Centralizer Type", "Min. Standoff (%)", "Depth (m)"]:
+        raise ValueError("Centralizer Placement must retain its exact six columns.")
+    paragraphs = [Paragraph(e, doc._body) for e in region if e.tag == qn("w:p")]
+    notes = [p for p in paragraphs if re.fullmatch(r"NOTE \d+:\s+" + re.escape(NOTE_BODY), p.text)]
+    charts = [p for p in paragraphs if p._p.xpath('.//w:drawing')]
+    if len(notes) != 1 or len(charts) != 1 or len(charts[0]._p.xpath('.//w:drawing')) != 1:
+        raise ValueError("Section IX requires exactly one API-10D note and one existing chart drawing.")
+    note, chart = notes[0], charts[0]
+    if (chart._p is not elements[end-1] or len(chart._p.xpath('.//w:br[@w:type="page"]')) != 1 or
+            not start < elements.index(data._tbl) < elements.index(placement._tbl) <
+            elements.index(note._p) < elements.index(chart._p) < end):
+        raise ValueError("Section IX note/chart order or existing Section-X page transition differs.")
+    drawing = chart._p.xpath('.//w:drawing')[0]
+    inline = drawing.find(qn("wp:inline"))
+    if inline is None or len(inline.xpath('.//a:blip')) != 1:
+        raise ValueError("Section IX requires the approved inline Pipe Standoff drawing.")
+    extent = inline.find(qn("wp:extent"))
+    transform = inline.xpath('.//a:xfrm/a:ext')
+    if extent is None or len(transform) != 1:
+        raise ValueError("Cannot resolve the existing Pipe Standoff layout box.")
+    width, height = int(extent.get("cx")), int(extent.get("cy"))
+    if width <= 0 or height <= 0:
+        raise ValueError("Pipe Standoff layout box must be positive.")
+    blip = inline.xpath('.//a:blip')[0]
+    old_rid = blip.get(qn("r:embed"))
+
+    def replace_text(paragraph, text):
+        runs = paragraph.runs
+        (runs[0] if runs else paragraph.add_run()).text = text
+        for run in runs[1:]:
+            run.text = ""
+
+    if not prepared["applicable"]:
+        for table in tables:
+            table._tbl.getparent().remove(table._tbl)
+        replace_text(note, NOT_APPLICABLE)
+        drawing.getparent().remove(drawing)
+    else:
+        view = prepared["view"]
+        if not prepared.get("note"):
+            raise ValueError("Section IX requires its sequential Centralizer NoteCounter note.")
+        png = render_chart_png(prepared)
+        rid, image = doc.part.get_or_add_image(BytesIO(png))
+        scale = min(width/image.px_width, height/image.px_height)
+        cx, cy = int(image.px_width*scale), int(image.px_height*scale)
+        blip.set(qn("r:embed"), rid)
+        for node in (extent, transform[0]):
+            node.set("cx", str(cx)); node.set("cy", str(cy))
+        inline.find(qn("wp:docPr")).set("descr", "Pipe Standoff")
+        values = ((f"{view['top_cent_md']:.1f} m", str(view["n_cent"])),
+                  (f"{view['bottom_cent_md']:.1f} m", str(view["n_rigid"])),
+                  (f"{view['shoe']:.1f} m", str(view["n_spring"])))
+        for row, pair in zip(data.rows[1:], values):
+            for cell, value in zip((row.cells[1], row.cells[3]), pair):
+                replace_text(cell.paragraphs[0], value)
+        row_template = deepcopy(placement.rows[2]._tr)
+        for row in list(placement.rows)[2:]:
+            placement._tbl.remove(row._tr)
+        for values in view["zone_rows"]:
+            placement._tbl.append(deepcopy(row_template))
+            texts = (f"{values['bottom_md']:.1f}", str(values["number"]), values["cent_per_joint"],
+                     values["kind_display"], f"{values['min_stdf_pct']:.1f}", f"{values['min_depth']:.1f}")
+            for cell, text in zip(placement.rows[-1].cells, texts):
+                replace_text(cell.paragraphs[0], text)
+        replace_text(note, prepared["note"])
+        if prepared["warning"]:
+            warning = deepcopy(note._p)
+            note._p.addprevious(warning)
+            replace_text(Paragraph(warning, doc._body), WARNING)
+    if old_rid not in doc._element.xpath('.//@r:embed'):
+        doc.part.drop_rel(old_rid)
+
+
+def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
     from docx.text.paragraph import Paragraph
@@ -338,6 +439,8 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             run = cement_anchor.clear().add_run()
             picture = run.add_picture(BytesIO(png), width=section.page_width-section.left_margin-section.right_margin)
             picture._inline.docPr.set("descr", "Static Well Security and Fluid Sequence")
+    if centralizer_report is not None:
+        _postprocess_centralizer(doc, centralizer_report)
     result = BytesIO()
     doc.save(result)
     return result.getvalue()

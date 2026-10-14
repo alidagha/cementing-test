@@ -203,7 +203,7 @@ def hardware_draft_pending(state):
 
 def is_project_key(key):
     """Exclude current and legacy widget keys at both save and load boundaries."""
-    transient = ("_", "$$ID", "proj_uploader", "last_loaded_hash", "chk_fluid_",
+    transient = ("_", "$$ID", "FormSubmitter:", "proj_uploader", "last_loaded_hash", "chk_fluid_",
                  "vol_", "den_", "rate_", "matname_", "fix_den_",
                  "cemb_", "sg_", "tank_choice_", "dv_", "override_", "yd_ov_", "mw_ov_")
     return isinstance(key, str) and key != "app_mode_key" and not key.startswith(transient)

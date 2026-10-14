@@ -105,6 +105,9 @@ def _validate_project(data):
         excess_percentage(data.get("placement_config", {}), field)
     if "executive_summary_config" in data:
         validate_executive_summary_config(data["executive_summary_config"])
+    if "centralizer_config" in data:
+        from phase_9_centralizer import validate_config
+        validate_config(data["centralizer_config"])
     cfg = data.get("fluids_config", {})
     if cfg and (not isinstance(cfg.get("active", []), list)
                 or not all(isinstance(x, str) for x in cfg.get("active", []))

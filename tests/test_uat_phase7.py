@@ -234,7 +234,7 @@ class Phase7UAT(unittest.TestCase):
             self.assertEqual(s["lab"]["thickening_time"], "04:45")
             self.assertEqual(s["lab"]["thickening_endpoint"], "100 Bc")
         numbers = [int(re.match(r"NOTE (\d+):", n)[1]) for n in notes["all_notes"]]
-        self.assertEqual(numbers, [i for i in range(1, len(numbers) + 2) if i != 20])
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
 
     def test_actual_word_and_save_restore_navigation_for_all_jobs(self):
         for job in audit.BATCH1_JOBS:

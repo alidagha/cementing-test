@@ -818,6 +818,10 @@ def calculate_slurry_from_components(
     }
 
 
+# Round 9G: all applicable phases, including current Phase IX, are Word prerequisites.
+WORD_ADVISORY_PHASES = frozenset()
+
+
 def compute_phase_status(ss) -> dict:
     """
     Read-only snapshot of how "filled in" each phase currently is, based
@@ -1121,4 +1125,16 @@ def compute_phase_status(ss) -> dict:
             else {"level": "ok", "message": f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies)."}
         )
 
+    # Phase IX completion is canonical and required by Word for applicable jobs.
+    from centralizer_adapter import centralizer_applicable
+    from phase_9_centralizer import result_is_current
+    job = ss.get("job_type")
+    if job in ("CMT PLUG", "CMT SQUEEZE"):
+        status["phase9"] = {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
+    elif not centralizer_applicable(job):
+        status["phase9"] = {"level": "empty", "message": "Select a supported Centralizer job in Phase I."}
+    elif result_is_current(ss):
+        status["phase9"] = {"level": "ok", "message": "Current successful Centralizer calculation; target misses are evaluation results."}
+    else:
+        status["phase9"] = {"level": "warning", "message": "Needs Review: Centralizer is not executed, incomplete or stale. Execute current inputs in Phase IX."}
     return status

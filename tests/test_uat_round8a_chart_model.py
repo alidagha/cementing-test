@@ -536,6 +536,7 @@ def test_direct_fresh_restore_and_existing_word_build_gate(reviewed_project):
     current = audit.round_trip(reviewed_project)
     assert not prepare_calculations(current)
     assert current["_cement_chart_model"]["static_security_ready"]
+    audit.ensure_current_centralizer(current)
     with patch.object(report.st, "session_state", current):
         context = report.build_master_context()
     assert context["slurries"][0]["name"] == "Main"
@@ -585,6 +586,7 @@ def test_both_word_overrides_are_isolated_after_fresh_restore(reviewed_project):
     assert not prepare_calculations(restored)
     assert restored["_cement_chart_model"] == model
     assert lab_source_signature(restored, "Main") == source
+    audit.ensure_current_centralizer(restored)
     with patch.object(report.st, "session_state", restored):
         payload = report.build_master_context()["slurries"][0]
     assert payload["top"] == "2100.0 m" and payload["bottom"] == "2900.0 m MD"
