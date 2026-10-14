@@ -1,4 +1,4 @@
-"""Pure Centralizer projections and frozen-engine Static execution; no UI or state writes."""
+"""Pure Centralizer projections and frozen-engine solver execution; no UI or state writes."""
 import json
 import math
 from collections.abc import Sequence
@@ -9,9 +9,11 @@ from pathlib import Path
 import materials_db
 import cement_chart_model
 import well_profile
+import rheology
 import centralizer_optimizer_engine as centralizer_engine
 from centralizer_optimizer_engine import Gravity
-from engineering_tools import parse_fractional_size, require_positive_density
+from engineering_tools import (parse_fractional_size, require_positive_density,
+                               parse_effective_numeric, require_positive_pump_rate)
 
 
 # Exact international inch/pound definitions, also used by the existing
@@ -19,6 +21,10 @@ from engineering_tools import parse_fractional_size, require_positive_density
 INCH_TO_M = 0.0254
 LBF_TO_N = 0.45359237 * Gravity
 CATALOG_PATH = Path(__file__).with_name("ds_cent_products.json")
+# Owner-locked Round 9E adapter-boundary conversions.
+BPM_TO_M3_S = 0.00264979
+CP_TO_PA_S = 0.001
+LBF_100FT2_TO_PA = 0.4788026
 
 
 def _number(value, field):
@@ -406,6 +412,11 @@ def solve_static(state, zones, products, *, mode, override=None):
         return None
     profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
                else centralizer_engine.optimize_placement(payload))
+    return _normalized_solver_result(payload, profile, mode)
+
+
+def _normalized_solver_result(payload, profile, mode):
+    """Read-only projection shared by Static/Dynamic; preserve the raw profile."""
     products_by_name = {product["name"]: product for product in payload["products"]}
     normalized = []
     for index, zone in enumerate(payload["zones"]):
@@ -425,3 +436,96 @@ def solve_static(state, zones, products, *, mode, override=None):
                         ("density_computed", "count", "min_stdf", "meets_target")}, min_depth=None)
         normalized.append(row)
     return {"mode": mode, "zones": normalized, "profile": profile}
+
+
+def _dynamic_fann(readings, fluid):
+    """Require every fixed RPM, then consume the existing fresh Bingham fit."""
+    try:
+        if not isinstance(readings, dict) or set(readings) != {str(rpm) for rpm in rheology.RPM_ORDER}:
+            raise ValueError("Exactly all seven RPM readings are required.")
+        points = [(rpm, rheology._numeric(readings[str(rpm)])) for rpm in rheology.RPM_ORDER]
+        if any(value is None or value <= 0 for _, value in points):
+            raise ValueError("Every RPM reading must be finite and greater than zero.")
+        fit = rheology.calculate_cemcade_bingham(points)
+        if fit.get("is_valid_bingham") is not True:
+            raise ValueError(fit.get("validation_message") or "Invalid Bingham result.")
+        result = {field: _number(fit.get(field), f"{fluid} {field}") for field in
+                  ("pv_cp", "ty_lbf_100ft2", "iod")}
+        if result["pv_cp"] <= 0 or result["ty_lbf_100ft2"] <= 0:
+            raise ValueError("Invalid Bingham PV/Ty.")
+        return result
+    except ValueError as exc:
+        raise ValueError(f"[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid '{fluid}'. "
+                         "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. "
+                         f"{exc}") from None
+
+
+def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None):
+    """Return fresh engine payload and transient diagnostics, or None for N/A.
+
+    Completeness follows all active Phase-IV fluids, including inside-only or
+    excluded Spacer Behind. Hydraulics stages follow named annulus intervals
+    only. Tier-2 has no identity and is never accepted for Dynamic inference.
+    """
+    if override is not None:
+        raise ValueError("Dynamic Tier-2 fluid columns are unsupported: they do not carry fluid identity.")
+    payload = build_static_payload(state, zones, products)
+    if payload is None:
+        return None
+    config = state.get("fluids_config", {})
+    active = config.get("active", [])
+    if "Displacement Fluid" not in active:
+        raise ValueError("Dynamic circulation requires Displacement Fluid to be active in Phase IV.")
+    source = config.get("params", {}).get("Displacement Fluid", state.get("fluid_data", {}).get("Displacement Fluid", {}))
+    rate = require_positive_pump_rate(source.get("pump_rate"))
+    q = _number(rate * BPM_TO_M3_S, "Dynamic pump rate m³/s")
+    if q <= 0:
+        raise ValueError("Dynamic pump rate must remain positive after SI conversion.")
+    well = state.get("well_data", {})
+    if not isinstance(well, dict):
+        raise ValueError("Phase II Well Data must be a canonical record.")
+    mud = {"source": "phase_ii_mud",
+           "pv_cp": _number(parse_effective_numeric(state.get("plastic_viscosity", well.get("plastic_viscosity")),
+                                                    default=None), "Phase II Mud PV"),
+           "ty_lbf_100ft2": _number(parse_effective_numeric(state.get("yield_point", well.get("yield_point")),
+                                                          default=None), "Phase II Mud YP"), "iod": None}
+    if mud["pv_cp"] <= 0 or mud["ty_lbf_100ft2"] < 0:
+        raise ValueError("Phase II Mud rheology requires finite PV > 0 cP and YP >= 0 lbf/100ft².")
+    per_active = {}
+    for fluid in active:
+        if fluid == "Displacement Fluid":
+            per_active[fluid] = dict(mud)
+        elif fluid in materials_db.RHEOLOGY_LAB_FLUIDS:
+            lab = state.get("lab_qc_params", {})
+            qc = lab.get(fluid, {}) if isinstance(lab, dict) else {}
+            data = qc.get("rheology", {}) if isinstance(qc, dict) else {}
+            row = data.get("bhct_down", {}) if isinstance(data, dict) else {}
+            readings = row.get("readings") if isinstance(row, dict) and row.get("selected") is True else None
+            per_active[fluid] = {"source": "lab_bhct_down", **_dynamic_fann(readings, fluid)}
+        else:
+            readings = aux_rheology.get(fluid) if isinstance(aux_rheology, dict) else None
+            per_active[fluid] = {"source": "aux_rheology", **_dynamic_fann(readings, fluid)}
+    snapshot = build_fluid_snapshot(state)
+    stages = [{"name": row["fluid"], "top_md": row["top_md"], "bottom_md": row["bottom_md"],
+               "pv_pa_s": per_active[row["fluid"]]["pv_cp"] * CP_TO_PA_S,
+               "ty_pa": per_active[row["fluid"]]["ty_lbf_100ft2"] * LBF_100FT2_TO_PA}
+              for row in snapshot["annulus_intervals"] if row["fluid"] not in ("Mud", "Displacement Fluid")]
+    payload["settings"] = {"calculation_mode": "dynamic_circulating", "include_hydrostatic": True}
+    payload["fluids"]["circulation"] = {"pump_rate_m3_s": q, "stages_rheology": stages,
+                                       "default_mud_pv_pa_s": mud["pv_cp"] * CP_TO_PA_S,
+                                       "default_mud_ty_pa": mud["ty_lbf_100ft2"] * LBF_100FT2_TO_PA}
+    return {"payload": payload, "diagnostics": {"pump_rate_bpm": rate, "pump_rate_m3_s": q,
+            "rheology": per_active, "stages_rheology": deepcopy(stages)}}
+
+
+def solve_dynamic(state, zones, products, *, mode, aux_rheology=None, override=None):
+    """Execute the chosen frozen Dynamic API; target misses remain valid."""
+    if mode not in ("direct", "optimize"):
+        raise ValueError("Dynamic placement mode must be 'direct' or 'optimize'.")
+    prepared = build_dynamic_payload(state, zones, products, aux_rheology=aux_rheology, override=override)
+    if prepared is None:
+        return None
+    payload = prepared["payload"]
+    profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
+               else centralizer_engine.optimize_placement(payload))
+    return {**_normalized_solver_result(payload, profile, mode), "diagnostics": prepared["diagnostics"]}
