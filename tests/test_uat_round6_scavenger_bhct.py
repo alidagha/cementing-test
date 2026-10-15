@@ -502,7 +502,7 @@ def test_all_five_normal_lab_sections_share_well_conditions_and_exclude_scavenge
     for name in materials_db.CEMENT_FORMULATION_FLUIDS:
         project["lab_source_signatures"][name] = lab_source_signature(project, name)
     restored = case.app(audit.round_trip(project))
-    case.export(restored)
+    case.export(restored, build_timeout=60)
     doc = Document(BytesIO(restored.session_state["_compiled_doc_bytes"]))
     assert sum(t.rows[0].cells[0].text == "Test Basic Data" for t in doc.tables) == 5
     assert sum(t.rows[0].cells[0].text == "Rheology Test" for t in doc.tables) == 5

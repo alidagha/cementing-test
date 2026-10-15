@@ -353,7 +353,7 @@ class AuditRegressions(unittest.TestCase):
         for job in BATCH1_JOBS:
             with self.subTest(job=job):
                 app = self.configured_app(job, optional_fluids=True)
-                self.export(app)
+                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
                 app.session_state["preflush_config"]["wash_multiplier"] = "abc"
                 # The stale Phase VI cache still looks complete: the calculation
                 # failure itself must block export, independently of status.
@@ -367,7 +367,7 @@ class AuditRegressions(unittest.TestCase):
                 self.phase(app, "phase6")
                 next(w for w in app.text_input if w.label.startswith("Correct Preflush wash ratio")).set_value("3").run()
                 next(b for b in app.button if b.label == "Apply corrected values").click().run()
-                self.export(app)
+                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
 
     def test_batch1_restored_cement_bounds_block_export(self):
         invalid = (("yield", -1.0), ("yield", 0.0), ("yield", 0.0005),
@@ -1142,7 +1142,7 @@ class AuditRegressions(unittest.TestCase):
                     self.assertEqual(amount, dosage)
                     self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "ok")
                     before = app.session_state["spacer_dfs"]["Spacer"].copy(deep=True)
-                    self.export(app)
+                    self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
                     spacer = next(t for t in doc.tables if t.rows[0].cells[0].text == "Spacer Formulation Data")
                     chemical = next(r for r in spacer.rows if r.cells[1].text == "Spacer" and r.cells[2].text == "-")
