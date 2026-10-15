@@ -49,6 +49,8 @@ class TailPlacementUAT(unittest.TestCase):
                 if source == 'hardware':
                     project['placement_config']['target_row'] = next(iter(hardware_choices(
                         project['hardware_table'], target_descriptions(project['job_type']))))
+                else:
+                    project['placement_config']['target_row'] = '__manual__'
                 app = self.start(project)
                 self.assertEqual(self.mode(app).options, ['Not entered', 'Depth (m MD)', 'Surface'])
                 self.assertIsNone(app.session_state['cement_params']['Tail']['top_depth'])
@@ -57,7 +59,9 @@ class TailPlacementUAT(unittest.TestCase):
                 self.assertIsNone(self.depth(app).value)
 
     def test_manual_first_edit_navigation_restore_and_target_change(self):
-        app = self.start()
+        project = deepcopy(self.project)
+        project['placement_config']['target_row'] = '__manual__'
+        app = self.start(project)
         self.mode(app).set_value('Depth (m MD)').run()
         self.assertIsNone(self.depth(app).value)
         self.depth(app).set_value(2800.)
@@ -90,6 +94,7 @@ class TailPlacementUAT(unittest.TestCase):
         for target in (None, 'bad', -10., 0., 100., 150.):
             with self.subTest(target=target):
                 project = deepcopy(self.project)
+                project['placement_config']['target_row'] = '__manual__'
                 project['placement_config']['manual_depth_m'] = target
                 app = self.start(project)
                 self.mode(app).set_value('Depth (m MD)').run()

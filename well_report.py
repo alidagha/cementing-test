@@ -319,11 +319,26 @@ def _postprocess_centralizer(doc, prepared):
         doc.part.drop_rel(old_rid)
 
 
-def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None):
+PUMPING_CHART_ANCHOR = "Pumping simulation charts: Not provided."
+PUMPING_NOT_APPLICABLE = "Pumping simulation charts: Not applicable for this job type."
+
+
+def _content_width(doc, paragraph):
+    from docx.section import Section
+    from docx.oxml.ns import qn
+    elements = list(doc._element.body)
+    for element in elements[elements.index(paragraph._p):]:
+        section_xml = element if element.tag == qn("w:sectPr") else element.find(".//"+qn("w:sectPr"))
+        if section_xml is not None:
+            section = Section(section_xml, doc.part)
+            return section.page_width-section.left_margin-section.right_margin
+    raise ValueError("Cannot resolve the chart's existing page geometry.")
+
+
+def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
     from docx.text.paragraph import Paragraph
-    from docx.section import Section
     from docx.oxml.ns import qn
     doc = Document(BytesIO(rendered_bytes))
     paragraphs = [Paragraph(element, doc._body) for element in doc._element.body.xpath(".//w:p")]
@@ -342,6 +357,16 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             raise ValueError("The diagnostic chart anchor must be inside the existing Section IV.")
         if cement_report["kind"] is not None and cement_report["model"] is None:
             raise ValueError("A prepared Round 8A chart model is required.")
+    pumping_anchor = None
+    if pumping_report is not None:
+        matches = [p for p in paragraphs if p.text == PUMPING_CHART_ANCHOR]
+        if len(matches) != 1 or matches[0]._p.getparent() is not doc._element.body:
+            raise ValueError(f"Word report requires exactly one anchor: {PUMPING_CHART_ANCHOR}")
+        pumping_anchor = matches[0]
+        if cement_anchor is None or not elements.index(cement_anchor._p) < elements.index(pumping_anchor._p) < elements.index(v[0]._p):
+            raise ValueError("The Pumping chart anchor must follow the diagnostic chart inside the existing Section IV.")
+        if pumping_report["applicable"] and pumping_report.get("figure") is None:
+            raise ValueError("A fresh Pumping Simulation figure is required.")
     anchors = {}
     for text in (CHART_ANCHOR, SURVEY_ANCHOR):
         matches = [paragraph for paragraph in paragraphs if paragraph.text == text]
@@ -387,17 +412,8 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             spacers.append(element)
     if len(spacers) != 6:
         raise ValueError("Section VIII requires exactly six empty Heading1 spacer paragraphs.")
-    section_xml = None
-    for element in elements[elements.index(chart._p):]:
-        section_xml = element if element.tag == qn("w:sectPr") else element.find(".//"+qn("w:sectPr"))
-        if section_xml is not None:
-            break
-    if section_xml is None:
-        raise ValueError("Cannot resolve the chart's existing page geometry.")
-    section = Section(section_xml, doc.part)
-    width = section.page_width-section.left_margin-section.right_margin
     png = render_chart_png(payload)
-    chart.clear().add_run().add_picture(BytesIO(png), width=width)
+    chart.clear().add_run().add_picture(BytesIO(png), width=_content_width(doc, chart))
     row_template = deepcopy(table.rows[3]._tr)
     for row in list(table.rows)[3:]:
         table._tbl.remove(row._tr)
@@ -428,17 +444,23 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             for run in runs[1:]:
                 cement_anchor._p.remove(run._r)
         else:
-            for element in list(doc._element.body)[list(doc._element.body).index(cement_anchor._p):]:
-                section_xml = element if element.tag == qn("w:sectPr") else element.find(".//"+qn("w:sectPr"))
-                if section_xml is not None:
-                    break
-            if section_xml is None:
-                raise ValueError("Cannot resolve the diagnostic chart's existing page geometry.")
-            section = Section(section_xml, doc.part)
             png = render_cement_png(cement_report["model"])
             run = cement_anchor.clear().add_run()
-            picture = run.add_picture(BytesIO(png), width=section.page_width-section.left_margin-section.right_margin)
+            picture = run.add_picture(BytesIO(png), width=_content_width(doc, cement_anchor))
             picture._inline.docPr.set("descr", "Static Well Security and Fluid Sequence")
+    if pumping_anchor is not None:
+        from docx.text.run import Run
+        texts = pumping_anchor._p.xpath('.//w:t')
+        for text in texts:
+            text.text = ""
+        if not pumping_report["applicable"]:
+            texts[0].text = PUMPING_NOT_APPLICABLE
+        else:
+            output = BytesIO()
+            pumping_report["figure"].savefig(output, format="png", dpi=200, facecolor="white")
+            run = Run(texts[0].getparent(), pumping_anchor)
+            picture = run.add_picture(BytesIO(output.getvalue()), width=_content_width(doc, pumping_anchor))
+            picture._inline.docPr.set("descr", "Pumping Simulation Charts")
     if centralizer_report is not None:
         _postprocess_centralizer(doc, centralizer_report)
     result = BytesIO()

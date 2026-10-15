@@ -250,7 +250,7 @@ class Round4MassBalance(unittest.TestCase):
         next(b for b in restored.button if b.label == 'Sync with Phase V').click().run()
         self.assertFalse(restored.session_state['lab_qc_params']['Main']['reviewed'])
         next(b for b in restored.button if b.label == 'Confirm measured lab results').click().run()
-        self.export(restored)
+        self.export(restored, build_timeout=120)
         state = deepcopy(restored.session_state.to_dict())
         self.assertEqual(prepare_calculations(state), [])
         pd.testing.assert_frame_equal(state['lab_grid_dfs']['Main'], build_lab_df_from_phase5(formulation(),

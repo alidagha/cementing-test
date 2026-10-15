@@ -32,6 +32,7 @@ import subprocess
 import zipfile
 import pytest
 from docx import Document
+from docxtpl import DocxTemplate
 import phase_10_procedure as report
 from project_io import replace_project_state
 from project_state import prepare_calculations, purge_inactive_slurries, lab_source_signature, refresh_fluids
@@ -98,10 +99,25 @@ def test_independent_selection_and_real_docx_direct_restore(selected):
     result,issues=build_rheology(qc);assert not issues
     # Saved derived payloads are never the fitting authority.
     project['lab_payload_Main']={'rheology': {'stale_saved_fit':9999}}
-    assert prepare_calculations(project)==[]
+    issues=prepare_calculations(project)
+    if 'bhct_down' in selected:
+        assert issues==[]
+    else:
+        assert len(issues)==1 and 'Pumping Simulation' in issues[0] and 'bhct_down' in issues[0]
     assert project['lab_payload_Main']['rheology']==result
-    restored=case.app(audit.round_trip(project));case.export(restored)
-    docbytes=restored.session_state['_compiled_doc_bytes']
+    restored=case.app(audit.round_trip(project))
+    if 'bhct_down' in selected:
+        case.export(restored)
+        docbytes=restored.session_state['_compiled_doc_bytes']
+    else:
+        # Preserve independent Lab selection/table coverage; this selection
+        # cannot produce a final Pumping-ready Word document in Round 10.
+        audit.ensure_current_centralizer(restored.session_state)
+        case.assert_export_blocked(restored)
+        with patch.object(report.st,'session_state',deepcopy(restored.session_state.to_dict())):
+            context=report.build_master_context(calculations_prepared=True)
+        template=DocxTemplate(report.TEMPLATE_PATH);template.render(report._word_quantity_context(context))
+        output=BytesIO();template.save(output);docbytes=output.getvalue()
     Path('/tmp/r5-'+ '-'.join(selected)+'.docx').write_bytes(docbytes)
     table=next(t for t in Document(BytesIO(docbytes)).tables if t.rows[0].cells[0].text=='Rheology Test')
     assert table.rows[1].cells[2].text == table.rows[1].cells[3].text == 'Tstart: 150 degF'
@@ -116,6 +132,9 @@ def test_independent_selection_and_real_docx_direct_restore(selected):
 
 def test_first_edit_navigation_drafts_and_review_invalidation():
     case=audit.AuditRegressions();app=case.configured_app('CSG 9 5/8"');case.phase(app,'phase7')
+    # Restore this test's original reviewed Surface-only premise.
+    next(w for w in app.checkbox if w.label=='BHCT — Ramp-Down - Main').uncheck().run()
+    next(b for b in app.button if b.label=='Confirm measured lab results').click().run()
     # Existing reviewed Surface reading, edited on first attempt then immediate navigation.
     label='300 RPM - Surface — Ramp-Down - Main'
     next(w for w in app.text_input if w.label==label).set_value('169')
@@ -187,7 +206,7 @@ def test_multi_slurry_archive_reactivation_and_word():
         for key in ('cement_params','cement_additives_dfs','lab_qc_params','lab_grid_dfs'):
             p[key][s]=deepcopy(p[key]['Main'])
         p['cement_params'][s].update(top_mode='Surface' if s=='Lead' else 'Depth (m MD)',top_depth=top)
-        p['lab_qc_params'][s]['rheology']={KEYS[i]:dataset(CORPUS[i][1])}
+        p['lab_qc_params'][s]['rheology']={KEYS[i]:dataset(CORPUS[i][1]), 'bhct_down':dataset(CORPUS[i][1])}
         p['lab_qc_params'][s]['review_signature']=lab_review_signature(p['lab_qc_params'][s],p['lab_grid_dfs'][s])
         p['lab_source_signatures'][s]=lab_source_signature(p,s)
     refresh_fluids(p)

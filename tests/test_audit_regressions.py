@@ -26,6 +26,7 @@ from engineering_tools import compute_phase_status, lab_review_signature, round_
 from project_io import decode_project
 from project_state import is_project_key, prepare_calculations, hardware_draft_pending
 from centralizer_fixtures import ensure_current_centralizer
+from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS
 
 # Use the application's serializers without running its top-level UI.
 tree = ast.parse((ROOT / "main.py").read_text())
@@ -96,6 +97,33 @@ def rheology_fixture():
             "readings": dict(zip(('300', '200', '100', '60', '30', '6', '3'),
                                  ('168', '116', '64', '41', '24', '8', '6'))),
             "gel_10_sec": "8", "gel_10_min": "12"}}
+
+
+def valid_export_chart_fixture(job, target=3000.0):
+    """Explicit Hardware selection for valid Pumping exports; manual drafts stay separate."""
+    fixture = chart_fixture(job, target)
+    if job in ('CMT PLUG', 'CMT SQUEEZE'):
+        return fixture
+    table = fixture['hardware_table']
+    descriptions = target_descriptions(job)
+    table.loc[table['Description'].isin(descriptions), 'MD (m)'] = str(target)
+    if 'TIE BACK' in job:
+        old_liner = table.iloc[0].copy()
+        old_liner.update({'Description': 'Previous Liner', 'MD (m)': f'{target-500.}-{target+300.}',
+                          'Size (in)': '9.625', 'ID (in)': 8.535})
+        table.loc[len(table)] = old_liner
+        fixture['placement_config']['host_row'] = next(token for token, row in
+            hardware_choices(table, HOST_DESCRIPTIONS).items() if row['description'] == 'Previous Casing')
+    fixture['placement_config']['target_row'] = next(iter(hardware_choices(table, descriptions)))
+    return fixture
+
+
+def valid_export_rheology_fixture():
+    """Independent measured BHCT-down prerequisite, preserving surface-down inputs."""
+    return {**rheology_fixture(), 'bhct_down': {'selected': True,
+        'readings': dict(zip(('300', '200', '100', '60', '30', '6', '3'),
+                             ('168', '116', '64', '41', '24', '8', '6'))),
+        'gel_10_sec': '8', 'gel_10_min': '12'}}
 
 
 def thickening_fixture():
@@ -218,11 +246,13 @@ class AuditRegressions(unittest.TestCase):
         app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
         app.text_input(key="_w_client").set_value("Regression Client").run()
-        for key, value in chart_fixture(job).items():
+        for key, value in valid_export_chart_fixture(job).items():
             app.session_state[key] = value
         self.phase(app, "phase2_3")
-        next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__").run()
-        next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
+        target = next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source")
+        target.set_value(app.session_state['placement_config']['target_row']).run()
+        if job in ('CMT PLUG', 'CMT SQUEEZE'):
+            next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
         if "TIE BACK" in job:
             host = next(w for w in app.selectbox if w.label.startswith("Tie-back host"))
             host.select_index(1).run()
@@ -253,7 +283,9 @@ class AuditRegressions(unittest.TestCase):
                 {"Chemical": "Spacer", "User Input (% or gal)": 1.0, "Weighting Agent Type": "-"},
             ]) for s in ("Spacer", "Spacer Ahead", "Spacer Behind")}
         self.phase(app, "phase6")
-        app.session_state["lab_qc_params"] = {"Main": {"rheology": rheology_fixture(), **thickening_fixture(), **compressive_fixture()}}
+        measured = (rheology_fixture() if job in ('CMT PLUG', 'CMT SQUEEZE')
+                    else valid_export_rheology_fixture())
+        app.session_state["lab_qc_params"] = {"Main": {"rheology": measured, **thickening_fixture(), **compressive_fixture()}}
         self.phase(app, "phase7")
         for label, value in (("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
@@ -261,16 +293,22 @@ class AuditRegressions(unittest.TestCase):
         next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main").set_value("03:30").run()
         next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
         ensure_current_centralizer(app.session_state)
+        if optional_fluids and job not in ('CMT PLUG', 'CMT SQUEEZE'):
+            app.session_state['centralizer_config']['aux_rheology'] = {
+                fluid: dict(zip(('300', '200', '100', '60', '30', '6', '3'),
+                                (168., 116., 64., 41., 24., 8., 6.)))
+                for fluid in ('Pre Flush', 'Spacer', 'Spacer Ahead', 'Spacer Behind')}
         self.healthy(app)
         return app
 
-    def export(self, app):
+    def export(self, app, *, build_timeout=30):
         ensure_current_centralizer(app.session_state)
         self.phase(app, "phase10")
         self.assertFalse(app.error, [e.value for e in app.error])
         build = next(b for b in app.button if b.label == "Build Word Document")
         self.assertFalse(build.disabled)
-        build.click().run()
+        # Only the two 731-bbl frozen-engine benchmarks opt into a longer Build.
+        build.click().run(timeout=build_timeout)
         self.healthy(app)
         self.assertFalse(app.error, [e.value for e in app.error])
         doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
@@ -501,6 +539,12 @@ class AuditRegressions(unittest.TestCase):
                 self.phase(app, "phase2_3")
                 self.assertEqual(app.text_input(key="_w_mud_density").value, "84-86")
                 self.assertEqual(next(w for w in app.number_input if w.label == "Measured target depth (m MD)").value, 2850.0)
+                if job not in ('CMT PLUG', 'CMT SQUEEZE'):
+                    table = app.session_state['hardware_table']
+                    index = table.index[table['Description'].isin(target_descriptions(job))][0]
+                    self.hardware_event(app, {'edited_rows': {str(index): {'MD (m)': '2850.0'}}})
+                    token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
+                    next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
                 for phase in ("phase4", "phase5", "phase6", "phase7"):
                     self.phase(app, phase)
                 next(b for b in app.button if b.label == "Keep reviewed lab entries").click().run()
@@ -569,6 +613,9 @@ class AuditRegressions(unittest.TestCase):
                     if "TIE BACK" in job:
                         # A changed/deleted host must be selected again after review.
                         next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
+                    if 'deleted_rows' in action and job not in ('CMT PLUG', 'CMT SQUEEZE'):
+                        token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
+                        next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
                     self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
                     app = self.app(round_trip(app.session_state.to_dict()))
                     self.phase(app, "phase2_3")
@@ -777,11 +824,19 @@ class AuditRegressions(unittest.TestCase):
                 # Supply the selected job's explicit current geometry; the old
                 # report override still belongs to its original job.
                 current = round_trip(app.session_state.to_dict())
-                current.update(chart_fixture(next_job))
+                current.update(valid_export_chart_fixture(next_job))
+                needs_bhct = job in ('CMT PLUG', 'CMT SQUEEZE') and next_job not in ('CMT PLUG', 'CMT SQUEEZE')
+                if needs_bhct:
+                    current['lab_qc_params']['Main']['rheology']['bhct_down'] = valid_export_rheology_fixture()['bhct_down']
                 app = self.app(current)
+                if needs_bhct:
+                    self.phase(app, 'phase7')
+                    next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
                 self.phase(app, "phase2_3")
-                next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value("__manual__").run()
-                next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
+                token = current['placement_config']['target_row']
+                next(w for w in app.selectbox if w.label == "Target shoe / treatment depth source").set_value(token).run()
+                if next_job in ('CMT PLUG', 'CMT SQUEEZE'):
+                    next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
                 if "TIE BACK" in next_job:
                     next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
                 self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
@@ -855,6 +910,7 @@ class AuditRegressions(unittest.TestCase):
             app = self.app(round_trip(project))
             self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
             self.export(app)
+            project["placement_config"]["target_row"] = "__manual__"
             project["placement_config"]["manual_depth_m"] = 0.0
             self.assertEqual(compute_phase_status(project)["phase5"]["level"], "warning")
 
@@ -876,7 +932,7 @@ class AuditRegressions(unittest.TestCase):
                         project["cement_additives_dfs"][slurry] = project["cement_additives_dfs"]["Main"].copy(deep=True)
                         project.setdefault("lab_qc_params", {}).setdefault(slurry, {}).update(
                             thickening_time="03:30", free_water_45=0.0, surface_hardened_hours=8.0,
-                            rheology=rheology_fixture(), **thickening_fixture(), **compressive_fixture())
+                            rheology=valid_export_rheology_fixture(), **thickening_fixture(), **compressive_fixture())
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase7"):
                         self.phase(app, phase)

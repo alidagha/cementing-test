@@ -175,6 +175,8 @@ class Round2Phase23UAT(unittest.TestCase):
                     if not manual:
                         token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
                         next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
+                    else:
+                        next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value('__manual__').run()
                     old = deepcopy(app.session_state['placement_config'])
                     depth = target_depth(app.session_state['hardware_table'], job, old)
                     host = host_label(app.session_state['hardware_table'], job, old)

@@ -151,7 +151,7 @@ def test_vertical_word_has_combined_chart_and_real_survey_rows(project):
     doc = actual_word(project)
     assert "Temperature profile chart: Not provided." not in [p.text for p in doc.paragraphs]
     assert len(chart_paragraph(doc)._p.xpath(".//pic:pic")) == 1
-    assert len(doc.inline_shapes) == len(Document(report.TEMPLATE_PATH).inline_shapes)+2
+    assert len(doc.inline_shapes) == len(Document(report.TEMPLATE_PATH).inline_shapes)+3
     rows = [[c.text for c in row.cells] for row in survey_table(doc).rows[3:]]
     assert rows == [["0.0", "0.0", "0.00", "0.00", "0.000"],
                     ["3000.0", "3000.0", "0.00", "0.00", "0.000"]]

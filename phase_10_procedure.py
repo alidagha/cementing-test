@@ -19,6 +19,7 @@ from placement import (target_depth, top_label, host_label, slurry_intervals, EX
                        HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
 from datetime import datetime
 import materials_db
+import pumping_simulation
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, WORD_ADVISORY_PHASES, safe_float,
                                parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm)
@@ -1498,6 +1499,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "cement_chart_report": prepared_cement_report(st.session_state),
         "centralizer_report": centralizer_report,
         "note_centralizer": note_ctx["note_centralizer"],
+        "pumping_simulation_source": pumping_simulation.source_signature(st.session_state),
         
         "executive_summary": exec_summary_text,
         "exec_summary": exec_summary_text,
@@ -1811,8 +1813,10 @@ def render():
             if st.button("Build Word Document", type="primary",
                          disabled=master_context is None or bool(_unresolved)):
                 invalidate_document(st.session_state)
+                pumping = None
                 try:
                     with st.spinner("Compiling full engineering dossier..."):
+                        pumping = pumping_simulation.run_pumping_simulation(st.session_state)
                         # BUG-28: render from the cached template bytes instead
                         # of re-reading the 650 KB file on every Build.
                         _tpl_mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
@@ -1829,13 +1833,16 @@ def render():
                         
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
                                                               master_context["note_vertical"], master_context["cement_chart_report"],
-                                                              master_context["centralizer_report"])
+                                                              master_context["centralizer_report"], pumping_report=pumping)
                         st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature
                         st.success("✓ Document generated.")
                 except Exception as e:
                     st.error(f"✕ Template rendering error: {e}")
+                finally:
+                    if pumping is not None and pumping.get("figure") is not None:
+                        pumping_simulation.fcm.plt.close(pumping["figure"])
 
         with col_down:
             if "_compiled_doc_bytes" in st.session_state:

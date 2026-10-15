@@ -152,7 +152,7 @@ class Round4Precision(unittest.TestCase):
         next(b for b in restored.button if b.label == 'Confirm measured lab results').click().run()
         for field, key in [('base_fluid', METRICS[0]), ('mix_water', METRICS[1]), ('mix_fluid', METRICS[2])]:
             self.assertEqual(restored.session_state['lab_payload_Main'][field], result[key])
-        self.export(restored)
+        self.export(restored, build_timeout=120)
         state = deepcopy(restored.session_state.to_dict())
         self.assertEqual(prepare_calculations(state), [])
         self.assert_auto_precision(state)

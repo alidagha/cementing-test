@@ -9,7 +9,7 @@ import fluids_charts_module_v1_4_2 as fcm
 import materials_db
 from engineering_tools import parse_effective_numeric
 from placement import HOST_DESCRIPTIONS, hardware_choices, measured_depth, target_depth, target_descriptions
-from project_state import refresh_fluids
+from project_state import fingerprint, refresh_fluids
 import rheology
 
 
@@ -160,6 +160,36 @@ def prepare_pumping_simulation(state):
     return {"applicable": True, "inputs": dict(fluid_data=fluid_data, geometry=geometry,
         mud_pv_yp=mud, slurry_rheology=slurries, rheology=explicit, bhsp=bhsp, options=fcm.ChartOptions()),
         "warnings": [*warnings, *stage_warnings]}
+
+
+def source_signature(state):
+    """Fingerprint canonical consumed inputs, never a simulation or its output."""
+    job = state.get("job_type")
+    if chart_model.chart_job_kind(job) is None:
+        return fingerprint({"job": job})
+    well = _record(state.get("well_data", {}), "Phase II Well Data")
+    config = _record(state.get("fluids_config", {}), "Phase IV fluid train")
+    params = _record(config.get("params", {}), "Phase IV fluid inputs")
+    old = _record(state.get("fluid_data", {}), "Phase IV fluid data")
+    active = sorted(config.get("active", []), key=materials_db.HYDRAULIC_EXECUTION_ORDER.index)
+    fluids, lab, auxiliaries = {}, {}, {}
+    for name in active:
+        row = _record(params.get(name, old.get(name, {})), f"Phase IV {name}")
+        fields = ("volume", "pump_rate", "material_name") if name == "Displacement Fluid" else ("volume", "density", "pump_rate", "material_name")
+        fluids[name] = {key: row.get(key) for key in fields}
+        if name in materials_db.RHEOLOGY_LAB_FLUIDS:
+            qc = state.get("lab_qc_params", {}).get(name, {})
+            lab[name] = qc.get("rheology", {}).get("bhct_down", {})
+        elif name in fcm.SPACER_TYPES:
+            auxiliaries[name] = state.get("centralizer_config", {}).get("aux_rheology", {}).get(name, {})
+    table = state.get("hardware_table")
+    hardware = table.reindex(columns=["Description", "MD (m)", "Size (in)", "ID (in)"]) if isinstance(table, pd.DataFrame) else table
+    placement = state.get("placement_config", {})
+    return fingerprint({"job": job, "hardware": hardware,
+        "placement": {key: placement.get(key) for key in ("job_type", "target_row", "host_row", "chart_excess_mode", "excess_csg_oh_pct", "excess_csg_csg_pct")},
+        "well": {key: state.get(key, well.get(key)) for key in ("plastic_viscosity", "yield_point", "bhsp", chart_model.PORE_FIELD, chart_model.FRAC_FIELD)},
+        "mud_density": state.get("mud_density") or well.get("mud_density"),
+        "fluids": fluids, "lab": lab, "aux_rheology": auxiliaries})
 
 
 def run_pumping_simulation(state):
