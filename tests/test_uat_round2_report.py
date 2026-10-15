@@ -55,7 +55,7 @@ class Round2ReportUAT(unittest.TestCase):
                 app.button(key=button.key).click().run()
         for _ in ORDER:
             next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
-        case.export(app)
+        case.export(app, build_timeout=60)
         cls.state = app.session_state.to_dict()
 
     def context(self, state=None):

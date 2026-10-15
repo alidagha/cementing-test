@@ -61,6 +61,8 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     config = st.session_state.get("fluids_config", {})
     if fluid not in config.get("active", []):
         return
+    if config.get("params", {}).get(fluid, {}).get(field) != value:
+        invalidate_document(st.session_state)
     config.setdefault("params", {}).setdefault(fluid, {})[field] = value
 
     # This is the already-rendered record used by the following phase. Phase
