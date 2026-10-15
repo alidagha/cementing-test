@@ -320,7 +320,7 @@ def _postprocess_centralizer(doc, prepared):
 
 
 PUMPING_CHART_ANCHOR = "Pumping simulation charts: Not provided."
-PUMPING_NOT_APPLICABLE = "Pumping simulation charts: Not applicable for this job type."
+PUMPING_NOT_APPLICABLE = "Pumping simulation charts: Not applicable."
 
 
 def _content_width(doc, paragraph):

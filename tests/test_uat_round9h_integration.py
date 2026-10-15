@@ -318,7 +318,7 @@ def test_real_phase_x_build_and_section_ix_contract(word_projects, job, physics,
         assert elements.index(iv._p) < elements.index(diagnostic[0]._p) < elements.index(pumping[0]._p) < elements.index(v._p)
     else:
         assert not pumping
-        assert [p.text for p in doc.paragraphs].count('Pumping simulation charts: Not applicable for this job type.') == 1
+        assert [p.text for p in doc.paragraphs].count('Pumping simulation charts: Not applicable.') == 1
     if not zones:
         assert not tables and not drawings and bridge.NOTE_BODY not in text
         assert text.count(bridge.NOT_APPLICABLE) == 1

@@ -20,7 +20,7 @@ from test_uat_round10a_pumping_simulation import program_state
 from test_uat_round9e_dynamic_solver import auxiliary
 
 ANCHOR = "Pumping simulation charts: Not provided."
-NA = "Pumping simulation charts: Not applicable for this job type."
+NA = "Pumping simulation charts: Not applicable."
 DESCRIPTION = "Pumping Simulation Charts"
 JOBS = {"casing": 'CSG 9 5/8"', "liner": 'LNR 7"', "tieback": 'TIE BACK LNR 7"'}
 
