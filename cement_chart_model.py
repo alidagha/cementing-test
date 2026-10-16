@@ -190,7 +190,8 @@ def _crossing_md(trajectory, top, bottom, tvd):
 def analyze_static_security(trajectory, hydrostatic, formation):
     """One exact TVD-linear comparison path, independent of Formation input mode."""
     domain = formation["domain"]
-    result = {"status": "safe", "domain": domain, "crossings": [], "frac_violations": [], "pore_violations": []}
+    result = {"status": "safe", "domain": domain, "crossings": [], "frac_violations": [], "pore_violations": [],
+              "plot_regions": {"frac": [], "pore": []}}
     if domain is None:
         return result
     if trajectory_tvd_decreases(trajectory, domain["bottom_md"]):
@@ -244,14 +245,22 @@ def analyze_static_security(trajectory, hydrostatic, formation):
                            "max_delta_psi": delta(maximum), "max_at_md_m": peak[0], "max_at_tvd_m": peak[1],
                            "hydro_psi_at_max": h[0]+(h[1]-h[0])*maximum,
                            "limit_psi_at_max": limit[0]+(limit[1]-limit[0])*maximum}
+                    # Retain this same classified cell's exact curve edges for
+                    # passive rendering; no second interpolation/analysis path.
+                    plot = {"tvd_m": [start[1], end[1]],
+                            "hydro_psi": [h[0]+(h[1]-h[0])*f for f in (left, right)],
+                            "limit_psi": [limit[0]+(limit[1]-limit[0])*f for f in (left, right)]}
                     if rows and rows[-1]["end_md_m"] == start[0] and dl > 0:
                         previous = rows[-1]
                         previous.update(end_md_m=end[0], end_tvd_m=end[1])
                         if row["max_delta_psi"] > previous["max_delta_psi"]:
                             previous.update({key: value for key, value in row.items() if key not in
                                              ("kind", "start_md_m", "start_tvd_m", "end_md_m", "end_tvd_m")})
+                        for key, values in plot.items():
+                            result["plot_regions"][boundary][-1][key].extend(values[1:])
                     else:
                         rows.append(row)
+                        result["plot_regions"][boundary].append(plot)
     result["crossings"].sort(key=lambda row: (row["md_m"], row["boundary"]))
     if result["frac_violations"] or result["pore_violations"]:
         result["status"] = "warning"

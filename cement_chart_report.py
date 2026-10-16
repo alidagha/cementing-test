@@ -16,6 +16,44 @@ def prepared_cement_report(state):
     return {"kind": chart_job_kind(state.get("job_type")), "model": state.get("_cement_chart_model")}
 
 
+def _draw_static_security(axis, security):
+    """Draw only prepared cells/contacts and aggregate prepared maximum records."""
+    from matplotlib.patches import Polygon
+    for boundary, color, label, hatch in (("frac", "#FF0000", "Over Frac", "////"),
+                                          ("pore", "#FFA500", "Underbalance", "\\\\\\\\")):
+        for index, region in enumerate(security["plot_regions"][boundary]):
+            pressure = region["hydro_psi"]+region["limit_psi"][::-1]
+            depths = region["tvd_m"]+region["tvd_m"][::-1]
+            polygon = Polygon(np.column_stack((np.asarray(pressure)/1000., depths)),
+                              facecolor=color, edgecolor=color, alpha=.2, hatch=hatch,
+                              linewidth=.8, zorder=1.5, label=label if index == 0 else "_nolegend_")
+            polygon.set_gid(f"security:region:{boundary}:{index}")
+            axis.add_patch(polygon)
+    seen = set()
+    for index, contact in enumerate(security["crossings"]):
+        boundary = contact["boundary"]
+        marker, = axis.plot([contact["pressure_psi"]/1000.], [contact["tvd_m"]], linestyle="None",
+                            marker="X" if boundary == "frac" else "o", markersize=7,
+                            color="#0000FF" if boundary == "frac" else "#00B040",
+                            markeredgecolor="black", markeredgewidth=.7, zorder=4,
+                            label=f"{boundary.title()} crossing/contact" if boundary not in seen else "_nolegend_")
+        marker.set_gid(f"security:contact:{boundary}:{index}")
+        seen.add(boundary)
+    if security["status"] == "warning":
+        lines = [f"Frac violation intervals: {len(security['frac_violations'])}",
+                 f"Underbalance intervals: {len(security['pore_violations'])}"]
+        for boundary, label in (("frac", "Worst Frac exceedance"), ("pore", "Worst Underbalance")):
+            rows = security[boundary+"_violations"]
+            if rows:
+                worst = max(rows, key=lambda row: row["max_delta_psi"])
+                lines.append(f"{label}: {worst['max_delta_psi']:.0f} psi")
+                lines.append(f"@ MD {worst['max_at_md_m']:.1f} m / TVD {worst['max_at_tvd_m']:.1f} m")
+        text = axis.text(.98, .98, "\n".join(lines), transform=axis.transAxes,
+                         ha="right", va="top", fontsize=8, zorder=5,
+                         bbox={"facecolor": "white", "edgecolor": "darkorange", "alpha": .9, "pad": 4})
+        text.set_gid("security:summary")
+
+
 def build_chart_figure(model):
     """Draw resolved psi/TVD and Hardware MD/diameters; never synthesize values."""
     if model is None:
@@ -49,6 +87,7 @@ def build_chart_figure(model):
             if name != "Hydrostatic" and pressure["kind"] == "markers":
                 line.set_marker("o"); line.set_markersize(8)
                 line.set_markeredgecolor("white"); line.set_markeredgewidth(1.2)
+        _draw_static_security(left, model["static_security"])
         left.set_ylim(max(hydro["tvd_m"])*1.04, 0)
         left.set_xlim(left=0)
         left.xaxis.set_major_locator(MaxNLocator(4))
