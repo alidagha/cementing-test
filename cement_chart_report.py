@@ -6,7 +6,7 @@ from cement_chart_model import chart_job_kind
 
 CHART_ANCHOR = "Pressure and fluid sequence charts: Not provided."
 NOT_APPLICABLE = "Pressure and fluid sequence charts: Not applicable for this job type."
-COLORS = {"Mud": "#8B1010", "Pre Flush": "#0066E0", "Spacer": "#00C000",
+COLORS = {"Mud": "#8B1010", "Diesel": "#C19552", "Pre Flush": "#0066E0", "Spacer": "#00C000",
           "Spacer Ahead": "#00C000", "Scavenger": "#C6D2BD", "Main": "#6E6E6E",
           "Lead": "#ABABAB", "Lead #1": "#B8B8B8", "Lead #2": "#A2A2A2", "Tail": "#6E6E6E"}
 
