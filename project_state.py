@@ -554,6 +554,7 @@ def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
     from cement_chart_model import chart_readiness, PORE_FIELD, FRAC_FIELD
     from pumping_simulation import prepare_pumping_simulation, source_signature as pumping_source_signature
+    from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
     try:
         well_issues = refresh_well_derived(state)
         migrate_material_properties(state)
@@ -590,6 +591,14 @@ def prepare_calculations(state):
             state["_pumping_simulation_source"] = pumping_source
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
             issues.append(f"Pumping Simulation: {exc}")
+        try:
+            prepare_schematic(state)
+            schematic_source = schematic_source_signature(state)
+            if state.get("_well_schematic_source") != schematic_source:
+                invalidate_document(state)
+            state["_well_schematic_source"] = schematic_source
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            issues.append(f"Phase II & III Well schematic: {exc}")
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

@@ -81,6 +81,7 @@ DEFAULT_MATERIAL_NAMES = {
 HARDWARE_DESCRIPTIONS = [
     "Previous Casing", 
     "Previous Liner", 
+    "Previous Liner Hanger",
     "Casing", 
     "Liner", 
     "Liner Hanger", 
