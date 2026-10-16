@@ -5,7 +5,8 @@ import math
 import materials_db
 from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS
 from bhct_helper import M_TO_FT, suggest_bhct
-from project_state import fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived, invalidate_document
+from project_state import (fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived,
+                           invalidate_document, reconcile_fluid_applicability)
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -46,6 +47,8 @@ def _commit_well_widget(field):
         if field == source:
             st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=default)
     st.session_state["well_data"] = get_well_data()
+    if field == "mud_type":
+        reconcile_fluid_applicability(st.session_state)
     invalidate_document(st.session_state)
 
 

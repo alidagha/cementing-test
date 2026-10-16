@@ -53,14 +53,17 @@ DEFAULT_HOLE_SIZES = {
 # Roles are distinct: Scavenger is formulated and tested, never placed.
 PLACEMENT_SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 CEMENT_FORMULATION_FLUIDS = ("Scavenger", *PLACEMENT_SLURRIES)
+RHEOLOGY_ONLY_FLUIDS = ("Diesel",)
+# Phase-VII consumer integration is deferred to Round 12A-2.
 RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
 HYDRAULIC_EXECUTION_ORDER = (
-    "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
+    "Diesel", "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
     "Spacer Behind", "Displacement Fluid",
 )
 FLUID_TYPES = list(HYDRAULIC_EXECUTION_ORDER)
 
 DEFAULT_MATERIAL_NAMES = {
+    "Diesel": "Diesel",
     "Pre Flush": "Salt Saturated Water",
     # BUG-20: the three spacer stages used to inherit the PRE-FLUSH name
     # "Salt Saturated Water" - a spacer is a weighted, viscous isolating

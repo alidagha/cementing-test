@@ -11,6 +11,8 @@ from phase_5_cement import build_cement_tables, build_components, calculate_base
 import pandas as pd
 
 SLURRIES = ('Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail')
+# These existing WBM scenarios retain their original fluid train.
+WBM_FLUIDS = [fluid for fluid in materials_db.FLUID_TYPES if fluid != 'Diesel']
 
 
 class Round2Phase45UAT(unittest.TestCase):
@@ -33,12 +35,12 @@ class Round2Phase45UAT(unittest.TestCase):
     def test_all_initial_and_missing_fluid_inputs_blank_materials_preserved(self):
         for missing_params in (False, True):
             with self.subTest(missing_params=missing_params):
-                app = self.app({'fluids_config': {'active': materials_db.FLUID_TYPES[:], 'params': {}}} if missing_params else None)
+                app = self.app({'fluids_config': {'active': WBM_FLUIDS[:], 'params': {}}} if missing_params else None)
                 self.phase(app, 'phase4')
                 if not missing_params:
-                    for fluid in materials_db.FLUID_TYPES:
+                    for fluid in WBM_FLUIDS:
                         app.checkbox(key='chk_fluid_' + fluid).check().run()
-                for fluid in materials_db.FLUID_TYPES:
+                for fluid in WBM_FLUIDS:
                     with self.subTest(fluid=fluid):
                         params = app.session_state['fluids_config']['params'][fluid]
                         self.assertEqual(app.text_input(key='rate_' + fluid).value, '')
@@ -71,7 +73,7 @@ class Round2Phase45UAT(unittest.TestCase):
         self.phase(app, 'phase2_3')
         app.text_input(key='_w_mud_density').set_value('82-84').run()
         self.phase(app, 'phase4')
-        for fluid in materials_db.FLUID_TYPES:
+        for fluid in WBM_FLUIDS:
             app.checkbox(key='chk_fluid_' + fluid).check().run()
             if fluid != 'Displacement Fluid':
                 app.text_input(key='den_' + fluid).set_value('118' if fluid in SLURRIES else '90')

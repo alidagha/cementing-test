@@ -374,6 +374,23 @@ def require_positive_density(value) -> float:
     return sum(numbers) / len(numbers)
 
 
+def require_diesel_density(value) -> float:
+    """Diesel accepts one entered density, never a range's effective mean."""
+    message = "Diesel density must be a single value between 51 and 54 pcf."
+    try:
+        density = safe_float(value, None)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(message) from None
+    if density is None or not math.isfinite(density) or not 51.0 <= density <= 54.0:
+        raise ValueError(message)
+    return density
+
+
+def require_fluid_density(fluid, value) -> float:
+    """Phase-IV density authority; existing fluids retain range/mean semantics."""
+    return require_diesel_density(value) if fluid == "Diesel" else require_positive_density(value)
+
+
 def require_bhsp_density(value) -> float:
     """Use the upper density only for automatic hydrostatic pressure."""
     return max(_positive_density_values(value))
@@ -889,7 +906,7 @@ def compute_phase_status(ss) -> dict:
 
     geo_md = depth_or_none("geo_md")
     geo_tvd = depth_or_none("geo_tvd")
-    from project_state import hardware_draft_pending
+    from project_state import hardware_draft_pending, available_fluid_types
     if hardware_draft_pending(ss):
         status["phase2_3"] = {"level": "warning", "message": "Review pending hardware edits in Phase II & III before export."}
     elif geo_md is None or geo_tvd is None:
@@ -938,7 +955,7 @@ def compute_phase_status(ss) -> dict:
             status["phase2_3"] = {"level": "warning", "message": str(exc)}
 
     # Phase IV: Fluids Sequence
-    if len(active) <= 1:
+    if len(active) <= 1 and "Diesel" not in active:
         status["phase4"] = {"level": "empty", "message": "No fluids selected beyond Displacement Fluid."}
     else:
         config = ss.get("fluids_config", {}).get("params", {})
@@ -946,7 +963,8 @@ def compute_phase_status(ss) -> dict:
         incomplete = []
         for fluid in active:
             source = config.get(fluid, fluid_data.get(fluid, {}))
-            if not isinstance(source, dict) or not _positive_number(source.get("volume")):
+            if (fluid not in available_fluid_types(ss) or not isinstance(source, dict)
+                    or not _positive_number(source.get("volume"))):
                 incomplete.append(fluid)
                 continue
             density = (ss.get("mud_density") or ss.get("well_data", {}).get("mud_density")
@@ -954,7 +972,7 @@ def compute_phase_status(ss) -> dict:
             try:
                 if fluid == "Pre Flush":
                     require_preflush_material_name(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
-                require_positive_density(density)
+                require_fluid_density(fluid, density)
                 require_positive_pump_rate(source.get("pump_rate"))
             except (TypeError, ValueError, OverflowError):
                 incomplete.append(fluid)

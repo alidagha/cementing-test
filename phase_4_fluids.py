@@ -2,10 +2,11 @@
 import streamlit as st
 from typing import Dict, Any
 import materials_db
-from project_state import purge_inactive_slurries, invalidate_document
+from project_state import (purge_inactive_slurries, invalidate_document,
+                           available_fluid_types, reconcile_fluid_applicability)
 from formation_pressure_ui import render_static_security
 from input_guard import repair_invalid_inputs
-from engineering_tools import parse_effective_numeric, require_positive_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
+from engineering_tools import parse_effective_numeric, require_fluid_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
 
 # Strict API & Well Execution Sequence for Fluid Train Sorting
 HYDRAULIC_EXECUTION_ORDER = materials_db.HYDRAULIC_EXECUTION_ORDER
@@ -18,6 +19,7 @@ def _commit_fluid_selection(fluid, key):
     else:
         selected.discard(fluid)
     cfg["active"] = [name for name in HYDRAULIC_EXECUTION_ORDER if name in selected]
+    reconcile_fluid_applicability(st.session_state)
     purge_inactive_slurries(st.session_state, cfg["active"])
     invalidate_document(st.session_state)
 
@@ -72,7 +74,13 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     if isinstance(record, dict):
         record[field] = value
         if field == "density":
-            record["effective_density"] = parse_effective_numeric(value, default=0.0)
+            if fluid == "Diesel":
+                try:
+                    record["effective_density"] = require_fluid_density(fluid, value)
+                except ValueError:
+                    record["effective_density"] = 0.0
+            else:
+                record["effective_density"] = parse_effective_numeric(value, default=0.0)
 
 def _commit_preflush_name(widget_key: str, selector: bool = False) -> None:
     value = st.session_state[widget_key]
@@ -131,6 +139,7 @@ def render():
         }
     
     cfg = st.session_state["fluids_config"]
+    reconcile_fluid_applicability(st.session_state)
     if "params" not in cfg:
         cfg["params"] = {}
     # Earlier project files kept the fluid train in fluid_data and did not
@@ -161,7 +170,7 @@ def render():
     selected_fluids = []
     active_set = set(cfg.get("active", []))
     
-    for i, fluid in enumerate(materials_db.FLUID_TYPES):
+    for i, fluid in enumerate(available_fluid_types(st.session_state)):
         col = cols[i % 5]
         chk_key = f"chk_fluid_{fluid}"
         
@@ -252,7 +261,9 @@ def render():
         # Slurry", "Salt Saturated Water", "Mud"), distinct from the "Type" column
         # (the stage label, e.g. "Lead #1"). Prefilled from materials_db defaults,
         # editable since a rig may use a different base fluid for a given stage.
-        if fluid == "Pre Flush":
+        if fluid == "Diesel":
+            p["material_name"] = materials_db.DEFAULT_MATERIAL_NAMES[fluid]
+        elif fluid == "Pre Flush":
             render_preflush_material_name()
         else:
             p["material_name"] = st.text_input(
@@ -294,13 +305,14 @@ def render():
                 p["density"] = st.text_input(
                     f"Density (pcf) - {fluid}",
                     value=disp_density_text,
-                    help="Enter density in pcf (e.g. 118.0 or range 115-118)",
+                    help=("Enter a single density between 51 and 54 pcf; ranges are not accepted."
+                          if fluid == "Diesel" else "Enter density in pcf (e.g. 118.0 or range 115-118)"),
                     key=f"den_{fluid}",
                     on_change=_commit_fluid_widget,
                     args=(fluid, "density", f"den_{fluid}")
                 )
                 try:
-                    disp_effective_density = require_positive_density(p["density"])
+                    disp_effective_density = require_fluid_density(fluid, p["density"])
                 except ValueError as exc:
                     st.error(f"{fluid}: {exc}. Correct the density before exporting the report.")
                     # Keep the invalid input visible without presenting a

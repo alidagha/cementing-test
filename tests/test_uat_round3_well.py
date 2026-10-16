@@ -85,7 +85,8 @@ class Round3WellUAT(unittest.TestCase):
         self.assertAlmostEqual(float(app.session_state['bhsp']),5603.88)
 
     def test_every_fluid_rate_minimum_and_cumulative_reconstruction(self):
-        fluids=list(materials_db.FLUID_TYPES)
+        # Preserve this existing WBM range-density fixture; Diesel is OBM-only.
+        fluids=[name for name in materials_db.FLUID_TYPES if name != 'Diesel']
         state={'mud_density':'80-82','fluids_config':{'active':fluids,'params':{
             s:{'volume':30.,'density':'80-82','pump_rate':'3-5'} for s in fluids}}}
         refresh_fluids(state)

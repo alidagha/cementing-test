@@ -329,7 +329,8 @@ def test_actual_ty_zero_fit_is_invalid_for_dynamic(catalog, source):
 
 @pytest.mark.parametrize("kind", ["casing", "liner", "tieback"])
 def test_all_active_fann_fits_use_authority_in_rpm_order_and_ignore_gels(catalog, kind, monkeypatch):
-    program = {name: 1. for name in materials_db.HYDRAULIC_EXECUTION_ORDER}
+    # Diesel dynamic-consumer integration is deferred; retain the certified train.
+    program = {name: 1. for name in materials_db.HYDRAULIC_EXECUTION_ORDER if name != "Diesel"}
     state, aux = dynamic_state(kind, **program), auxiliary()
     expected = []
     for i, fluid in enumerate(name for name in program if name != "Displacement Fluid"):
