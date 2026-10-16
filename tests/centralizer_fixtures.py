@@ -1,4 +1,5 @@
 """Explicit current Phase-IX prerequisite for tests of unrelated Word behavior."""
+from copy import deepcopy
 import centralizer_adapter as adapter
 import phase_9_centralizer as phase9
 from cement_chart_model import resolve_chart_geometry
@@ -16,6 +17,7 @@ def execute_centralizer(state, *, zones=2, physics="static", mode="direct", cust
     catalog = adapter.load_official_catalog()
     candidates = [p for p in adapter.filter_official_products(catalog, pipe) if p["kind"] == "rigid"]
     config = phase9.new_config()
+    config['aux_rheology'] = deepcopy(state.get('centralizer_config', {}).get('aux_rheology', {}))
     config.update(placement_mode=mode, physics_mode=physics)
     nr, custom_id = None, None
     if custom or not candidates:

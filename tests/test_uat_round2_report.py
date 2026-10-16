@@ -46,7 +46,7 @@ class Round2ReportUAT(unittest.TestCase):
             project['lab_qc_params'][slurry] = {'free_water': float(i),
                 'free_water_45': i + .5, 'surface_hardened_hours': 8. + i,
                 'thickening_time': '03:30', 'thickening_endpoint': '70 Bc',
-                'rheology': audit.rheology_fixture(), **audit.thickening_fixture(), **audit.compressive_fixture()}
+                'rheology': audit.valid_export_rheology_fixture(), **audit.thickening_fixture(), **audit.compressive_fixture()}
         app = case.app(audit.round_trip(project))
         for phase in ('phase2_3', 'phase4', 'phase5', 'phase6', 'phase7'):
             case.phase(app, phase)
@@ -55,7 +55,7 @@ class Round2ReportUAT(unittest.TestCase):
                 app.button(key=button.key).click().run()
         for _ in ORDER:
             next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
-        case.export(app)
+        case.export(app, build_timeout=60)
         cls.state = app.session_state.to_dict()
 
     def context(self, state=None):
@@ -89,7 +89,7 @@ class Round2ReportUAT(unittest.TestCase):
                 with self.subTest(job=job, subset=subset):
                     state = deepcopy(self.state)
                     state['job_type'] = state['doc_control']['job_type'] = job
-                    state.update(audit.chart_fixture(job))
+                    state.update(audit.valid_export_chart_fixture(job))
                     state['placement_config'].update(job_type=job, host_row=next(iter(hardware_choices(state['hardware_table'], HOST_DESCRIPTIONS))))
                     state['fluids_config']['active'] = [*subset, 'Displacement Fluid']
                     for slurry in subset:
@@ -119,7 +119,7 @@ class Round2ReportUAT(unittest.TestCase):
             with self.subTest(job=job):
                 state = deepcopy(self.state)
                 state['job_type'] = state['doc_control']['job_type'] = job
-                state.update(audit.chart_fixture(job))
+                state.update(audit.valid_export_chart_fixture(job))
                 state['placement_config']['job_type'] = job
                 for p in state['cement_params'].values():
                     p.update(top_job_type=job, last_job_type=job)

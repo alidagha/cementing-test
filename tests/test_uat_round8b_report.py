@@ -18,6 +18,7 @@ from PIL import Image
 import cement_chart_model as model
 import phase_10_procedure as report
 import well_report
+import pumping_simulation
 import test_audit_regressions as audit
 from test_uat_round8a_chart_model import chart_state, hardware
 from test_uat_round7b_report import rendered
@@ -62,9 +63,14 @@ def context(state):
         return report.build_master_context()
 
 
-def final(ctx):
-    return well_report.postprocess_well_report(rendered(ctx), ctx['well_profile_report'],
-        ctx['note_vertical'], ctx['cement_chart_report'])
+def final(ctx, state):
+    pumping = pumping_simulation.run_pumping_simulation(state)
+    try:
+        return well_report.postprocess_well_report(rendered(ctx), ctx['well_profile_report'],
+            ctx['note_vertical'], ctx['cement_chart_report'], pumping_report=pumping)
+    finally:
+        if pumping['figure'] is not None:
+            pumping_simulation.fcm.plt.close(pumping['figure'])
 
 
 @pytest.mark.parametrize('job', ['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
@@ -143,21 +149,27 @@ def test_fresh_restore_direct_context_and_actual_word(project):
     rebuilt=deepcopy(state)
     assert not prepare_calculations(rebuilt)
     assert ctx['cement_chart_report']['model']==rebuilt['_cement_chart_model']
-    doc=Document(BytesIO(final(ctx)))
-    assert len(doc.inline_shapes)==4
+    doc=Document(BytesIO(final(ctx, state)))
+    assert len(doc.inline_shapes)==5
     paragraphs=[p.text for p in doc.paragraphs]
-    assert ANCHOR not in paragraphs and paragraphs.count(PUMPING)==1
+    assert ANCHOR not in paragraphs and PUMPING not in paragraphs
     anchor = next(p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Static Well Security and Fluid Sequence"]'))
     assert len(anchor._p.xpath('.//w:drawing'))==1
+    pumping = [p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Pumping Simulation Charts"]')]
+    assert len(pumping)==1 and len(pumping[0]._p.xpath('.//w:drawing'))==1
+    v=next(p for p in doc.paragraphs if p.text.strip()=='V. Cementing Program')
+    elements=list(doc._element.body)
+    assert elements.index(anchor._p)<elements.index(pumping[0]._p)<elements.index(v._p)
     assert not any('{{' in p.text or '{%' in p.text for p in doc.paragraphs)
 
 
 @pytest.mark.parametrize('job',['CMT PLUG','CMT SQUEEZE'])
 def test_special_jobs_not_applicable_actual_word(job):
     state=audit.round_trip(audit.AuditRegressions().configured_app(job).session_state.to_dict())
-    doc=Document(BytesIO(final(context(state))))
+    doc=Document(BytesIO(final(context(state), state)))
     text=[p.text for p in doc.paragraphs]
-    assert text.count(NA)==1 and ANCHOR not in text and text.count(PUMPING)==1
+    assert text.count(NA)==1 and ANCHOR not in text and PUMPING not in text
+    assert text.count(well_report.PUMPING_NOT_APPLICABLE)==1
     assert len(doc.inline_shapes)==3
 
 
@@ -191,7 +203,7 @@ def test_decreasing_tvd_still_blocks_export_and_no_partial_word(project):
 def test_json_has_no_images_models_and_source_change_invalidates(project):
     state=audit.round_trip(project);assert not prepare_calculations(state)
     ctx=context(state)
-    state['_compiled_doc_bytes']=final(ctx)
+    state['_compiled_doc_bytes']=final(ctx, state)
     old=report.document_signature(ctx,report.TEMPLATE_PATH)
     saved=audit.round_trip(state)
     assert not any('chart' in k and k.startswith('_') for k in saved)
@@ -235,19 +247,20 @@ def test_complete_word_preserves_unrelated_sections_xml_and_notes(project):
     from lxml import etree
     ctx=context(project)
     intermediate=well_report.postprocess_well_report(rendered(ctx),ctx['well_profile_report'],ctx['note_vertical'])
-    before=Document(BytesIO(intermediate));after=Document(BytesIO(final(ctx)))
+    completed=final(ctx, project)
+    before=Document(BytesIO(intermediate));after=Document(BytesIO(completed))
     def xml(node):return etree.tostring(node,method='c14n')
     old=list(before._element.body);new=list(after._element.body)
     assert len(old)==len(new)
     changed=[]
     for index,(a,b) in enumerate(zip(old,new)):
         if xml(a)!=xml(b):changed.append(index)
-    assert len(changed)==1
-    assert ANCHOR in ''.join(old[changed[0]].itertext())
-    assert len(new[changed[0]].xpath('.//w:drawing'))==1
+    assert len(changed)==2
+    assert [ ''.join(t.text or '' for t in old[index].xpath('.//w:t')) for index in changed ]==[ANCHOR,PUMPING]
+    assert all(len(new[index].xpath('.//w:drawing'))==1 for index in changed)
     assert [xml(s._sectPr) for s in before.sections]==[xml(s._sectPr) for s in after.sections]
     assert ctx['all_notes']==context(project)['all_notes']
-    with ZipFile(BytesIO(intermediate)) as a,ZipFile(BytesIO(final(ctx))) as b:
+    with ZipFile(BytesIO(intermediate)) as a,ZipFile(BytesIO(completed)) as b:
         for name in a.namelist():
             if name not in ('word/document.xml','word/_rels/document.xml.rels','[Content_Types].xml'):
                 assert a.read(name)==b.read(name),name
@@ -271,7 +284,7 @@ def test_png_is_only_in_memory_and_renderer_import_is_lazy(tmp_path,monkeypatch)
 
 def test_ui_build_and_direct_rebuilt_chart_image_are_identical(project):
     case=audit.AuditRegressions();app=case.app(audit.round_trip(project));case.export(app)
-    direct=final(context(audit.round_trip(project)))
+    direct=final(context(audit.round_trip(project)), project)
     def image(data):
         doc=Document(BytesIO(data))
         p=next(p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Static Well Security and Fluid Sequence"]'))

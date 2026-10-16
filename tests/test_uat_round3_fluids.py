@@ -208,7 +208,7 @@ class Round3FluidsUAT(unittest.TestCase):
                 for name in ("Field Wash Alpha", NAME_OPTIONS[3]):
                     if name != "Field Wash Alpha":
                         self.phase(app, "phase6"); self.selector(app).set_value(name).run()
-                    case.export(app)
+                    case.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
                     self.assertEqual(app.session_state["fluid_data"]["Pre Flush"]["material_name"], name)
                     self.assertEqual(app.session_state["preflush_calc"], baseline)
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))

@@ -553,6 +553,7 @@ def refresh_lab_payloads(state):
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
     from cement_chart_model import chart_readiness, PORE_FIELD, FRAC_FIELD
+    from pumping_simulation import prepare_pumping_simulation, source_signature as pumping_source_signature
     try:
         well_issues = refresh_well_derived(state)
         migrate_material_properties(state)
@@ -581,6 +582,14 @@ def prepare_calculations(state):
         state["_cement_chart_model"] = chart["model"]
         state["_cement_chart_warnings"] = chart["warnings"]
         issues += [f"Cementing chart: {issue}" for issue in chart["issues"]]
+        try:
+            prepare_pumping_simulation(state)
+            pumping_source = pumping_source_signature(state)
+            if state.get("_pumping_simulation_source") != pumping_source:
+                invalidate_document(state)
+            state["_pumping_simulation_source"] = pumping_source
+        except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
+            issues.append(f"Pumping Simulation: {exc}")
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

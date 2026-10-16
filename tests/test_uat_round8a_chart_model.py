@@ -525,6 +525,7 @@ def reviewed_project():
     state["placement_config"]["chart_excess_mode"] = "ignore"
     state["hardware_table"] = hardware(("Casing", "3000", "9.625", 8.535),
         ("Previous Casing", "1500", "10", 9.65), ("Open Hole Size", "3000", "9.65", 9.65))
+    state["placement_config"]["target_row"] = next(iter(hardware_choices(state["hardware_table"], {"Casing"})))
     assert not prepare_calculations(state)
     return state
 

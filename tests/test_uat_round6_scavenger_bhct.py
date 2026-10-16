@@ -86,6 +86,16 @@ def attach_scavenger(project):
     return project
 
 
+def valid_export_state_for(*names):
+    """Additional explicit Pumping prerequisites only for valid export/rebuild cases."""
+    state = state_for(*names)
+    state.update(audit.valid_export_chart_fixture(state['job_type']))
+    state['fluids_config']['active'].append('Displacement Fluid')
+    state['fluids_config']['params']['Displacement Fluid'] = {'volume': 50., 'pump_rate': '4'}
+    refresh_fluids(state)
+    return state
+
+
 def test_central_roles_and_hydraulic_order():
     assert tuple(materials_db.FLUID_TYPES) == ORDER
     assert tuple(getattr(materials_db, "PLACEMENT_SLURRIES", ())) == PLACEMENT
@@ -149,7 +159,7 @@ def test_scavenger_requires_bhct_ramp_down():
 
 
 def test_direct_rebuild_uses_well_bhct():
-    state = state_for("Main")
+    state = valid_export_state_for("Main")
     assert prepare_calculations(state) == []
     assert state["lab_payload_Main"]["bhct"] == 150
     assert "bhct" not in state["lab_qc_params"]["Main"]
@@ -492,7 +502,7 @@ def test_all_five_normal_lab_sections_share_well_conditions_and_exclude_scavenge
     for name in materials_db.CEMENT_FORMULATION_FLUIDS:
         project["lab_source_signatures"][name] = lab_source_signature(project, name)
     restored = case.app(audit.round_trip(project))
-    case.export(restored)
+    case.export(restored, build_timeout=60)
     doc = Document(BytesIO(restored.session_state["_compiled_doc_bytes"]))
     assert sum(t.rows[0].cells[0].text == "Test Basic Data" for t in doc.tables) == 5
     assert sum(t.rows[0].cells[0].text == "Rheology Test" for t in doc.tables) == 5
@@ -510,7 +520,7 @@ def test_all_five_normal_lab_sections_share_well_conditions_and_exclude_scavenge
 def test_scavenger_manual_override_uses_existing_raw_engine_and_survives_restore():
     from engineering_tools import BBL_TO_CUFT
     case = audit.AuditRegressions()
-    app = case.app(state_for("Main", "Scavenger"))
+    app = case.app(valid_export_state_for("Main", "Scavenger"))
     case.phase(app, "phase5")
     next(w for w in app.checkbox if "scavenger" in w.key and w.label.startswith("Manual Override")).check().run()
     next(w for w in app.number_input if "scavenger" in w.key and w.label == "Custom Yield (cuft/sk)").set_value(1.234).run()

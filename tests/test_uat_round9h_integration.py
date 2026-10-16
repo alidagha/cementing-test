@@ -306,7 +306,19 @@ def test_real_phase_x_build_and_section_ix_contract(word_projects, job, physics,
     with ZipFile(BytesIO(data)) as package:
         xml = package.read("word/document.xml").decode()
         assert "{{" not in xml and "{%" not in xml
-        assert "Pumping simulation charts: Not provided." in xml
+        assert "Pumping simulation charts: Not provided." not in xml
+    pumping = [p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Pumping Simulation Charts"]')]
+    if zones:
+        assert len(pumping) == 1 and len(pumping[0]._p.xpath('.//w:drawing')) == 1
+        diagnostic = [p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Static Well Security and Fluid Sequence"]')]
+        assert len(diagnostic) == 1
+        elements = list(doc._element.body)
+        iv = next(p for p in doc.paragraphs if p.text.strip() == 'IV. Fluids Sequence')
+        v = next(p for p in doc.paragraphs if p.text.strip() == 'V. Cementing Program')
+        assert elements.index(iv._p) < elements.index(diagnostic[0]._p) < elements.index(pumping[0]._p) < elements.index(v._p)
+    else:
+        assert not pumping
+        assert [p.text for p in doc.paragraphs].count('Pumping simulation charts: Not applicable.') == 1
     if not zones:
         assert not tables and not drawings and bridge.NOTE_BODY not in text
         assert text.count(bridge.NOT_APPLICABLE) == 1
