@@ -116,6 +116,12 @@ def _security_domain(geometry, trajectory):
             "top_tvd": parts[0]["top_tvd"], "bottom_tvd": parts[-1]["bottom_tvd"], "segments": parts}
 
 
+def current_open_hole_domain(state):
+    """Read-only public access to the B-1 resolved capacity/security domain."""
+    geometry = resolve_chart_geometry(state)
+    return None if geometry is None else _security_domain(geometry, state["well_geometry"])
+
+
 def resolve_formation_profile(state, geometry, depths=None, tvds=None):
     """Normalize EMW or entered psig without extrapolation or trajectory arithmetic."""
     well = _ready_inputs(state)
@@ -255,7 +261,10 @@ def analyze_static_security(trajectory, hydrostatic, formation):
 def _ready_inputs(state):
     well = {**state.get("well_data", {}), **{k: state[k] for k in (PORE_FIELD, FRAC_FIELD) if k in state}}
     config = state.get("formation_pressure_config", {"mode": "basic", "profile": []})
-    validate_formation_pressure_config(config)
+    active_config = config
+    if isinstance(config, dict) and config.get("mode") == "basic" and isinstance(config.get("profile"), list):
+        active_config = {**config, "profile": []}  # Inactive drafts are not calculation authority.
+    validate_formation_pressure_config(active_config)
     validate_chart_inputs(well if config["mode"] == "basic" else {}, state.get("placement_config", {}))
     if config["mode"] == "basic" and any(well.get(key) is None for key in (PORE_FIELD, FRAC_FIELD)):
         raise ValueError("Enter Pore Gradient and Fracture Gradient (pcf EMW).")

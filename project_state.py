@@ -209,6 +209,41 @@ def is_project_key(key):
     return isinstance(key, str) and key != "app_mode_key" and not key.startswith(transient)
 
 
+def reconcile_formation_profile(state):
+    """Reconcile UI endpoint rows with the existing exposed-domain authority only.
+
+    Survey changes never rewrite source pressures. Malformed intermediate order
+    stays repairable; this function never sorts user entries.
+    """
+    from cement_chart_model import current_open_hole_domain
+    config = state.get("formation_pressure_config")
+    if not isinstance(config, dict) or config.get("mode") != "advanced":
+        return None
+    domain = current_open_hole_domain(state)
+    if domain is None:
+        return None
+    rows = config["profile"]
+    bounds = (domain["top_md"], domain["bottom_md"])
+    previous = state.get("_formation_domain")
+    has_endpoints = len(rows) >= 2 and (rows[0]["md_m"], rows[-1]["md_m"]) == bounds
+    if not rows or (previous != bounds if previous is not None else not has_endpoints):
+        # A first-entry draft need not contain endpoints. Only known prior
+        # domain boundaries establish former endpoint identity.
+        old_endpoints = rows if previous is None else [row for row in rows if row["md_m"] in previous]
+        endpoints = {row["md_m"]: row for row in old_endpoints if row["md_m"] in bounds}
+        candidates = rows if previous is None else [row for row in rows if row["md_m"] not in previous]
+        interior = [deepcopy(row) for row in candidates if row["md_m"] is None or
+                    (bounds[0] < row["md_m"] < bounds[1] and any(
+                        part["top_md"] <= row["md_m"] <= part["bottom_md"] for part in domain["segments"]))]
+        config["profile"] = [deepcopy(endpoints.get(bounds[0], {"md_m": bounds[0], "pore_psi": None, "frac_psi": None})),
+                             *interior,
+                             deepcopy(endpoints.get(bounds[1], {"md_m": bounds[1], "pore_psi": None, "frac_psi": None}))]
+        state["_formation_epoch"] = state.get("_formation_epoch", 0)+1
+        invalidate_document(state)
+    state["_formation_domain"] = bounds
+    return domain
+
+
 def invalidate_document(state):
     for key in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"):
         state.pop(key, None)

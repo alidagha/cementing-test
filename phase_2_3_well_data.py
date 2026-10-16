@@ -596,18 +596,8 @@ def render():
     st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=None)
 
     if job_type in materials_db.JOB_TYPES and chart_job_kind(job_type) is not None:
-        for column, field, label in zip(st.columns(2), (PORE_FIELD, FRAC_FIELD),
-                                        ("Pore Gradient (pcf EMW)", "Fracture Gradient (pcf EMW)")):
-            with column:
-                _seed(f"_w_{field}", field)
-                st.number_input(label, value=None, step=1.0, key=f"_w_{field}",
-                                on_change=_commit_well_widget, args=(field,),
-                                help="One finite positive equivalent mud weight; Pore must be less than Fracture.")
-        chart = chart_readiness(st.session_state)
-        for issue in chart["issues"]:
-            st.warning(issue)
-        for warning in chart["warnings"]:
-            st.warning(warning)
+        from formation_pressure_ui import render_formation_inputs
+        render_formation_inputs(st.session_state, _commit_well_widget)
 
     st.markdown("---")
     
@@ -640,3 +630,6 @@ def render():
         st.warning("⚠ **Thermal Alert:** BHST appears unusually low for deep well operations.")
 
     st.session_state["well_data"] = get_well_data()
+
+    from formation_pressure_ui import render_static_security
+    render_static_security(st.session_state)
