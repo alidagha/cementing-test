@@ -15,7 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Verify exact checkout SHA
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          echo "Event: ${GITHUB_EVENT_NAME}"
+          echo "Expected SHA: ${EXPECTED_SHA}"
+          echo "Actual checked-out HEAD SHA: ${actual_sha}"
+          test "${actual_sha}" = "${EXPECTED_SHA}"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -24,4 +34,5 @@ jobs:
       - name: Fast gate
         run: python -B -m pytest test_regression_guardrails.py -v
       - name: Certification gate
+        if: github.event_name == 'pull_request'
         run: python -B -m pytest
