@@ -117,6 +117,9 @@ def _validate_project(data):
     if "schematic_config" in data:
         from well_schematic_adapter import validate_schematic_config
         validate_schematic_config(data["schematic_config"])
+    if "formation_pressure_config" in data:
+        from cement_chart_model import validate_formation_pressure_config
+        validate_formation_pressure_config(data["formation_pressure_config"])
     cfg = data.get("fluids_config", {})
     if cfg and (not isinstance(cfg.get("active", []), list)
                 or not all(isinstance(x, str) for x in cfg.get("active", []))

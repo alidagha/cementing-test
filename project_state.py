@@ -552,7 +552,7 @@ def refresh_lab_payloads(state):
 
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
-    from cement_chart_model import chart_readiness, PORE_FIELD, FRAC_FIELD
+    from cement_chart_model import chart_readiness, formation_source
     from pumping_simulation import prepare_pumping_simulation, source_signature as pumping_source_signature
     from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
     try:
@@ -574,7 +574,7 @@ def prepare_calculations(state):
                 for name, record in state.get("cement_params", {}).items()
                 if name in materials_db.PLACEMENT_SLURRIES},
             "mud_density": state.get("mud_density"),
-            **{key: state.get(key, state.get("well_data", {}).get(key)) for key in (PORE_FIELD, FRAC_FIELD)},
+            "formation_pressure": formation_source(state),
         })
         if state.get("_cement_chart_source") != chart_source:
             invalidate_document(state)
