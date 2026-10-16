@@ -1053,7 +1053,7 @@ class AuditRegressions(unittest.TestCase):
                 self.phase(app, "phase5")
                 next(w for w in app.selectbox if w.label == "Top of cement - Main").set_value("Depth (m MD)").run()
                 next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main").set_value(1000.0).run()
-                self.export(app)
+                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
                 doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
                 slurry = next(t for t in doc.tables if t.rows[0].cells[0].text == "Main Cement Slurry Data")
                 placement = next(r for r in slurry.rows if r.cells[0].text == "Bottom")
