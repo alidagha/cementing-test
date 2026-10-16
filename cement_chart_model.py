@@ -63,10 +63,219 @@ def pressure_psi(density_pcf, tvd_m):
     return _number(pressure, "Resolved hydrostatic pressure")
 
 
+def validate_formation_pressure_config(config):
+    """Source-only schema; None is an unfinished cell, not a pressure fallback."""
+    if not isinstance(config, dict) or set(config) != {"mode", "profile"}:
+        raise ValueError("Formation Pressure configuration requires only mode and profile.")
+    if config["mode"] not in ("basic", "advanced") or not isinstance(config["profile"], list):
+        raise ValueError("Formation Pressure requires basic/advanced mode and a profile list.")
+    previous = None
+    for row in config["profile"]:
+        if not isinstance(row, dict) or set(row) != {"md_m", "pore_psi", "frac_psi"}:
+            raise ValueError("Formation profile rows require only MD, Pore and Fracture pressure.")
+        for key, value in row.items():
+            if value is not None:
+                value = _number(value, f"Formation {key}", positive=key != "md_m")
+                if key == "md_m" and value < 0:
+                    raise ValueError("Formation MD must be nonnegative.")
+        md = row["md_m"]
+        if md is not None:
+            if previous is not None and md <= previous:
+                raise ValueError("Formation MD stations must be strictly increasing, without duplicates.")
+            previous = md
+        if row["pore_psi"] is not None and row["frac_psi"] is not None and row["pore_psi"] >= row["frac_psi"]:
+            raise ValueError("Formation Pore pressure must be less than Fracture pressure.")
+
+
+def formation_source(state):
+    """Active pressure sources only, for the existing chart fingerprint authority."""
+    config = state.get("formation_pressure_config", {"mode": "basic", "profile": []})
+    if not isinstance(config, dict):
+        return {"invalid_config": config}
+    if config.get("mode") == "basic":
+        well = state.get("well_data", {})
+        return {"mode": "basic", **{key: state.get(key, well.get(key)) for key in (PORE_FIELD, FRAC_FIELD)}}
+    return {"mode": config.get("mode"), "profile": config.get("profile")}
+
+
+def _security_domain(geometry, trajectory):
+    parts = []
+    for segment in geometry["capacity_segments"]:
+        if segment["kind"] != "open_hole":
+            continue
+        top, bottom = segment["top_md"], segment["bottom_md"]
+        if parts and parts[-1]["bottom_md"] == top:
+            parts[-1]["bottom_md"] = bottom
+        else:
+            parts.append({"top_md": top, "bottom_md": bottom})
+    if not parts:
+        return None
+    for part in parts:
+        part["top_tvd"], part["bottom_tvd"] = tvd_at_md(trajectory, [part["top_md"], part["bottom_md"]])
+    return {"top_md": parts[0]["top_md"], "bottom_md": parts[-1]["bottom_md"],
+            "top_tvd": parts[0]["top_tvd"], "bottom_tvd": parts[-1]["bottom_tvd"], "segments": parts}
+
+
+def current_open_hole_domain(state):
+    """Read-only public access to the B-1 resolved capacity/security domain."""
+    geometry = resolve_chart_geometry(state)
+    return None if geometry is None else _security_domain(geometry, state["well_geometry"])
+
+
+def resolve_formation_profile(state, geometry, depths=None, tvds=None):
+    """Normalize EMW or entered psig without extrapolation or trajectory arithmetic."""
+    well = _ready_inputs(state)
+    domain = _security_domain(geometry, state["well_geometry"])
+    mode = formation_source(state)["mode"]
+    if mode == "advanced":
+        if domain is None:
+            raise ValueError("Advanced Formation Profile is not applicable: no Current Open Hole is exposed.")
+        rows = state["formation_pressure_config"]["profile"]
+        if len(rows) < 2 or any(value is None for row in rows for value in row.values()):
+            raise ValueError("Complete all Advanced Formation MD/Pore/Fracture stations, including both endpoints.")
+        depths = [row["md_m"] for row in rows]
+        if depths[0] != domain["top_md"] or depths[-1] != domain["bottom_md"]:
+            raise ValueError("Advanced Formation profile must cover both exact Current Open Hole endpoints; no extrapolation.")
+        if any(not any(part["top_md"] <= md <= part["bottom_md"] for part in domain["segments"]) for md in depths):
+            raise ValueError("Every Formation MD station must lie inside Current Open Hole.")
+        tvds = tvd_at_md(state["well_geometry"], depths)
+        if trajectory_tvd_decreases(state["well_geometry"], geometry["shoe_md"]):
+            raise ValueError("Static Well Security is unsupported: TVD decreases along the continuous trajectory.")
+        for a, b, ta, tb in zip(rows, rows[1:], tvds, tvds[1:]):
+            if ta == tb and (a["pore_psi"] != b["pore_psi"] or a["frac_psi"] != b["frac_psi"]):
+                raise ValueError("Formation pressures at identical TVD must agree for TVD-linear interpolation.")
+        pressure = {key: [row[key] for row in rows] for key in ("pore_psi", "frac_psi")}
+        kind = "curves"
+    else:
+        depths = [0., geometry["shoe_md"]] if depths is None else depths
+        tvds = tvd_at_md(state["well_geometry"], depths) if tvds is None else tvds
+        indices = [-1] if geometry["kind"] == "tieback" else range(len(depths))
+        depths, tvds = [depths[i] for i in indices], [tvds[i] for i in indices]
+        pressure = {label: [pressure_psi(well[field], tvd) for tvd in tvds]
+                    for field, label in ((PORE_FIELD, "pore_psi"), (FRAC_FIELD, "frac_psi"))}
+        kind = "markers" if geometry["kind"] == "tieback" else "curves"
+    return {"mode": mode, "kind": kind, "domain": domain, "md_m": depths, "tvd_m": tvds, **pressure}
+
+
+def _linear_pressure(tvds, pressures, tvd):
+    from bisect import bisect_right
+    if not tvds[0] <= tvd <= tvds[-1]:
+        raise ValueError("Pressure interpolation cannot extrapolate outside its source profile.")
+    index = bisect_right(tvds, tvd)-1
+    if tvds[index] == tvd:
+        return pressures[index]
+    fraction = (tvd-tvds[index])/(tvds[index+1]-tvds[index])
+    return pressures[index]+fraction*(pressures[index+1]-pressures[index])
+
+
+def _crossing_md(trajectory, top, bottom, tvd):
+    """Bounded inversion of the existing MD->TVD authority, only in a known interval."""
+    a, b = tvd_at_md(trajectory, [top, bottom])
+    if tvd == a:
+        return top
+    if tvd == b:
+        return bottom
+    for _ in range(64):
+        middle = (top+bottom)/2
+        value = tvd_at_md(trajectory, [middle])[0]
+        if value == tvd or middle in (top, bottom):
+            return middle
+        if value < tvd:
+            top = middle
+        else:
+            bottom = middle
+    return (top+bottom)/2
+
+
+def analyze_static_security(trajectory, hydrostatic, formation):
+    """One exact TVD-linear comparison path, independent of Formation input mode."""
+    domain = formation["domain"]
+    result = {"status": "safe", "domain": domain, "crossings": [], "frac_violations": [], "pore_violations": [],
+              "plot_regions": {"frac": [], "pore": []}}
+    if domain is None:
+        return result
+    if trajectory_tvd_decreases(trajectory, domain["bottom_md"]):
+        raise ValueError("Static Well Security is unsupported: TVD decreases along the continuous trajectory.")
+    seen = set()
+    for part in domain["segments"]:
+        mesh = sorted({part["top_md"], part["bottom_md"], *(md for md in hydrostatic["md_m"]+formation["md_m"]
+                       if part["top_md"] < md < part["bottom_md"])})
+        tvds = tvd_at_md(trajectory, mesh)
+        for top, bottom, ta, tb in zip(mesh, mesh[1:], tvds, tvds[1:]):
+            h = [_linear_pressure(hydrostatic["tvd_m"], hydrostatic["pressure_psi"], t) for t in (ta, tb)]
+            limits = {boundary: [_linear_pressure(formation["tvd_m"], formation[boundary+"_psi"], t) for t in (ta, tb)]
+                      for boundary in ("frac", "pore")}
+            roots, cuts = {}, {0., 1.}
+            for boundary, limit in limits.items():
+                d0, d1 = h[0]-limit[0], h[1]-limit[1]
+                contacts = [f for f, d in ((0., d0), (1., d1)) if d == 0]
+                if (d0 < 0 < d1) or (d1 < 0 < d0):
+                    roots[boundary] = -d0/(d1-d0)
+                    cuts.add(roots[boundary]); contacts.append(roots[boundary])
+                for f in contacts:
+                    tvd = ta+(tb-ta)*f
+                    md = top if f == 0 else bottom if f == 1 else _crossing_md(trajectory, top, bottom, tvd)
+                    key = (boundary, md)
+                    if key not in seen:
+                        seen.add(key)
+                        result["crossings"].append({"boundary": boundary, "md_m": md, "tvd_m": tvd,
+                                                    "pressure_psi": h[0]+(h[1]-h[0])*f})
+            ordered = sorted(cuts)
+            for boundary, limit in limits.items():
+                sign = 1 if boundary == "frac" else -1
+                d0, d1 = sign*(h[0]-limit[0]), sign*(h[1]-limit[1])
+                def delta(f):
+                    if f == roots.get(boundary):
+                        return 0.
+                    return d0 if f == 0 else d1 if f == 1 else d0+(d1-d0)*f
+                rows = result[boundary+"_violations"]
+                for left, right in zip(ordered, ordered[1:]):
+                    if delta((left+right)/2) <= 0:
+                        continue
+                    dl, dr = delta(left), delta(right)
+                    maximum = left if dl >= dr else right
+                    points = []
+                    for fraction in (left, right, maximum):
+                        t = ta+(tb-ta)*fraction
+                        md = top if fraction == 0 else bottom if fraction == 1 else _crossing_md(trajectory, top, bottom, t)
+                        points.append((md, t))
+                    start, end, peak = points
+                    row = {"kind": "over_frac" if boundary == "frac" else "under_pore",
+                           "start_md_m": start[0], "start_tvd_m": start[1], "end_md_m": end[0], "end_tvd_m": end[1],
+                           "max_delta_psi": delta(maximum), "max_at_md_m": peak[0], "max_at_tvd_m": peak[1],
+                           "hydro_psi_at_max": h[0]+(h[1]-h[0])*maximum,
+                           "limit_psi_at_max": limit[0]+(limit[1]-limit[0])*maximum}
+                    # Retain this same classified cell's exact curve edges for
+                    # passive rendering; no second interpolation/analysis path.
+                    plot = {"tvd_m": [start[1], end[1]],
+                            "hydro_psi": [h[0]+(h[1]-h[0])*f for f in (left, right)],
+                            "limit_psi": [limit[0]+(limit[1]-limit[0])*f for f in (left, right)]}
+                    if rows and rows[-1]["end_md_m"] == start[0] and dl > 0:
+                        previous = rows[-1]
+                        previous.update(end_md_m=end[0], end_tvd_m=end[1])
+                        if row["max_delta_psi"] > previous["max_delta_psi"]:
+                            previous.update({key: value for key, value in row.items() if key not in
+                                             ("kind", "start_md_m", "start_tvd_m", "end_md_m", "end_tvd_m")})
+                        for key, values in plot.items():
+                            result["plot_regions"][boundary][-1][key].extend(values[1:])
+                    else:
+                        rows.append(row)
+                        result["plot_regions"][boundary].append(plot)
+    result["crossings"].sort(key=lambda row: (row["md_m"], row["boundary"]))
+    if result["frac_violations"] or result["pore_violations"]:
+        result["status"] = "warning"
+    return result
+
+
 def _ready_inputs(state):
     well = {**state.get("well_data", {}), **{k: state[k] for k in (PORE_FIELD, FRAC_FIELD) if k in state}}
-    validate_chart_inputs(well, state.get("placement_config", {}))
-    if any(well.get(key) is None for key in (PORE_FIELD, FRAC_FIELD)):
+    config = state.get("formation_pressure_config", {"mode": "basic", "profile": []})
+    active_config = config
+    if isinstance(config, dict) and config.get("mode") == "basic" and isinstance(config.get("profile"), list):
+        active_config = {**config, "profile": []}  # Inactive drafts are not calculation authority.
+    validate_formation_pressure_config(active_config)
+    validate_chart_inputs(well if config["mode"] == "basic" else {}, state.get("placement_config", {}))
+    if config["mode"] == "basic" and any(well.get(key) is None for key in (PORE_FIELD, FRAC_FIELD)):
         raise ValueError("Enter Pore Gradient and Fracture Gradient (pcf EMW).")
     return well
 
@@ -118,7 +327,7 @@ def resolve_chart_geometry(state):
     kind = chart_job_kind(job)
     if kind is None:
         return None
-    validate_chart_inputs(state, config)
+    validate_chart_inputs(state if formation_source(state).get("mode") == "basic" else {}, config)
     mode = config.get("chart_excess_mode") if config.get("job_type") == job else None
     if mode is None:
         raise ValueError("Choose Chart Capacity Excess Mode explicitly.")
@@ -297,15 +506,14 @@ def build_chart_model(state, geometry=None):
             fluid = _at(intervals, (top+bottom)/2)
             hydro.append(_number(hydro[-1]+pressure_psi(fluid["density_pcf"], tvd_bottom-tvd_top),
                                  "Cumulative hydrostatic pressure"))
-    pressure = {"kind": "markers" if kind == "tieback" else "curves"}
-    indices = [-1] if kind == "tieback" else range(len(depths))
-    pressure["md_m"] = [depths[i] for i in indices]
-    pressure["tvd_m"] = [tvds[i] for i in indices]
-    for field, label in ((PORE_FIELD, "pore_psi"), (FRAC_FIELD, "frac_psi")):
-        pressure[label] = [pressure_psi(well[field], v) for v in pressure["tvd_m"]]
+    formation = resolve_formation_profile(state, geometry, depths, tvds)
+    hydrostatic = {"md_m": depths if hydro else [], "tvd_m": tvds if hydro else [], "pressure_psi": hydro}
+    security = None if security_issues else analyze_static_security(state["well_geometry"], hydrostatic, formation)
+    pressure = {key: formation[key] for key in ("kind", "md_m", "tvd_m", "pore_psi", "frac_psi")}
     return {**geometry, **final, "hydrostatic": {"md_m": depths if hydro else [], "tvd_m": tvds if hydro else [],
                                                 "pressure_psi": hydro},
-            "pore_frac": pressure, "static_security_issues": security_issues,
+            "pore_frac": pressure, "formation_pressure": formation, "static_security": security,
+            "static_security_issues": security_issues,
             "fluid_sequence_ready": True, "static_security_ready": not security_issues}
 
 
@@ -317,15 +525,21 @@ def chart_readiness(state, include_fluids=False):
             return result
         well = _ready_inputs(state)
         geometry = resolve_chart_geometry(state)
+        resolve_formation_profile(state, geometry)
         try:
             mud = require_positive_density(state.get("mud_density", state.get("well_data", {}).get("mud_density")))
-            if not well[PORE_FIELD] <= mud <= well[FRAC_FIELD]:
+            if formation_source(state)["mode"] == "basic" and not well[PORE_FIELD] <= mud <= well[FRAC_FIELD]:
                 result["warnings"].append("Mud Weight is outside the Pore–Fracture window (warning only).")
         except ValueError:
             pass  # Existing Mud input validation remains its own authority.
         if include_fluids:
             result["model"] = build_chart_model(state, geometry)
             result["issues"] += result["model"]["static_security_issues"]
+            security = result["model"]["static_security"]
+            if security:
+                for key, label in (("frac_violations", "Fracture window exceeded"), ("pore_violations", "Underbalance")):
+                    if security[key]:
+                        result["warnings"].append(f"Static Well Security: {label} in {len(security[key])} Current Open Hole interval(s).")
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         result["issues"].append(str(exc))
     return result

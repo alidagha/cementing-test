@@ -617,6 +617,16 @@ class AuditRegressions(unittest.TestCase):
                         token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
                         next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
                     self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
+                    # Explicit Round-11 drawing facts; engineering Hardware/target stay unchanged.
+                    if job == 'CMT PLUG' and 'edited_rows' in action:
+                        next(w for w in app.number_input if w.label == 'Plug bore diameter (in) — 2950–3000 m').set_value(8.5).run()
+                    elif job == 'CMT SQUEEZE' and 'edited_rows' in action:
+                        next(w for w in app.number_input if w.label == 'Squeeze wall diameter (in) — 3000 m').set_value(8.5).run()
+                    elif job == 'CMT SQUEEZE' and 'added_rows' in action:
+                        from well_schematic_adapter import additional_drawing_inputs
+                        choices = additional_drawing_inputs(app.session_state)['squeeze_targets']
+                        token = next(token for token, row in choices.items() if row['target_id'] == 'previous-casing:20')
+                        next(w for w in app.selectbox if w.label == 'Squeeze Target for Well Schematic').set_value(token).run()
                     app = self.app(round_trip(app.session_state.to_dict()))
                     self.phase(app, "phase2_3")
                     self.export(app)

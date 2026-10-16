@@ -103,11 +103,23 @@ def _validate_project(data):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
     for field, _, _ in EXCESS_FIELDS:
         excess_percentage(data.get("placement_config", {}), field)
+    placement = data.get("placement_config", {})
+    _check_numeric_fields(placement, ("tie_back_liner_lap_m", "squeeze_depth_m"),
+                          "placement_config", nullable=("tie_back_liner_lap_m", "squeeze_depth_m"),
+                          nonnegative=("tie_back_liner_lap_m", "squeeze_depth_m"))
+    if "target_string_id" in placement and not isinstance(placement["target_string_id"], str):
+        raise ValueError("placement_config.target_string_id must be a string token.")
     if "executive_summary_config" in data:
         validate_executive_summary_config(data["executive_summary_config"])
     if "centralizer_config" in data:
         from phase_9_centralizer import validate_config
         validate_config(data["centralizer_config"])
+    if "schematic_config" in data:
+        from well_schematic_adapter import validate_schematic_config
+        validate_schematic_config(data["schematic_config"])
+    if "formation_pressure_config" in data:
+        from cement_chart_model import validate_formation_pressure_config
+        validate_formation_pressure_config(data["formation_pressure_config"])
     cfg = data.get("fluids_config", {})
     if cfg and (not isinstance(cfg.get("active", []), list)
                 or not all(isinstance(x, str) for x in cfg.get("active", []))

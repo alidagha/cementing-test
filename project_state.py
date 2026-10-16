@@ -209,6 +209,41 @@ def is_project_key(key):
     return isinstance(key, str) and key != "app_mode_key" and not key.startswith(transient)
 
 
+def reconcile_formation_profile(state):
+    """Reconcile UI endpoint rows with the existing exposed-domain authority only.
+
+    Survey changes never rewrite source pressures. Malformed intermediate order
+    stays repairable; this function never sorts user entries.
+    """
+    from cement_chart_model import current_open_hole_domain
+    config = state.get("formation_pressure_config")
+    if not isinstance(config, dict) or config.get("mode") != "advanced":
+        return None
+    domain = current_open_hole_domain(state)
+    if domain is None:
+        return None
+    rows = config["profile"]
+    bounds = (domain["top_md"], domain["bottom_md"])
+    previous = state.get("_formation_domain")
+    has_endpoints = len(rows) >= 2 and (rows[0]["md_m"], rows[-1]["md_m"]) == bounds
+    if not rows or (previous != bounds if previous is not None else not has_endpoints):
+        # A first-entry draft need not contain endpoints. Only known prior
+        # domain boundaries establish former endpoint identity.
+        old_endpoints = rows if previous is None else [row for row in rows if row["md_m"] in previous]
+        endpoints = {row["md_m"]: row for row in old_endpoints if row["md_m"] in bounds}
+        candidates = rows if previous is None else [row for row in rows if row["md_m"] not in previous]
+        interior = [deepcopy(row) for row in candidates if row["md_m"] is None or
+                    (bounds[0] < row["md_m"] < bounds[1] and any(
+                        part["top_md"] <= row["md_m"] <= part["bottom_md"] for part in domain["segments"]))]
+        config["profile"] = [deepcopy(endpoints.get(bounds[0], {"md_m": bounds[0], "pore_psi": None, "frac_psi": None})),
+                             *interior,
+                             deepcopy(endpoints.get(bounds[1], {"md_m": bounds[1], "pore_psi": None, "frac_psi": None}))]
+        state["_formation_epoch"] = state.get("_formation_epoch", 0)+1
+        invalidate_document(state)
+    state["_formation_domain"] = bounds
+    return domain
+
+
 def invalidate_document(state):
     for key in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"):
         state.pop(key, None)
@@ -552,8 +587,9 @@ def refresh_lab_payloads(state):
 
 def prepare_calculations(state):
     from phase_5_cement import refresh_cement_calculations
-    from cement_chart_model import chart_readiness, PORE_FIELD, FRAC_FIELD
+    from cement_chart_model import chart_readiness, formation_source
     from pumping_simulation import prepare_pumping_simulation, source_signature as pumping_source_signature
+    from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
     try:
         well_issues = refresh_well_derived(state)
         migrate_material_properties(state)
@@ -573,7 +609,7 @@ def prepare_calculations(state):
                 for name, record in state.get("cement_params", {}).items()
                 if name in materials_db.PLACEMENT_SLURRIES},
             "mud_density": state.get("mud_density"),
-            **{key: state.get(key, state.get("well_data", {}).get(key)) for key in (PORE_FIELD, FRAC_FIELD)},
+            "formation_pressure": formation_source(state),
         })
         if state.get("_cement_chart_source") != chart_source:
             invalidate_document(state)
@@ -590,6 +626,14 @@ def prepare_calculations(state):
             state["_pumping_simulation_source"] = pumping_source
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
             issues.append(f"Pumping Simulation: {exc}")
+        try:
+            prepare_schematic(state)
+            schematic_source = schematic_source_signature(state)
+            if state.get("_well_schematic_source") != schematic_source:
+                invalidate_document(state)
+            state["_well_schematic_source"] = schematic_source
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            issues.append(f"Phase II & III Well schematic: {exc}")
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

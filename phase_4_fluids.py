@@ -3,6 +3,7 @@ import streamlit as st
 from typing import Dict, Any
 import materials_db
 from project_state import purge_inactive_slurries, invalidate_document
+from formation_pressure_ui import render_static_security
 from input_guard import repair_invalid_inputs
 from engineering_tools import parse_effective_numeric, require_positive_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
 
@@ -221,6 +222,7 @@ def render():
         # every exported document. Resetting it here the moment "Pre Flush"
         # leaves active_fluids_list closes that gap regardless of navigation.
         st.session_state["preflush_calc"] = None
+        render_static_security(st.session_state)
         return
 
     cumulative_time_min = 0.0
@@ -400,3 +402,5 @@ def render():
     # branch above for why this can't be left to phase_6_spacer.py alone.
     if "Pre Flush" not in active_fluids_list:
         st.session_state["preflush_calc"] = None
+
+    render_static_security(st.session_state)

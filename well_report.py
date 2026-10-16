@@ -8,6 +8,7 @@ import numpy as np
 from well_profile import validate_well_inputs
 
 CHART_ANCHOR = "Temperature profile chart: Not provided."
+SCHEMATIC_ANCHOR = "Well schematic: Not provided."
 SURVEY_TITLE = "Directional Survey Data"
 SURVEY_ANCHOR = "Directional survey data: Not provided."
 RED, PANEL_BG, GRID_GRAY, EDGE_GRAY, FRAME = "#D90000", "#F0F0F0", "#C9C9C9", "#D9D9D9", "#333333"
@@ -335,13 +336,35 @@ def _content_width(doc, paragraph):
     raise ValueError("Cannot resolve the chart's existing page geometry.")
 
 
-def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None):
+def render_schematic_png(payload):
+    """The owner renderer owns drawing; its temporary output never enters state."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from well_schematic_engine import render_well_schematic
+    with TemporaryDirectory(prefix="cement-well-schematic-") as directory:
+        path = render_well_schematic(payload, str(Path(directory) / "schematic.png"), strict=True)
+        return Path(path).read_bytes()
+
+
+def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None, schematic_report=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
     from docx.text.paragraph import Paragraph
     from docx.oxml.ns import qn
     doc = Document(BytesIO(rendered_bytes))
     paragraphs = [Paragraph(element, doc._body) for element in doc._element.body.xpath(".//w:p")]
+    schematic_anchor = None
+    if schematic_report is not None:
+        matches = [p for p in paragraphs if p.text == SCHEMATIC_ANCHOR]
+        if len(matches) != 1 or matches[0]._p.getparent() is not doc._element.body:
+            raise ValueError(f"Word report requires exactly one body anchor: {SCHEMATIC_ANCHOR}")
+        schematic_anchor = matches[0]
+        elements = list(doc._element.body)
+        ii = [p for p in doc.paragraphs if p.text.strip() == "II. Well Data Summary"]
+        iii = [p for p in doc.paragraphs if p.text.strip() == "III. Geothermal Temperature Profile"]
+        if (len(ii) != 1 or len(iii) != 1 or not
+                elements.index(ii[0]._p) < elements.index(schematic_anchor._p) < elements.index(iii[0]._p)):
+            raise ValueError("The Well schematic anchor must be inside the existing Section II.")
     cement_anchor = None
     if cement_report is not None:
         from cement_chart_report import CHART_ANCHOR as cement_text
@@ -463,6 +486,15 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             picture._inline.docPr.set("descr", "Pumping Simulation Charts")
     if centralizer_report is not None:
         _postprocess_centralizer(doc, centralizer_report)
+    if schematic_anchor is not None:
+        from docx.text.run import Run
+        texts = schematic_anchor._p.xpath('.//w:t')
+        for text in texts:
+            text.text = ""
+        run = Run(texts[0].getparent(), schematic_anchor)
+        picture = run.add_picture(BytesIO(render_schematic_png(schematic_report)),
+                                  width=_content_width(doc, schematic_anchor))
+        picture._inline.docPr.set("descr", "Well Schematic")
     result = BytesIO()
     doc.save(result)
     return result.getvalue()

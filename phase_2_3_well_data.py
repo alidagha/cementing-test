@@ -80,6 +80,105 @@ def _commit_placement(field, widget_key):
         placement.setdefault("manual_depth_m", 0.0)  # Existing "not entered" value.
 
 
+def _commit_schematic(field, widget_key=None, interval=None):
+    from copy import deepcopy
+    from well_schematic_adapter import additional_drawing_inputs, validate_schematic_config
+    config = deepcopy(st.session_state.get("schematic_config", {"version": 1}))
+    config.setdefault("version", 1)
+    if field == "clear":
+        fields = ("plug_bore_sections",) if st.session_state.get("job_type") == "CMT PLUG" else ("squeeze_target_id", "squeeze_wall")
+        for name in fields:
+            config.pop(name, None)
+    elif field == "clear_target":
+        config.pop("squeeze_target_id", None)
+    else:
+        if widget_key not in st.session_state:
+            return
+        value = st.session_state[widget_key]
+        try:
+            needed = additional_drawing_inputs(st.session_state)
+            if field == "squeeze_target_id":
+                if value and value not in needed.get("squeeze_targets", {}):
+                    return  # Hardware retired this queued selection callback.
+                config[field] = value
+            elif field == "plug_bore_sections":
+                if interval not in needed.get("plug_bores", []):
+                    return
+                sections = [section for section in config.get(field, [])
+                            if (section["top_md"], section["bottom_md"]) != (interval["top_md"], interval["bottom_md"])]
+                if value is not None:
+                    sections.append({**interval, "diameter_in": value})
+                config[field] = sections
+            elif field == "squeeze_wall":
+                if needed.get("squeeze_wall_depth") != interval:
+                    return
+                config.pop(field, None)
+                if value is not None:
+                    config[field] = {"depth_m": interval, "diameter_in": value}
+            validate_schematic_config(config)
+        except ValueError as exc:
+            st.session_state["_schematic_input_error"] = str(exc)
+            return
+    if config != st.session_state.get("schematic_config", {}):
+        st.session_state["schematic_config"] = config
+        invalidate_document(st.session_state)
+    st.session_state.pop("_schematic_input_error", None)
+
+
+def _render_schematic_inputs(load_sig):
+    from well_schematic_adapter import additional_drawing_inputs
+    try:
+        inputs = additional_drawing_inputs(st.session_state)
+    except ValueError as exc:
+        st.warning(f"Well schematic: {exc}")
+        if st.session_state.get("schematic_config"):
+            st.button("Clear conflicting schematic drawing data", key="_schematic_clear_conflict",
+                      on_click=_commit_schematic, args=("clear",))
+        return
+    if not inputs:
+        return
+    st.markdown("#### Well Schematic — Additional Drawing Data")
+    st.caption("Drawing only. Existing Hardware and engineering calculations remain authoritative.")
+    if st.session_state.get("_schematic_input_error"):
+        st.warning(st.session_state["_schematic_input_error"])
+    config = st.session_state.get("schematic_config", {})
+    if "squeeze_targets" in inputs:
+        targets = inputs["squeeze_targets"]
+        selected = config.get("squeeze_target_id", "")
+        choices = ["", *targets]
+        if selected and selected not in choices:
+            choices.append(selected)
+        key = f"_schematic_squeeze_target_{load_sig}"
+        st.session_state[key] = selected
+        st.selectbox("Squeeze Target for Well Schematic", choices, key=key,
+                     format_func=lambda token: "Select the physical target" if not token else
+                         targets.get(token, {}).get("label", "Unavailable target — reselect"),
+                     on_change=_commit_schematic, args=("squeeze_target_id", key))
+    if inputs.get("obsolete_squeeze_target"):
+        st.warning("The saved schematic target no longer resolves. Clear it to review the current geometry.")
+        st.button("Clear obsolete schematic target", key="_schematic_clear_target",
+                  on_click=_commit_schematic, args=("clear_target",))
+    for interval in inputs.get("plug_bores", []):
+        top, bottom = interval["top_md"], interval["bottom_md"]
+        saved = next((section["diameter_in"] for section in config.get("plug_bore_sections", [])
+                      if (section["top_md"], section["bottom_md"]) == (top, bottom)), None)
+        key = f"_schematic_plug_bore_{fingerprint(interval)[:12]}_{load_sig}"
+        st.session_state[key] = saved
+        st.number_input(f"Plug bore diameter (in) — {top:g}–{bottom:g} m", min_value=0.0,
+                        value=None, key=key, on_change=_commit_schematic,
+                        args=("plug_bore_sections", key, interval),
+                        help="Actual bore diameter only; this does not create a Casing or Open Hole.")
+    if "squeeze_wall_depth" in inputs:
+        depth = inputs["squeeze_wall_depth"]
+        wall = config.get("squeeze_wall", {})
+        key = f"_schematic_squeeze_wall_{fingerprint(depth)[:12]}_{load_sig}"
+        st.session_state[key] = wall.get("diameter_in") if wall.get("depth_m") == depth else None
+        st.number_input(f"Squeeze wall diameter (in) — {depth:g} m", min_value=0.0,
+                        value=None, key=key, on_change=_commit_schematic,
+                        args=("squeeze_wall", key, depth),
+                        help="Actual wall diameter for the operation marker only; no structural string is inferred.")
+
+
 def _commit_profile_widget(record, field, key):
     if key not in st.session_state:
         return  # A source switch retired this widget before its queued callback.
@@ -412,6 +511,7 @@ def render():
             key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}",
             on_change=_commit_placement, args=("host_row", f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}")
         )
+    _render_schematic_inputs(load_sig)
     for field, label, _ in EXCESS_FIELDS:
         widget_key = f"_placement_{field}_{load_sig}"
         if widget_key not in st.session_state:
@@ -496,18 +596,8 @@ def render():
     st.session_state["effective_yp"] = parse_effective_numeric(st.session_state["yield_point"], default=None)
 
     if job_type in materials_db.JOB_TYPES and chart_job_kind(job_type) is not None:
-        for column, field, label in zip(st.columns(2), (PORE_FIELD, FRAC_FIELD),
-                                        ("Pore Gradient (pcf EMW)", "Fracture Gradient (pcf EMW)")):
-            with column:
-                _seed(f"_w_{field}", field)
-                st.number_input(label, value=None, step=1.0, key=f"_w_{field}",
-                                on_change=_commit_well_widget, args=(field,),
-                                help="One finite positive equivalent mud weight; Pore must be less than Fracture.")
-        chart = chart_readiness(st.session_state)
-        for issue in chart["issues"]:
-            st.warning(issue)
-        for warning in chart["warnings"]:
-            st.warning(warning)
+        from formation_pressure_ui import render_formation_inputs
+        render_formation_inputs(st.session_state, _commit_well_widget)
 
     st.markdown("---")
     
@@ -540,3 +630,6 @@ def render():
         st.warning("⚠ **Thermal Alert:** BHST appears unusually low for deep well operations.")
 
     st.session_state["well_data"] = get_well_data()
+
+    from formation_pressure_ui import render_static_security
+    render_static_security(st.session_state)

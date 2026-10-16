@@ -243,10 +243,22 @@ def test_mud_range_uses_mean_and_outside_is_warning_only():
     state = balanced_state()
     mod = chart_module()
     state.update(mud_density="70-90", pore_gradient_emw_pcf=79., frac_gradient_emw_pcf=81.)
-    assert mod.chart_readiness(state, True)["warnings"] == []
+    result = mod.chart_readiness(state, True)
+    assert not result["issues"]
+    assert not any(warning.startswith("Mud Weight") for warning in result["warnings"])
+    assert any(warning.startswith("Static Well Security: Fracture") for warning in result["warnings"])
+    security = result["model"]["static_security"]
+    assert result["model"]["static_security_ready"] and security["status"] == "warning"
+    assert len(security["frac_violations"]) == 1
+    violation = security["frac_violations"][0]
+    assert violation["kind"] == "over_frac" and violation["end_md_m"] == 1000.
+    assert violation["max_delta_psi"] == pytest.approx(150.3718285214352, rel=0, abs=1e-10)
     state["pore_gradient_emw_pcf"] = 80.5
     result = mod.chart_readiness(state, True)
     assert not result["issues"] and result["warnings"]
+    assert any(warning.startswith("Mud Weight") for warning in result["warnings"])
+    assert any(warning.startswith("Static Well Security: Fracture") for warning in result["warnings"])
+    assert result["model"]["static_security"]["frac_violations"] == security["frac_violations"]
     refresh_well_derived(state)
     assert compute_phase_status(state)["phase2_3"]["level"] == "ok"
     assert result["model"]["annular_intervals"][0]["density_pcf"] == 80.
