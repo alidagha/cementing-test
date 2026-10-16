@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
-from project_state import invalidate_document
+from project_state import invalidate_document, available_fluid_types
 from project_state import lab_source_signature
 from engineering_tools import build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
@@ -110,7 +110,8 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
         row[field] = st.session_state[widget_key]
     else:
         row["readings"][str(rpm)] = st.session_state[widget_key]
-    invalidate_document(st.session_state)
+    if slurry not in materials_db.RHEOLOGY_ONLY_FLUIDS or slurry in st.session_state.get("fluids_config", {}).get("active", []):
+        invalidate_document(st.session_state)
 
 
 def _render_rheology(slurry, qc, load_sig):
@@ -368,14 +369,17 @@ def build_lab_df_from_phase5(
 def render():
     """Main render entrypoint called by main.py."""
     st.header("Phase VII: Lab Report")
-    st.markdown("Enter Lab QC parameters and inspect auto-calculated API lab test quantities (600 mL cup basis).")
     
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     
     # 1. Strict SSOT Tab Derivation from Phase IV sequence
     active_pipeline = st.session_state.get("fluids_config", {}).get("active", [])
-    slurry_archetypes = materials_db.RHEOLOGY_LAB_FLUIDS
-    active_slurries = [f for f in active_pipeline if f in slurry_archetypes]
+    slurry_archetypes = materials_db.PHASE7_LAB_FLUIDS
+    active_slurries = [f for f in active_pipeline if f in slurry_archetypes
+                       and f in available_fluid_types(st.session_state)]
+    st.markdown("Enter measured fluid rheology using the shared Fann 35 workflow."
+                if active_slurries and all(f in materials_db.RHEOLOGY_ONLY_FLUIDS for f in active_slurries)
+                else "Enter Lab QC parameters and inspect auto-calculated API lab test quantities (600 mL cup basis).")
     
     if not active_slurries:
         st.warning("⚠ No cement slurries were selected in Phase IV.")
@@ -413,10 +417,15 @@ def render():
     
     for i, slurry in enumerate(active_slurries):
         with tabs[i]:
-            st.subheader(f"{slurry} Lab Data")
+            st.subheader(f"{slurry} Rheology" if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS else f"{slurry} Lab Data")
             
             full_lab = slurry in materials_db.PLACEMENT_SLURRIES
             qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
+            if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
+                _render_rheology(slurry, qc, load_sig)
+                if not lab_temperature_valid(bhct, bhst):
+                    st.warning("Review BHCT/BHST in Phase II & III for the measured rheology conditions.")
+                continue
             if full_lab:
                 qc.setdefault("api_fl", 0.0)
                 qc.setdefault("free_water", 0.0)

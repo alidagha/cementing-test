@@ -54,8 +54,9 @@ DEFAULT_HOLE_SIZES = {
 PLACEMENT_SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 CEMENT_FORMULATION_FLUIDS = ("Scavenger", *PLACEMENT_SLURRIES)
 RHEOLOGY_ONLY_FLUIDS = ("Diesel",)
-# Phase-VII consumer integration is deferred to Round 12A-2.
 RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
+# Phase VII can render rheology-only fluids; downstream consumers stay deferred.
+PHASE7_LAB_FLUIDS = (*CEMENT_FORMULATION_FLUIDS, *RHEOLOGY_ONLY_FLUIDS)
 HYDRAULIC_EXECUTION_ORDER = (
     "Diesel", "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
     "Spacer Behind", "Displacement Fluid",

@@ -107,11 +107,11 @@ def lab_review_signature(qc, grid):
 
 
 def build_lab_rheology(qc, fluid):
-    """Existing Bingham builder with the Scavenger required-dataset policy."""
+    """Existing Bingham builder and shared required BHCT Ramp-Down policy."""
     from rheology import build_rheology
     result, issues = build_rheology(qc)
-    if fluid == "Scavenger" and not result["bhct_down"]["selected"]:
-        issues.append("Scavenger: BHCT — Ramp-Down Rheology is required")
+    if (fluid == "Scavenger" or fluid in materials_db.RHEOLOGY_ONLY_FLUIDS) and not result["bhct_down"]["selected"]:
+        issues.append(f"{fluid}: BHCT — Ramp-Down Rheology is required")
     return result, issues
 
 
@@ -1097,13 +1097,27 @@ def compute_phase_status(ss) -> dict:
         )
 
     # Phase VII: Lab Report
-    if not active_slurries:
+    active_lab = [fluid for fluid in active if fluid in materials_db.PHASE7_LAB_FLUIDS
+                  and fluid in available_fluid_types(ss)]
+    rheology_only = any(fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
+    if not active_lab:
         status["phase7"] = {"level": "empty", "message": "No cement slurry to report on."}
     else:
         qc = ss.get("lab_qc_params", {})
         grids = ss.get("lab_grid_dfs", {})
         missing = []
-        for slurry in active_slurries:
+        for slurry in active_lab:
+            if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
+                try:
+                    if not isinstance(qc.get(slurry), dict):
+                        raise ValueError("Rheology data is missing")
+                    validate_lab_rheology(qc[slurry], slurry)
+                    if not lab_temperature_valid(ss.get("well_data", {}).get("bhct", ss.get("bhct")),
+                                                 ss.get("well_data", {}).get("bhst", ss.get("bhst"))):
+                        raise ValueError("Review BHCT/BHST in Phase II & III")
+                except ValueError:
+                    missing.append(slurry)
+                continue
             grid = grids.get(slurry)
             if slurry not in qc or grid is None or not hasattr(grid, "iterrows") or grid.empty:
                 missing.append(slurry)
@@ -1139,8 +1153,10 @@ def compute_phase_status(ss) -> dict:
             if ss.get("lab_source_signatures", {}).get(slurry) != lab_source_signature(ss, slurry):
                 missing.append(slurry)
         status["phase7"] = (
-            {"level": "warning", "message": f"Lab QC or formulation rows incomplete for: {', '.join(missing)}."} if missing
-            else {"level": "ok", "message": f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies)."}
+            {"level": "warning", "message": (f"Lab QC or rheology incomplete for: {', '.join(missing)}." if rheology_only
+                                             else f"Lab QC or formulation rows incomplete for: {', '.join(missing)}.")} if missing
+            else {"level": "ok", "message": (f"Lab QC/rheology entered for {len(active_lab)} fluid(s)." if rheology_only
+                                             else f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies).")}
         )
 
     # Phase IX completion is canonical and required by Word for applicable jobs.

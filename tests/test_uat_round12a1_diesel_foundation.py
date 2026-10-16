@@ -44,7 +44,7 @@ def test_operational_taxonomy_order_and_fixed_default():
     assert db.DEFAULT_MATERIAL_NAMES["Diesel"] == "Diesel"
 
 
-def test_rheology_only_declaration_does_not_activate_phase7():
+def test_rheology_only_declaration_keeps_downstream_taxonomy_separate():
     assert db.RHEOLOGY_ONLY_FLUIDS == ("Diesel",)
     assert db.CEMENT_FORMULATION_FLUIDS == ("Scavenger", *db.PLACEMENT_SLURRIES)
     assert "Diesel" not in db.CEMENT_FORMULATION_FLUIDS
@@ -53,7 +53,7 @@ def test_rheology_only_declaration_does_not_activate_phase7():
     app = CASE.app(project())
     CASE.phase(app, "phase4")
     CASE.phase(app, "phase7")
-    assert "Diesel" not in [tab.label for tab in app.tabs]
+    assert "Diesel" in [tab.label for tab in app.tabs]  # A-2 enables Phase VII only.
     assert not app.error
 
 
