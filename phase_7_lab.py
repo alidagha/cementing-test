@@ -110,7 +110,11 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
         row[field] = st.session_state[widget_key]
     else:
         row["readings"][str(rpm)] = st.session_state[widget_key]
-    if slurry not in materials_db.RHEOLOGY_ONLY_FLUIDS or slurry in st.session_state.get("fluids_config", {}).get("active", []):
+    # Operational rheology-only fluids feed Word's engineering consumers only
+    # through BHCT ramp-down; valid unused datasets do not retire that report.
+    if (slurry not in materials_db.RHEOLOGY_ONLY_FLUIDS
+            or (slurry in st.session_state.get("fluids_config", {}).get("active", [])
+                and dataset == "bhct_down")):
         invalidate_document(st.session_state)
 
 
