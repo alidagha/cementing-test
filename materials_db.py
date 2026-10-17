@@ -164,7 +164,7 @@ MATERIAL_TAXONOMY = {
         "state": "Liquid"
     },
     "Liquid Extender": {
-        "names": ["Micro Block"],
+        "names": ["Micro Block", "Sodium Silicate"],
         "state": "Liquid"
     },
     "Anti Foam": {

@@ -552,6 +552,11 @@ DEFAULT_LIQUID_PROPERTIES = {
     "se-g10": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
     "pk-gas8": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
 
+    "sodium silicate": {
+        "density_ppg": 1.50 * WATER_LB_PER_GAL,
+        "lab_factor": 1.50 * WATER_LB_PER_GAL / CEMENT_SACK_LB,
+    },
+
     # Micro Block / Liquid Extender (SG = 1.32)
     "micro block": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB},         # 11.011 ppg
     "liquid extender": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB}
