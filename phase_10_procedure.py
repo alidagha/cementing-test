@@ -821,9 +821,9 @@ def generate_official_procedure(
         return sc.finalize("\n".join([l for l in lines if l.strip()]))
 
     elif "LNR" in job_upper:
-        lnr_sz = "7 in" if "7" in job_upper else "5 in"
-        hold_psi = "100" if "7" in job_upper else "150"
-        has_rot_note = "7" in job_upper
+        lnr_sz = job_type.removeprefix("LNR ").removesuffix('"') + " in"
+        has_rot_note = job_type == 'LNR 7"'
+        hold_psi = "100" if has_rot_note else "150"
         # FIX (confirmed): these three notes must number sequentially as a
         # single run — for 7" (rotation note present) they are Note1/Note2/
         # Note3; for 5" (no rotation note) they are Note1/Note2. The rotation

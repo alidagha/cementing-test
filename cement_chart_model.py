@@ -17,6 +17,7 @@ CHART_JOBS = {
     'CSG 30"': "casing", 'CSG 24"': "casing", 'CSG 20"': "casing",
     'CSG 18 5/8"': "casing", 'CSG 13 3/8"': "casing", 'CSG 9 5/8"': "casing",
     'CSG 7"': "casing", 'LNR 7"': "liner", 'LNR 5"': "liner",
+    'LNR 4 1/2"': "liner",
     'TIE BACK LNR 7"': "tieback", 'TIE BACK LNR 5"': "tieback",
     "CMT PLUG": None, "CMT SQUEEZE": None,
 }
