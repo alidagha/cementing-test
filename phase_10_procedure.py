@@ -718,14 +718,17 @@ def generate_official_procedure(
             
     spacer_lines = {}
     slurry_lines = {}
+    diesel_line = ""
     for name in active_fluids:
         volume, density = get_slurry_display_values(fluid_data, name)
-        if name in {"Spacer Ahead", "Spacer", "Spacer Behind"}:
+        if name == "Diesel":
+            diesel_line = f"Pump {volume} Diesel as pre flush.({density})"
+        elif name in {"Spacer Ahead", "Spacer", "Spacer Behind"}:
             spacer_lines[name] = f"Pump {volume} as {name} ({density})."
         elif name in slurry_archetypes:
             slurry_lines[name] = f"Mix and pump {volume} {name} cement slurry ({density})."
     # Do not group spacers: a behind spacer must follow all preceding slurries.
-    pump_lines = [(pf_line if name == "Pre Flush" else
+    pump_lines = [(diesel_line if name == "Diesel" else pf_line if name == "Pre Flush" else
                    spacer_lines.get(name) or slurry_lines.get(name))
                   for name in active_fluids]
     pump_lines = [line for line in pump_lines if line]
@@ -974,10 +977,10 @@ def synchronize_report_texts():
     pump_time = state.get("total_pump_time_min", 0.0)
     placement = state.get("placement_config", {})
     summary_config = summary_config_for_job(state.get("executive_summary_config"), job, active_slurry_names(active))
-    summary_active = [name for name in active if name != "Scavenger"]
-    summary_fluids = {name: dict(value) for name, value in fluids.items() if name != "Scavenger"}
-    if "Scavenger" in active:
-        # Summary sources must describe the train as if Scavenger were absent.
+    summary_active = [name for name in active if name not in ("Scavenger", "Diesel")]
+    summary_fluids = {name: dict(value) for name, value in fluids.items() if name not in ("Scavenger", "Diesel")}
+    if any(name in active for name in ("Scavenger", "Diesel")):
+        # Summary sources must describe the train without these operational fluids.
         cumulative = 0.0
         for name in summary_active:
             row = summary_fluids.get(name)
