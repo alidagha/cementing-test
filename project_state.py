@@ -166,14 +166,19 @@ def available_fluid_types(state):
 
 
 def reconcile_fluid_applicability(state):
-    """Deactivate ineligible Diesel without deleting any operational/lab draft.
+    """Reconcile one selection per fluid and deactivate ineligible Diesel.
 
     Used before decoded state publication, on Mud Type edits and on rebuild;
-    restoring OBM eligibility never reactivates the preserved draft.
+    parameter/lab drafts survive and OBM eligibility never reactivates Diesel.
     """
+    cfg = state.get("fluids_config", {})
+    active = cfg.get("active", [])
+    unique = list(dict.fromkeys(active))
+    if unique != active:
+        cfg["active"] = unique
+        invalidate_document(state)
     if "Diesel" in available_fluid_types(state):
         return
-    cfg = state.get("fluids_config", {})
     if "Diesel" in cfg.get("active", []):
         cfg["active"] = [name for name in cfg["active"] if name != "Diesel"]
         invalidate_document(state)
