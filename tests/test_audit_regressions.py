@@ -65,13 +65,17 @@ def chart_fixture(job, target=3000.0):
         'CSG 13 3/8"': (13.375, 12.25, 20., 18.),
         'CSG 9 5/8"': (9.625, 8.535, 13.375, 12.25), 'CSG 7"': (7., 6.276, 9.625, 8.535),
     }
-    liner = {'LNR 7"': (7., 6.276), 'LNR 5"': (5., 4.276)}
+    liner = {'LNR 7"': (7., 6.276), 'LNR 5"': (5., 4.276), 'LNR 4 1/2"': (4.5, 4.)}
     tieback = {'TIE BACK LNR 7"': (7., 6.276), 'TIE BACK LNR 5"': (5., 4.276)}
     extent = max(3300., target)
     if job in casing:
         od, inner, outer_od, outer_id = casing[job]
         rows = [("Previous Casing", 1500., outer_od, outer_id),
                 ("Casing", extent, od, inner), ("Open Hole Size", extent, outer_id, outer_id)]
+    elif job == 'LNR 4 1/2"':
+        rows = [("Previous Casing", 1500., 7., 6.276),
+                ("Liner", target, 4.5, 4.), ("Open Hole Size", extent, 6., 6.),
+                ("Liner Hanger", 1000., 4.5, 4.), ("Drill Pipes", 1000., 3.5, 2.75)]
     elif job in liner:
         od, inner = liner[job]
         rows = [("Previous Casing", 1500., 13.375, 12.25),
@@ -86,8 +90,9 @@ def chart_fixture(job, target=3000.0):
                           "ID (in)": inner, "Joint (m)": 12., "Weight (ppf)": 100.,
                           "Grade": "K-55", "Collapse (psi)": 1000., "Burst (psi)": 2000.}
                          for desc, md, size, inner in rows])
+    target_row = next(iter(hardware_choices(table, {"Liner"}))) if job == 'LNR 4 1/2"' else "__manual__"
     return {"hardware_table": table, "pore_gradient_emw_pcf": 70., "frac_gradient_emw_pcf": 160.,
-            "placement_config": {"job_type": job, "target_row": "__manual__", "manual_depth_m": target,
+            "placement_config": {"job_type": job, "target_row": target_row, "manual_depth_m": target,
                                  **({"chart_excess_mode": "ignore"} if job in casing or job in liner or job in tieback else {})}}
 
 
@@ -315,6 +320,25 @@ class AuditRegressions(unittest.TestCase):
         self.assertTrue(doc.tables)
         text = "\n".join(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
         self.assertIn("Regression Client", text)
+
+    def test_fractional_liner_fixture_preserves_hardware_and_explicit_excess_gate(self):
+        import cement_chart_model as chart
+        import centralizer_adapter as centralizer
+        job = 'LNR 4 1/2"'
+        for factory in (chart_fixture, valid_export_chart_fixture):
+            with self.subTest(factory=factory.__name__):
+                state = {"job_type": job, **factory(job)}
+                config = state["placement_config"]
+                self.assertIn(config["target_row"], hardware_choices(state["hardware_table"], {"Liner"}))
+                self.assertEqual(config["chart_excess_mode"], "ignore")
+                geometry = chart.resolve_chart_geometry(state)
+                liner = next(row for row in geometry["active_string"] if row["description"] == "Liner")
+                hole = next(row for row in geometry["enclosing_string"] if row["description"] == "Open Hole Size")
+                self.assertEqual((liner["od_in"], liner["id_in"], hole["od_in"]), (4.5, 4., 6.))
+                config.pop("chart_excess_mode")
+                for consumer in (chart.resolve_chart_geometry, centralizer.to_engine_geometry):
+                    with self.assertRaisesRegex(ValueError, "Choose Chart Capacity Excess Mode explicitly"):
+                        consumer(state)
 
     def test_neat_cement_export_for_every_job_type(self):
         for job in materials_db.JOB_TYPES:
