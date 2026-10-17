@@ -75,6 +75,18 @@ def _check_thickening_draft(container, path):
             raise ValueError(f"{path}.{field} must be text or an unfinished blank.")
 
 
+def _check_table_numeric_cells(table, fields, path):
+    """Keep JSON booleans/containers out of numeric editors and coercion paths.
+
+    Numeric text and null cells remain repairable drafts; bool is a different
+    JSON type and must never silently become a one/zero engineering value.
+    """
+    for index, row in enumerate(table.to_dict("records")):
+        for field in fields:
+            if isinstance(row.get(field), (bool, list, dict)):
+                raise ValueError(f"{path}[{index}].{field} must not be boolean or a container.")
+
+
 def _validate_project(data):
     if not any(key in data for key in ("job_type", "well_name", "doc_control",
                                        "well_data", "hardware_table", "fluids_config")):
@@ -109,6 +121,9 @@ def _validate_project(data):
                           nonnegative=("tie_back_liner_lap_m", "squeeze_depth_m"))
     if "target_string_id" in placement and not isinstance(placement["target_string_id"], str):
         raise ValueError("placement_config.target_string_id must be a string token.")
+    for field in ("target_row", "host_row"):
+        if placement.get(field) is not None and not isinstance(placement[field], str):
+            raise ValueError(f"placement_config.{field} must be a string token or null.")
     if "executive_summary_config" in data:
         validate_executive_summary_config(data["executive_summary_config"])
     if "centralizer_config" in data:
@@ -133,6 +148,14 @@ def _validate_project(data):
     for key in ("cement_additives_dfs", "lab_grid_dfs", "spacer_dfs"):
         if any(not isinstance(item, pd.DataFrame) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains a table that could not be restored.")
+    for key, fields in (("cement_additives_dfs", ("User Input", "Density")),
+                        ("spacer_dfs", ("User Input (% or gal)",))):
+        for name, table in data.get(key, {}).items():
+            _check_table_numeric_cells(table, fields, f"{key}.{name}")
+    for name, record in data.get("report_text_state", {}).items():
+        history = record.get("history", [])
+        if not isinstance(history, list) or any(not isinstance(text, str) for text in history):
+            raise ValueError(f"report_text_state.{name}.history must be a list of text revisions.")
     archived_fields = {"cement_additives_dfs": pd.DataFrame, "cement_params": dict,
                        "lab_grid_dfs": pd.DataFrame, "lab_qc_params": dict}
     for slurry, draft in data.get("inactive_slurry_drafts", {}).items():
@@ -144,6 +167,9 @@ def _validate_project(data):
                                 ("lab_grid_dfs", {"Material", "Concentration", "Unit", "Mass", "Lot No"})):
             if field in draft and not required.issubset(draft[field].columns):
                 raise ValueError(f"inactive_slurry_drafts.{slurry}.{field} is missing required columns.")
+        if "cement_additives_dfs" in draft:
+            _check_table_numeric_cells(draft["cement_additives_dfs"], ("User Input", "Density"),
+                                       f"inactive_slurry_drafts.{slurry}.cement_additives_dfs")
         if "cement_params" in draft:
             _check_numeric_fields(draft["cement_params"], ("yield", "mix_water", "dead_vol", "total_sacks", "cmt_sg", "report_bottom_depth"),
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
@@ -191,6 +217,9 @@ def _validate_project(data):
         hardware = data.get(key)
         if hardware is not None and not hardware_columns.issubset(hardware.columns):
             raise ValueError(f"{key} is missing required columns.")
+        if hardware is not None:
+            _check_table_numeric_cells(hardware, ("ID (in)", "Joint (m)", "Weight (ppf)",
+                                                 "Collapse (psi)", "Burst (psi)"), key)
     validate_material_properties(data)
 
 
