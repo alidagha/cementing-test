@@ -206,7 +206,7 @@ def _canonical(value):
     if isinstance(value, float):
         if not math.isfinite(value):
             return {"nonfinite": str(value)}
-        return value
+        return 0.0 if value == 0.0 else value
     if isinstance(value, int):
         # BUG-16: fingerprint(150) and fingerprint(150.0) must be identical —
         # widget sources legitimately deliver the same quantity as int or
