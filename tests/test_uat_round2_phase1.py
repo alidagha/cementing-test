@@ -16,6 +16,8 @@ import phase_10_procedure as report
 from project_state import request_description_for_job
 
 DATES = ("request_date", "prepared_date", "checked_date", "approved_date", "revision_date")
+TEXT_LABELS = {"request_description": "Request Description",
+               "revision_description": "Revision Description", "revision_no": "Revision No."}
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
 
@@ -32,7 +34,7 @@ class Round2Phase1UAT(unittest.TestCase):
             self.assertEqual(app.session_state[field], expected)
             self.assertEqual(app.session_state["doc_control"][field], expected)
             if app.radio(key="_app_mode_key").value == "phase1":
-                self.assertEqual(app.text_input(key="_w_" + field).value, expected)
+                self.assertEqual(next(w for w in app.text_input if w.label == TEXT_LABELS[field]).value, expected)
 
     def test_job_family_formatting_and_conservative_future_fallback(self):
         expected = {
@@ -73,7 +75,7 @@ class Round2Phase1UAT(unittest.TestCase):
 
     def test_request_manual_first_edit_follows_to_untouched_revision(self):
         app = self.app()
-        app.text_input(key='_w_request_description').set_value('Owner request')
+        next(w for w in app.text_input if w.label == 'Request Description').set_value('Owner request')
         self.phase(app, 'phase2_3')
         self.descriptions(app, 'Owner request', 'Owner request')
         self.phase(app, 'phase1')
@@ -89,8 +91,8 @@ class Round2Phase1UAT(unittest.TestCase):
         for text in ('', '20" CSG Cementing'):
             with self.subTest(text=text):
                 app = self.app()
-                app.text_input(key='_w_request_description').set_value('Interim text').run()
-                app.text_input(key='_w_request_description').set_value(text).run()
+                next(w for w in app.text_input if w.label == 'Request Description').set_value('Interim text').run()
+                next(w for w in app.text_input if w.label == 'Request Description').set_value(text).run()
                 app.selectbox(key='_w_job_type').set_value('CMT PLUG').run()
                 self.healthy(app)
                 self.descriptions(app, text, text)
@@ -98,13 +100,13 @@ class Round2Phase1UAT(unittest.TestCase):
 
     def test_revision_manual_first_edit_is_independent(self):
         app = self.app()
-        app.text_input(key='_w_revision_description').set_value('Independent revision')
+        next(w for w in app.text_input if w.label == 'Revision Description').set_value('Independent revision')
         self.phase(app, 'phase2_3')
         self.descriptions(app, '20" CSG Cementing', 'Independent revision')
         self.phase(app, 'phase1')
         app.selectbox(key='_w_job_type').set_value('CMT PLUG').run()
         self.descriptions(app, 'CMT PLUG Cementing', 'Independent revision')
-        app.text_input(key='_w_request_description').set_value('Changed request').run()
+        next(w for w in app.text_input if w.label == 'Request Description').set_value('Changed request').run()
         self.descriptions(app, 'Changed request', 'Independent revision')
         self.assertTrue(app.session_state['revision_description_customized'])
 
@@ -114,9 +116,9 @@ class Round2Phase1UAT(unittest.TestCase):
                 with self.subTest(request=request_custom, revision=revision_custom):
                     app = self.app()
                     if request_custom:
-                        app.text_input(key='_w_request_description').set_value('Current request').run()
+                        next(w for w in app.text_input if w.label == 'Request Description').set_value('Current request').run()
                     if revision_custom:
-                        app.text_input(key='_w_revision_description').set_value('Current revision').run()
+                        next(w for w in app.text_input if w.label == 'Revision Description').set_value('Current revision').run()
                     self.phase(app, 'phase2_3')
                     saved = audit.round_trip(app.session_state.to_dict())
                     self.assertEqual(saved['request_description_customized'], request_custom)
@@ -129,7 +131,7 @@ class Round2Phase1UAT(unittest.TestCase):
                     request = 'Current request' if request_custom else 'CMT SQUEEZE Cementing'
                     revision = 'Current revision' if revision_custom else request
                     self.descriptions(restored, request, revision)
-                    restored.text_input(key='_w_request_description').set_value('Restored edit').run()
+                    next(w for w in restored.text_input if w.label == 'Request Description').set_value('Restored edit').run()
                     self.descriptions(restored, 'Restored edit', 'Current revision' if revision_custom else 'Restored edit')
 
     def test_all_five_calendar_first_entries_commit_before_navigation(self):
@@ -173,7 +175,7 @@ class Round2Phase1UAT(unittest.TestCase):
                 self.phase(app, 'phase1')
                 for field, value in (('request_description', 'Operator request'),
                                      ('revision_description', 'Operator revision'), ('revision_no', '7')):
-                    app.text_input(key='_w_' + field).set_value(value).run()
+                    next(w for w in app.text_input if w.label == TEXT_LABELS[field]).set_value(value).run()
                 restored = self.app(audit.round_trip(app.session_state.to_dict()))
                 for phase in ('phase2_3', 'phase4', 'phase5', 'phase7'):
                     self.phase(restored, phase)

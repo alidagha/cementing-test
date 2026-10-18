@@ -20,7 +20,7 @@ class Phase1UAT(unittest.TestCase):
 
     def test_defaults_methods_and_optional_calendars(self):
         app = self.app()
-        self.assertEqual(app.selectbox(key="_w_cementing_method").options,
+        self.assertEqual(next(w for w in app.selectbox if w.label == 'Cementing Method').options,
                          ["Primary Cementing", "Remedial Cementing"])
         for field, value in APPROVAL_DEFAULTS.items():
             self.assertEqual(app.text_input(key="_w_" + field).value, value)
@@ -45,11 +45,11 @@ class Phase1UAT(unittest.TestCase):
             self.assertEqual(app.date_input(key="_w_" + field).value, selected)
             self.assertEqual(app.session_state[field], selected.isoformat())
             self.assertEqual(app.session_state["doc_control"][field], selected.isoformat())
-        app.selectbox(key="_w_cementing_method").set_value("Remedial Cementing")
+        next(w for w in app.selectbox if w.label == 'Cementing Method').set_value("Remedial Cementing")
         self.phase(app, "phase2_3")
         saved = round_trip(app.session_state.to_dict())
         restored = self.app(saved)
-        self.assertEqual(restored.selectbox(key="_w_cementing_method").value, "Remedial Cementing")
+        self.assertEqual(next(w for w in restored.selectbox if w.label == 'Cementing Method').value, "Remedial Cementing")
         for field, value in edits.items():
             self.assertEqual(restored.text_input(key="_w_" + field).value, value)
         for index, field in enumerate(DATES):
@@ -62,15 +62,15 @@ class Phase1UAT(unittest.TestCase):
                 project["doc_control" if nested else "cementing_method"] = (
                     {"cementing_method": "Plug Cementing"} if nested else "Plug Cementing")
                 app = self.app(round_trip(project))
-                self.assertIsNone(app.selectbox(key="_w_cementing_method").value)
-                self.assertNotIn("Plug Cementing", app.selectbox(key="_w_cementing_method").options)
+                self.assertIsNone(next(w for w in app.selectbox if w.label == 'Cementing Method').value)
+                self.assertNotIn("Plug Cementing", next(w for w in app.selectbox if w.label == 'Cementing Method').options)
                 self.assertTrue(any("Plug Cementing" in warning.value for warning in app.warning))
                 self.phase(app, "phase2_3")
                 self.phase(app, "phase1")
                 saved = round_trip(app.session_state.to_dict())
                 self.assertEqual(saved["cementing_method"], "Plug Cementing")
                 self.assertEqual(saved["doc_control"]["cementing_method"], "Plug Cementing")
-                app.selectbox(key="_w_cementing_method").set_value("Remedial Cementing").run()
+                next(w for w in app.selectbox if w.label == 'Cementing Method').set_value("Remedial Cementing").run()
                 self.healthy(app)
                 self.assertEqual(app.session_state["cementing_method"], "Remedial Cementing")
                 self.assertEqual(app.session_state["doc_control"]["cementing_method"], "Remedial Cementing")

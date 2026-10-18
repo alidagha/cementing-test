@@ -182,17 +182,17 @@ class AuditRegressions(unittest.TestCase):
                 app = self.app(round_trip(project))
                 app.selectbox(key="_w_job_type").set_value('CSG 9 5/8"').run()
                 self.healthy(app)
-                self.assertEqual(app.text_input(key="_w_hole_size").value, expected)
+                self.assertEqual(next(w for w in app.text_input if w.label == 'Hole Size (in)').value, expected)
 
         app = self.app()
-        app.text_input(key="_w_hole_size").set_value('Custom approved hole').run()
-        app.text_input(key="_w_hole_size").set_value('26"').run()
+        next(w for w in app.text_input if w.label == 'Hole Size (in)').set_value('Custom approved hole').run()
+        next(w for w in app.text_input if w.label == 'Hole Size (in)').set_value('26"').run()
         restored = round_trip(app.session_state.to_dict())
         self.assertTrue(restored["hole_size_customized"])
         app = self.app(restored)
         app.selectbox(key="_w_job_type").set_value('CSG 9 5/8"').run()
         self.healthy(app)
-        self.assertEqual(app.text_input(key="_w_hole_size").value, '26"')
+        self.assertEqual(next(w for w in app.text_input if w.label == 'Hole Size (in)').value, '26"')
 
     def test_numeric_lab_tables_restore_and_render(self):
         grid = pd.DataFrame([
