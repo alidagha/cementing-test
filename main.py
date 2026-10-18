@@ -240,8 +240,8 @@ except (ValueError, TypeError) as exc:
 # The reminder now only fires when something has genuinely changed since
 # the last download, rather than always being present regardless of state —
 # and confirms the opposite ("saved at HH:MM") once it's actually current.
-def _mark_project_saved():
-    st.session_state["_saved_sig"] = hashlib.md5(current_project_json.encode()).hexdigest()
+def _mark_project_saved(project_json):
+    st.session_state["_saved_sig"] = hashlib.md5(project_json.encode()).hexdigest()
     st.session_state["_saved_at"] = datetime.now().strftime("%H:%M")
     st.session_state.pop("_saved_from_upload", None)
 
@@ -273,15 +273,28 @@ if _incomplete_additive_rows:
         + ". You can save this draft; complete the cells before Word export."
     )
 
-_project_manager_slot.download_button(
-    label="Download Project (.json)",
-    data=current_project_json,
-    file_name=project_filename,
-    mime="application/json",
-    help="Archive current well dataset and configuration as a standalone project file.",
-    on_click=_mark_project_saved,
+@st.dialog("Download current project", on_dismiss="rerun")
+def _download_project(project_json, filename):
+    # A download starts before a pending editor blur/rerun can finish. Prepare
+    # with a regular button first; the modal prevents further source edits
+    # while these exact bytes are offered, without another saved-state cache.
+    st.caption("Your current inputs are ready. Download below, or close to continue editing.")
+    if st.download_button(
+        label="Download Project (.json)",
+        data=project_json,
+        file_name=filename,
+        mime="application/json",
+        on_click=_mark_project_saved,
+        args=(project_json,),
+    ):
+        st.rerun()
+
+if _project_manager_slot.button(
+    "Prepare project download",
+    help="Commit current inputs, then download the prepared JSON file in the dialog.",
     disabled=not bool(current_project_json)
-)
+):
+    _download_project(current_project_json, project_filename)
 
 def _is_meaningful(val):
     """Safe truthiness check for the dirty-flag's data-presence test below.
@@ -336,7 +349,7 @@ _has_meaningful_data = (
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
 if _has_meaningful_data and st.session_state.get("_saved_sig") != _current_sig:
     _project_manager_slot.warning("⚠️ You have unsaved changes.")
-    _project_manager_slot.caption("Download the project (above) to keep them safe.")
+    _project_manager_slot.caption("Prepare a download above, then save the file to keep them safe.")
 elif st.session_state.get("_saved_from_upload"):
     _project_manager_slot.caption("💾 Project loaded. Download again after editing to save changes.")
 elif st.session_state.get("_saved_at"):
