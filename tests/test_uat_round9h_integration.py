@@ -45,7 +45,7 @@ def directional(state):
 
 @pytest.mark.parametrize("job", materials_db.JOB_TYPES)
 def test_all_jobs_navigate_without_implicit_execution_or_false_completion(job):
-    assert len(materials_db.JOB_TYPES) == 13
+    assert len(materials_db.JOB_TYPES) == 14
     state = {"job_type": job, "mud_density": "80", **audit.well_profile_fixture(),
              **audit.chart_fixture(job)}
     app = AppTest.from_file(str(audit.ROOT / "main.py"), default_timeout=30)

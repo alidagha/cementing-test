@@ -97,7 +97,7 @@ def valid_export_state_for(*names):
 
 
 def test_central_roles_and_hydraulic_order():
-    assert tuple(materials_db.FLUID_TYPES) == ORDER
+    assert tuple(materials_db.FLUID_TYPES) == ("Diesel", *ORDER)
     assert tuple(getattr(materials_db, "PLACEMENT_SLURRIES", ())) == PLACEMENT
     assert tuple(getattr(materials_db, "CEMENT_FORMULATION_FLUIDS", ())) == ("Scavenger", *PLACEMENT)
     assert materials_db.DEFAULT_MATERIAL_NAMES["Scavenger"] == "Cement Slurry"

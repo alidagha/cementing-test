@@ -324,7 +324,7 @@ def build_fluid_snapshot(state, *, override=None):
     active, params = config.get("active", []), config.get("params", {})
     old = state.get("fluid_data", {})
     order = ("Displacement Fluid", "Tail", "Lead #2", "Lead #1", "Lead", "Main",
-             "Scavenger", "Spacer", "Spacer Ahead", "Pre Flush")
+             "Scavenger", "Spacer", "Spacer Ahead", "Pre Flush", "Diesel")
     if (not isinstance(active, list) or any(not isinstance(name, str) for name in active)
             or len(set(active)) != len(active) or any(name not in (*order, "Spacer Behind") for name in active)):
         raise ValueError("Phase IV active fluids are missing, duplicate or unsupported.")
@@ -534,9 +534,10 @@ def _dynamic_fann(readings, fluid):
             raise ValueError("Invalid Bingham PV/Ty.")
         return result
     except ValueError as exc:
+        guidance = ("Complete Diesel rheology in Phase VII BHCT — Ramp-Down. " if fluid == "Diesel" else
+                    "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. ")
         raise ValueError(f"[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid '{fluid}'. "
-                         "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. "
-                         f"{exc}") from None
+                         f"{guidance}{exc}") from None
 
 
 def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None, custom_products=()):
@@ -574,7 +575,7 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
     for fluid in active:
         if fluid == "Displacement Fluid":
             per_active[fluid] = dict(mud)
-        elif fluid in materials_db.RHEOLOGY_LAB_FLUIDS:
+        elif fluid in materials_db.PHASE7_LAB_FLUIDS:
             lab = state.get("lab_qc_params", {})
             qc = lab.get(fluid, {}) if isinstance(lab, dict) else {}
             data = qc.get("rheology", {}) if isinstance(qc, dict) else {}

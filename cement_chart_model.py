@@ -9,7 +9,7 @@ from numbers import Real
 
 import pandas as pd
 import materials_db
-from engineering_tools import BBL_TO_CUFT, parse_fractional_size, require_positive_density
+from engineering_tools import BBL_TO_CUFT, parse_fractional_size, require_positive_density, require_fluid_density
 from well_profile import tvd_at_md, trajectory_tvd_decreases
 
 # Exact supported jobs, deliberately independent of future names/substrings.
@@ -17,6 +17,7 @@ CHART_JOBS = {
     'CSG 30"': "casing", 'CSG 24"': "casing", 'CSG 20"': "casing",
     'CSG 18 5/8"': "casing", 'CSG 13 3/8"': "casing", 'CSG 9 5/8"': "casing",
     'CSG 7"': "casing", 'LNR 7"': "liner", 'LNR 5"': "liner",
+    'LNR 4 1/2"': "liner",
     'TIE BACK LNR 7"': "tieback", 'TIE BACK LNR 5"': "tieback",
     "CMT PLUG": None, "CMT SQUEEZE": None,
 }
@@ -408,7 +409,7 @@ def _fluid(state, name):
     row = state.get("fluids_config", {}).get("params", {}).get(name,
                 state.get("fluid_data", {}).get(name, {}))
     volume = _number(row.get("volume"), f"Phase IV {name} volume", positive=True)
-    density = require_positive_density(row.get("density"))
+    density = require_fluid_density(name, row.get("density"))
     return volume, density
 
 
@@ -459,7 +460,7 @@ def resolve_final_fluid_intervals(state, geometry):
     intervals = [dict(row) for row in cement if row["top_md"] < row["bottom_md"]]
     bottom = cement[-1]["top_md"]
     active = state.get("fluids_config", {}).get("active", [])
-    for name in ("Scavenger", "Spacer Ahead", "Spacer", "Pre Flush"):
+    for name in ("Scavenger", "Spacer Ahead", "Spacer", "Pre Flush", "Diesel"):
         volume, density = _fluid(state, name) if name in active else (None, None)
         if volume is None:
             continue

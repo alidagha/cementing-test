@@ -39,9 +39,20 @@ DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approv
 # cementing_method visibly jump to their new auto-filled value the instant
 # Job Type changes is to set their widget keys in the same callback.
 
-def _commit_doc_widget(field):
+def _doc_widget_key(field):
+    key = f"_w_{field}"
+    # Old browser frames must not address the new job's dependent controls.
+    if field in ("hole_size", "cementing_method", "request_description", "revision_description"):
+        key += "_" + st.session_state["job_type"]
+    return key
+
+
+def _commit_doc_widget(field, widget_key=None):
     """Commit metadata and its export snapshot before navigation unmounts it."""
-    value = st.session_state[f"_w_{field}"]
+    widget_key = widget_key or _doc_widget_key(field)
+    if widget_key != _doc_widget_key(field):
+        return  # A late echo from a retired job's control is not a new edit.
+    value = st.session_state[widget_key]
     if field in DOCUMENT_DATE_FIELDS:
         value = value.isoformat() if isinstance(value, (date, datetime)) else ""
     st.session_state[field] = value
@@ -60,7 +71,7 @@ def _sync_document_descriptions():
             value = (request_description_for_job(st.session_state["job_type"])
                      if field == "request_description" else st.session_state["request_description"])
             st.session_state[field] = value
-            st.session_state["_w_" + field] = value
+            st.session_state[_doc_widget_key(field)] = value
             st.session_state.setdefault("doc_control", {})[field] = value
 
 
@@ -68,6 +79,19 @@ def on_job_type_change():
     """Callback: Synchronously updates suggested hole size and method without UI lag."""
     new_job = st.session_state.get("_w_job_type", materials_db.JOB_TYPES[0])
     new_method = materials_db.get_cementing_method(new_job)
+    # Blur and job selection can share a browser frame. Capture real edits
+    # against the still-current job before automatic updates retire its keys.
+    # Snapshot first: syncing a request can also update the revision widget.
+    pending = [(field, _doc_widget_key(field), st.session_state[_doc_widget_key(field)])
+               for field in ("hole_size", "request_description", "revision_description")
+               if _doc_widget_key(field) in st.session_state
+               and st.session_state[_doc_widget_key(field)] != st.session_state.get(field)]
+    for field, widget_key, value in pending:
+        st.session_state[widget_key] = value
+        if field == "hole_size":
+            _mark_hole_size_customized(widget_key)
+        else:
+            _commit_doc_widget(field, widget_key)
     # Legacy tops have no owner marker until their original job is changed.
     for params in st.session_state.get("cement_params", {}).values():
         if params.get("top_job_type") is None:
@@ -75,7 +99,7 @@ def on_job_type_change():
 
     _commit_doc_widget("job_type")
     st.session_state["cementing_method"] = new_method
-    st.session_state["_w_cementing_method"] = new_method
+    st.session_state[_doc_widget_key("cementing_method")] = new_method
     _commit_doc_widget("cementing_method")
 
     # FIX (requested, Level 1 #2): this used to unconditionally overwrite
@@ -88,13 +112,18 @@ def on_job_type_change():
     if not st.session_state.get("hole_size_customized", False):
         new_hole = materials_db.DEFAULT_HOLE_SIZES.get(new_job, "12 1/4\"")
         st.session_state["hole_size"] = new_hole
-        st.session_state["_w_hole_size"] = new_hole
-        _commit_doc_widget("hole_size")
-    _sync_document_descriptions()
-
-def _mark_hole_size_customized():
-    st.session_state["hole_size_customized"] = True
+    st.session_state[_doc_widget_key("hole_size")] = st.session_state["hole_size"]
     _commit_doc_widget("hole_size")
+    _sync_document_descriptions()
+    # A previously selected job may have left unmounted widget drafts.
+    for field in ("request_description", "revision_description"):
+        st.session_state[_doc_widget_key(field)] = st.session_state[field]
+
+def _mark_hole_size_customized(widget_key):
+    if widget_key != _doc_widget_key("hole_size"):
+        return
+    st.session_state["hole_size_customized"] = True
+    _commit_doc_widget("hole_size", widget_key)
 
 def _seed(widget_key, shadow_key):
     """Seed a widget-only key from its shadow, only if the widget key is
@@ -147,14 +176,16 @@ def render():
         st.session_state["job_type"] = st.session_state["_w_job_type"]
         
         # Hole Size (Fully unconstrained free-text with helper guidance)
-        _seed("_w_hole_size", "hole_size")
+        hole_widget_key = _doc_widget_key("hole_size")
+        _seed(hole_widget_key, "hole_size")
         st.text_input(
             "Hole Size (in)", 
-            key="_w_hole_size",
+            key=hole_widget_key,
             on_change=_mark_hole_size_customized,
+            args=(hole_widget_key,),
             help="Enter hole diameter (e.g. 26\", 12 1/4\", 8 1/2\") or injection string context for plugs (e.g. Inside 9 5/8\" CSG)."
         )
-        st.session_state["hole_size"] = st.session_state["_w_hole_size"]
+        st.session_state["hole_size"] = st.session_state[hole_widget_key]
         st.caption(f"↳ Default for {st.session_state['job_type']}: {materials_db.DEFAULT_HOLE_SIZES.get(st.session_state['job_type'], '—')} (your own value is kept once edited)")
         
         # Well Location & Names
@@ -178,14 +209,15 @@ def render():
         st.session_state["report_date"] = st.session_state["_w_report_date"]
         
         methods = ["Primary Cementing", "Remedial Cementing"]
-        _seed("_w_cementing_method", "cementing_method")
-        if st.session_state["_w_cementing_method"] not in methods:
-            st.session_state["_w_cementing_method"] = (
+        method_widget_key = _doc_widget_key("cementing_method")
+        _seed(method_widget_key, "cementing_method")
+        if st.session_state[method_widget_key] not in methods:
+            st.session_state[method_widget_key] = (
                 None if st.session_state["cementing_method"] == "Plug Cementing" else methods[0]
             )
-        st.selectbox("Cementing Method", methods, key="_w_cementing_method", on_change=_commit_doc_widget, args=("cementing_method",))
-        if st.session_state["_w_cementing_method"] is not None:
-            st.session_state["cementing_method"] = st.session_state["_w_cementing_method"]
+        st.selectbox("Cementing Method", methods, key=method_widget_key, on_change=_commit_doc_widget, args=("cementing_method", method_widget_key))
+        if st.session_state[method_widget_key] is not None:
+            st.session_state["cementing_method"] = st.session_state[method_widget_key]
         else:
             st.warning('Saved Cementing Method "Plug Cementing" is retained. Select a supported method to replace it.')
         
@@ -223,7 +255,7 @@ def render():
         detail_columns = st.columns(2)
         for index, (label, shadow_key) in enumerate(DOCUMENT_DETAIL_FIELDS):
             with detail_columns[index % 2]:
-                widget_key = f"_w_{shadow_key}"
+                widget_key = _doc_widget_key(shadow_key)
                 _seed(widget_key, shadow_key)
                 if shadow_key in DOCUMENT_DATE_FIELDS:
                     st.date_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
@@ -232,7 +264,7 @@ def render():
                     elif st.session_state[shadow_key]:
                         st.caption(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
                 else:
-                    st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
+                    st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key, widget_key))
                     st.session_state[shadow_key] = st.session_state[widget_key]
 
     # 2. Harmonize backwards-compatible dictionary for export modules

@@ -82,7 +82,7 @@ class ExecutiveSummaryReferences(unittest.TestCase):
             'giving 731.0 bbl for lead slurry and 79.0 bbl for tail slurry.')
 
     def test_all_current_jobs_safe_and_taxonomy_unchanged(self):
-        self.assertEqual(len(materials_db.JOB_TYPES), 13)
+        self.assertEqual(len(materials_db.JOB_TYPES), 14)
         self.assertNotIn('TIE BACK LNR 9 5/8"', materials_db.JOB_TYPES)
         for job in materials_db.JOB_TYPES:
             with self.subTest(job=job):

@@ -15,6 +15,7 @@ JOB_TYPES = [
     'CSG 7"', 
     'LNR 7"', 
     'LNR 5"', 
+    'LNR 4 1/2"',
     "CMT PLUG", 
     "CMT SQUEEZE", 
     'TIE BACK LNR 7"', 
@@ -44,6 +45,7 @@ DEFAULT_HOLE_SIZES = {
     'CSG 7"': '8 1/2"',
     'LNR 7"': '8 1/2"',
     'LNR 5"': '6"',
+    'LNR 4 1/2"': '6"',
     "CMT PLUG": "Inside Casing / OH",
     "CMT SQUEEZE": "Perforations / Squeeze Zone",
     'TIE BACK LNR 7"': '8 1/2"',
@@ -53,14 +55,18 @@ DEFAULT_HOLE_SIZES = {
 # Roles are distinct: Scavenger is formulated and tested, never placed.
 PLACEMENT_SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 CEMENT_FORMULATION_FLUIDS = ("Scavenger", *PLACEMENT_SLURRIES)
+RHEOLOGY_ONLY_FLUIDS = ("Diesel",)
 RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
+# Phase VII can render rheology-only fluids; downstream consumers stay deferred.
+PHASE7_LAB_FLUIDS = (*CEMENT_FORMULATION_FLUIDS, *RHEOLOGY_ONLY_FLUIDS)
 HYDRAULIC_EXECUTION_ORDER = (
-    "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
+    "Diesel", "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
     "Spacer Behind", "Displacement Fluid",
 )
 FLUID_TYPES = list(HYDRAULIC_EXECUTION_ORDER)
 
 DEFAULT_MATERIAL_NAMES = {
+    "Diesel": "Diesel",
     "Pre Flush": "Salt Saturated Water",
     # BUG-20: the three spacer stages used to inherit the PRE-FLUSH name
     # "Salt Saturated Water" - a spacer is a weighted, viscous isolating
@@ -158,7 +164,7 @@ MATERIAL_TAXONOMY = {
         "state": "Liquid"
     },
     "Liquid Extender": {
-        "names": ["Micro Block"],
+        "names": ["Micro Block", "Sodium Silicate"],
         "state": "Liquid"
     },
     "Anti Foam": {
@@ -270,6 +276,7 @@ TANK_OPTIONS_BY_JOB = {
     'CSG 9 5/8"':      ["Mud Reserve Tanks", "Batch Mixer Tanks"],
     'LNR 7"':          ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'LNR 5"':          ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
+    'LNR 4 1/2"':      ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     "CMT PLUG":         ["Mud Reserve Tanks", "Cement Unit Tanks"],
     "CMT SQUEEZE":      ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'TIE BACK LNR 7"': ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],

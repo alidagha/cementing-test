@@ -9,7 +9,7 @@ import pandas as pd
 import materials_db
 from well_profile import geometry_defaults, geothermal_defaults, resolve_well_profile
 from rheology import validate_rheology_results
-from engineering_tools import (require_positive_density, require_bhsp_density, require_positive_pump_rate,
+from engineering_tools import (require_positive_density, require_fluid_density, require_bhsp_density, require_positive_pump_rate,
                                require_preflush_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, validate_thickening_test, parse_effective_numeric,
@@ -156,6 +156,36 @@ def restore_canonical_fields(state):
     if (any(key in state for key in ("well_geometry", "geothermal_config", "geo_md", "geo_tvd", "bhst", "geo_gradient"))
             or any(key in well for key in ("geo_md", "geo_tvd", "bhst", "geo_gradient"))):
         refresh_well_derived(state)
+    reconcile_fluid_applicability(state)
+
+
+def available_fluid_types(state):
+    """Project Mud Type governs eligibility; ordering stays in materials_db."""
+    mud_type = state.get("mud_type", state.get("well_data", {}).get("mud_type", "WBM"))
+    return [name for name in materials_db.FLUID_TYPES if name != "Diesel" or mud_type == "OBM"]
+
+
+def reconcile_fluid_applicability(state):
+    """Reconcile one selection per fluid and deactivate ineligible Diesel.
+
+    Used before decoded state publication, on Mud Type edits and on rebuild;
+    parameter/lab drafts survive and OBM eligibility never reactivates Diesel.
+    """
+    cfg = state.get("fluids_config", {})
+    active = cfg.get("active", [])
+    unique = list(dict.fromkeys(active))
+    if unique != active:
+        cfg["active"] = unique
+        invalidate_document(state)
+    if "Diesel" in available_fluid_types(state):
+        return
+    if "Diesel" in cfg.get("active", []):
+        cfg["active"] = [name for name in cfg["active"] if name != "Diesel"]
+        invalidate_document(state)
+    state.pop("chk_fluid_Diesel", None)
+    if "Diesel" in state.get("active_fluids", {}):
+        state["active_fluids"]["Diesel"] = False
+    state.get("fluid_data", {}).pop("Diesel", None)
 
 
 def _canonical(value):
@@ -176,7 +206,7 @@ def _canonical(value):
     if isinstance(value, float):
         if not math.isfinite(value):
             return {"nonfinite": str(value)}
-        return value
+        return 0.0 if value == 0.0 else value
     if isinstance(value, int):
         # BUG-16: fingerprint(150) and fingerprint(150.0) must be identical —
         # widget sources legitimately deliver the same quantity as int or
@@ -396,6 +426,7 @@ def refresh_fluids(state):
     '{name}: active fluid volume must be positive ...' surfaced as
     'Review the current calculation inputs before export (...)': the operator
     was told WHAT was wrong but never WHERE to go (audit L8-03)."""
+    reconcile_fluid_applicability(state)
     cfg = state.get("fluids_config", {})
     active = sorted(cfg.get("active", []), key=materials_db.HYDRAULIC_EXECUTION_ORDER.index)
     cfg["active"] = active
@@ -426,16 +457,23 @@ def refresh_fluids(state):
         if density is None or not str(density).strip():
             raise ValueError(f"Phase IV: {name}: enter the fluid density before export")
         density = str(density)
-        effective = require_positive_density(density)
+        effective = require_fluid_density(name, density)
         if source.get("pump_rate") is None or not str(source["pump_rate"]).strip():
             raise ValueError(f"Phase IV: {name}: enter the pump rate before export")
         rate = str(source["pump_rate"])
-        minimum = require_positive_pump_rate(rate)
+        try:
+            minimum = require_positive_pump_rate(rate)
+        except ValueError as exc:
+            if name == "Diesel":
+                raise ValueError(f"Phase IV: Diesel: {exc}") from exc
+            raise
         if not math.isfinite(volume) or volume <= 0:
             raise ValueError(f"Phase IV: {name}: active fluid volume must be positive; "
                              "enter a volume or deselect the fluid")
         material_name = source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, ""))
-        if name == "Pre Flush":
+        if name == "Diesel":
+            material_name = materials_db.DEFAULT_MATERIAL_NAMES[name]
+        elif name == "Pre Flush":
             require_preflush_material_name(material_name)
         duration = volume / minimum
         cumulative += duration
@@ -601,10 +639,14 @@ def prepare_calculations(state):
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         issues += refresh_lab_payloads(state)
+        # Dormant Diesel sources are drafts, not current chart/report inputs.
+        chart_fluids = deepcopy(state.get("fluids_config", {}))
+        if "Diesel" not in chart_fluids.get("active", []):
+            chart_fluids.get("params", {}).pop("Diesel", None)
         chart_source = fingerprint({
             "job": state.get("job_type"), "geometry": state.get("well_geometry"),
             "hardware": state.get("hardware_table"), "placement": state.get("placement_config"),
-            "fluids": state.get("fluids_config"), "cement_placement": {
+            "fluids": chart_fluids, "cement_placement": {
                 name: {key: record.get(key) for key in ("top_mode", "top_depth", "top_job_type", "report_bottom_depth")}
                 for name, record in state.get("cement_params", {}).items()
                 if name in materials_db.PLACEMENT_SLURRIES},

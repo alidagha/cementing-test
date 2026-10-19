@@ -393,7 +393,9 @@ def test_bad_auxiliary_readings_are_controlled(fault):
 
 def test_real_engine_scavenger_smoke_retains_actual_train_and_no_project_writes(monkeypatch):
     app = adapter()
-    state = program_state(fluids={name: 1. for name in reversed(materials_db.HYDRAULIC_EXECUTION_ORDER)})
+    # Diesel Pumping integration is deferred; retain the certified eleven-stage smoke.
+    fluids = tuple(name for name in materials_db.HYDRAULIC_EXECUTION_ORDER if name != "Diesel")
+    state = program_state(fluids={name: 1. for name in reversed(fluids)})
     before = pickle.dumps(state)
     original = app.fcm.simulate
     jobs = []
@@ -406,7 +408,7 @@ def test_real_engine_scavenger_smoke_retains_actual_train_and_no_project_writes(
     try:
         assert len(jobs) == 1
         job = jobs[0]
-        assert [s.fluid_type for s in job.placement] == list(materials_db.HYDRAULIC_EXECUTION_ORDER)
+        assert [s.fluid_type for s in job.placement] == list(fluids)
         assert "Scavenger" in job.fluids and not job.frictionless
         assert all(not f.frictionless_fluid for f in job.fluids.values())
         fit = rheology.build_rheology(state["lab_qc_params"]["Scavenger"])[0]["bhct_down"]
@@ -417,7 +419,7 @@ def test_real_engine_scavenger_smoke_retains_actual_train_and_no_project_writes(
         assert len(result["figure"].axes) == 3
         assert all(math.isfinite(x) for x in result["result"].hydro)
         assert result["result"].dyn is not None
-        assert result["result"].t_eod == pytest.approx(len(materials_db.HYDRAULIC_EXECUTION_ORDER) / 4.)
+        assert result["result"].t_eod == pytest.approx(len(fluids) / 4.)
         assert not any("HYDROSTATIC-ONLY" in w or "contribution only" in w for w in result["warnings"])
         assert pickle.dumps(state) == before
     finally:

@@ -164,7 +164,7 @@ def source_signature(state, products=None):
                     for field in ("plastic_viscosity", "yield_point")},
             "lab": {name: {key: state.get("lab_qc_params", {}).get(name, {}).get("rheology", {}).get("bhct_down", {}).get(key)
                            for key in ("selected", "readings")}
-                    for name in active if name in materials_db.RHEOLOGY_LAB_FLUIDS},
+                    for name in active if name in materials_db.PHASE7_LAB_FLUIDS},
             "aux": {name: config["aux_rheology"].get(name) for name in active if name in AUX_FLUIDS},
         }
     return fingerprint(body)
@@ -368,7 +368,7 @@ def render():
         st.warning(f"Complete current geometry in Phase II/III: {exc}")
     _render_zones(config, candidates)
     if config["physics_mode"] == "dynamic":
-        st.caption("Mud PV/YP: Phase II. Cement/Scavenger: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
+        st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
         for fluid in AUX_FLUIDS:
             if fluid not in st.session_state.get("fluids_config", {}).get("active", []):
                 continue

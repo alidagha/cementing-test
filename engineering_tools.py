@@ -107,11 +107,11 @@ def lab_review_signature(qc, grid):
 
 
 def build_lab_rheology(qc, fluid):
-    """Existing Bingham builder with the Scavenger required-dataset policy."""
+    """Existing Bingham builder and shared required BHCT Ramp-Down policy."""
     from rheology import build_rheology
     result, issues = build_rheology(qc)
-    if fluid == "Scavenger" and not result["bhct_down"]["selected"]:
-        issues.append("Scavenger: BHCT — Ramp-Down Rheology is required")
+    if (fluid == "Scavenger" or fluid in materials_db.RHEOLOGY_ONLY_FLUIDS) and not result["bhct_down"]["selected"]:
+        issues.append(f"{fluid}: BHCT — Ramp-Down Rheology is required")
     return result, issues
 
 
@@ -374,6 +374,23 @@ def require_positive_density(value) -> float:
     return sum(numbers) / len(numbers)
 
 
+def require_diesel_density(value) -> float:
+    """Diesel accepts one entered density, never a range's effective mean."""
+    message = "Diesel density must be a single value between 51 and 54 pcf."
+    try:
+        density = safe_float(value, None)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(message) from None
+    if density is None or not math.isfinite(density) or not 51.0 <= density <= 54.0:
+        raise ValueError(message)
+    return density
+
+
+def require_fluid_density(fluid, value) -> float:
+    """Phase-IV density authority; existing fluids retain range/mean semantics."""
+    return require_diesel_density(value) if fluid == "Diesel" else require_positive_density(value)
+
+
 def require_bhsp_density(value) -> float:
     """Use the upper density only for automatic hydrostatic pressure."""
     return max(_positive_density_values(value))
@@ -534,6 +551,11 @@ DEFAULT_LIQUID_PROPERTIES = {
     "jp-620l": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
     "se-g10": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
     "pk-gas8": {"density_ppg": 1.05 * WATER_LB_PER_GAL, "lab_factor": 1.05 * WATER_LB_PER_GAL / CEMENT_SACK_LB},
+
+    "sodium silicate": {
+        "density_ppg": 1.50 * WATER_LB_PER_GAL,
+        "lab_factor": 1.50 * WATER_LB_PER_GAL / CEMENT_SACK_LB,
+    },
 
     # Micro Block / Liquid Extender (SG = 1.32)
     "micro block": {"density_ppg": 1.32 * WATER_LB_PER_GAL, "lab_factor": 1.32 * WATER_LB_PER_GAL / CEMENT_SACK_LB},         # 11.011 ppg
@@ -889,7 +911,7 @@ def compute_phase_status(ss) -> dict:
 
     geo_md = depth_or_none("geo_md")
     geo_tvd = depth_or_none("geo_tvd")
-    from project_state import hardware_draft_pending
+    from project_state import hardware_draft_pending, available_fluid_types
     if hardware_draft_pending(ss):
         status["phase2_3"] = {"level": "warning", "message": "Review pending hardware edits in Phase II & III before export."}
     elif geo_md is None or geo_tvd is None:
@@ -938,7 +960,7 @@ def compute_phase_status(ss) -> dict:
             status["phase2_3"] = {"level": "warning", "message": str(exc)}
 
     # Phase IV: Fluids Sequence
-    if len(active) <= 1:
+    if len(active) <= 1 and "Diesel" not in active:
         status["phase4"] = {"level": "empty", "message": "No fluids selected beyond Displacement Fluid."}
     else:
         config = ss.get("fluids_config", {}).get("params", {})
@@ -946,7 +968,8 @@ def compute_phase_status(ss) -> dict:
         incomplete = []
         for fluid in active:
             source = config.get(fluid, fluid_data.get(fluid, {}))
-            if not isinstance(source, dict) or not _positive_number(source.get("volume")):
+            if (fluid not in available_fluid_types(ss) or not isinstance(source, dict)
+                    or not _positive_number(source.get("volume"))):
                 incomplete.append(fluid)
                 continue
             density = (ss.get("mud_density") or ss.get("well_data", {}).get("mud_density")
@@ -954,7 +977,7 @@ def compute_phase_status(ss) -> dict:
             try:
                 if fluid == "Pre Flush":
                     require_preflush_material_name(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
-                require_positive_density(density)
+                require_fluid_density(fluid, density)
                 require_positive_pump_rate(source.get("pump_rate"))
             except (TypeError, ValueError, OverflowError):
                 incomplete.append(fluid)
@@ -1079,13 +1102,27 @@ def compute_phase_status(ss) -> dict:
         )
 
     # Phase VII: Lab Report
-    if not active_slurries:
+    active_lab = [fluid for fluid in active if fluid in materials_db.PHASE7_LAB_FLUIDS
+                  and fluid in available_fluid_types(ss)]
+    rheology_only = any(fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
+    if not active_lab:
         status["phase7"] = {"level": "empty", "message": "No cement slurry to report on."}
     else:
         qc = ss.get("lab_qc_params", {})
         grids = ss.get("lab_grid_dfs", {})
         missing = []
-        for slurry in active_slurries:
+        for slurry in active_lab:
+            if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
+                try:
+                    if not isinstance(qc.get(slurry), dict):
+                        raise ValueError("Rheology data is missing")
+                    validate_lab_rheology(qc[slurry], slurry)
+                    if not lab_temperature_valid(ss.get("well_data", {}).get("bhct", ss.get("bhct")),
+                                                 ss.get("well_data", {}).get("bhst", ss.get("bhst"))):
+                        raise ValueError("Review BHCT/BHST in Phase II & III")
+                except ValueError:
+                    missing.append(slurry)
+                continue
             grid = grids.get(slurry)
             if slurry not in qc or grid is None or not hasattr(grid, "iterrows") or grid.empty:
                 missing.append(slurry)
@@ -1121,8 +1158,10 @@ def compute_phase_status(ss) -> dict:
             if ss.get("lab_source_signatures", {}).get(slurry) != lab_source_signature(ss, slurry):
                 missing.append(slurry)
         status["phase7"] = (
-            {"level": "warning", "message": f"Lab QC or formulation rows incomplete for: {', '.join(missing)}."} if missing
-            else {"level": "ok", "message": f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies)."}
+            {"level": "warning", "message": (f"Lab QC or rheology incomplete for: {', '.join(missing)}." if rheology_only
+                                             else f"Lab QC or formulation rows incomplete for: {', '.join(missing)}.")} if missing
+            else {"level": "ok", "message": (f"Lab QC/rheology entered for {len(active_lab)} fluid(s)." if rheology_only
+                                             else f"Lab QC and formulation entered for {len(active_slurries)} slurry(ies).")}
         )
 
     # Phase IX completion is canonical and required by Word for applicable jobs.

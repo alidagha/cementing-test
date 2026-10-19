@@ -112,12 +112,12 @@ def prepare_pumping_simulation(state):
         return {"applicable": False, "message": "Not applicable (Plug/Squeeze).", "inputs": None, "warnings": []}
     mud = _mud_rheology(state)
     geometry, warnings = _geometry(state, kind)
-    projected = deepcopy({key: state[key] for key in ("fluids_config", "fluid_data", "mud_density", "well_data") if key in state})
+    projected = deepcopy({key: state[key] for key in ("fluids_config", "fluid_data", "mud_density", "mud_type", "well_data") if key in state})
     refresh_fluids(projected)
     fluid_data = projected["fluid_data"]
     lab_results = {}
     for name in fluid_data:
-        if name in materials_db.RHEOLOGY_LAB_FLUIDS:
+        if name in materials_db.PHASE7_LAB_FLUIDS:
             try:
                 lab = _record(state.get("lab_qc_params", {}), "Phase VII Lab")
                 qc = _record(lab.get(name, {}), f"Phase VII {name}")
@@ -146,7 +146,7 @@ def prepare_pumping_simulation(state):
                 raise ValueError(f"Phase IX {name}: Pumping Simulation requires complete valid seven-RPM auxiliary rheology. {exc}") from None
             fluid_data[name].update(pv_cp=fit["pv_cp"], yp_lbf100ft2=fit["ty_lbf_100ft2"])
     fitted = fcm.rheology_from_lab(lab_results)
-    explicit = {"Scavenger": fitted["Scavenger"]} if "Scavenger" in fitted else {}
+    explicit = {name: entry for name, entry in fitted.items() if name not in fcm.SLURRY_TYPES}
     slurries = {name: fitted[name] for name in fcm.SLURRY_TYPES if name in fitted}
     stages, stage_warnings = fcm.stages_from_fluid_data(fluid_data)
     _, rheology_warnings, frictionless = fcm._build_fluids(stages,
@@ -177,7 +177,7 @@ def source_signature(state):
         row = _record(params.get(name, old.get(name, {})), f"Phase IV {name}")
         fields = ("volume", "pump_rate", "material_name") if name == "Displacement Fluid" else ("volume", "density", "pump_rate", "material_name")
         fluids[name] = {key: row.get(key) for key in fields}
-        if name in materials_db.RHEOLOGY_LAB_FLUIDS:
+        if name in materials_db.PHASE7_LAB_FLUIDS:
             qc = state.get("lab_qc_params", {}).get(name, {})
             lab[name] = qc.get("rheology", {}).get("bhct_down", {})
         elif name in fcm.SPACER_TYPES:
