@@ -19,6 +19,7 @@ import pumping_simulation as pumping
 import phase_9_centralizer as phase9
 import test_audit_regressions as audit
 from centralizer_fixtures import execute_centralizer
+from standalone_spacer import PENDING_INTEGRATION
 
 
 JOBS = ('CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"', 'CMT PLUG', 'CMT SQUEEZE')
@@ -30,23 +31,26 @@ CASE = audit.AuditRegressions()
 @pytest.fixture(scope='module')
 def projects():
     cache = {}
-    def get(job=JOBS[0], active=True, mud='OBM'):
-        if job not in cache:
-            app = CASE.configured_app(job, optional_fluids=True)
+    def get(job=JOBS[0], active=True, mud='OBM', include_standalone_spacer=False):
+        key = (job, include_standalone_spacer)
+        expected_issues = [PENDING_INTEGRATION] if include_standalone_spacer else []
+        if key not in cache:
+            app = CASE.configured_app(job, optional_fluids=True,
+                                      include_standalone_spacer=include_standalone_spacer)
             state = audit.round_trip(app.session_state.to_dict())
             state['mud_type'] = 'OBM'
             state['fluids_config']['active'].insert(0, 'Diesel')
             state['fluids_config']['params']['Diesel'] = deepcopy(DIESEL)
             state['lab_qc_params']['Diesel'] = {'rheology': audit.valid_export_rheology_fixture()}
-            assert ps.prepare_calculations(state) == []
+            assert ps.prepare_calculations(state) == expected_issues
             execute_centralizer(state, physics='dynamic')
-            cache[job] = state
-        state = deepcopy(cache[job])
+            cache[key] = state
+        state = deepcopy(cache[key])
         state['mud_type'] = mud
         if not active:
             state['fluids_config']['active'].remove('Diesel')
         ps.reconcile_fluid_applicability(state)
-        assert ps.prepare_calculations(state) == []
+        assert ps.prepare_calculations(state) == expected_issues
         if not phase9.result_is_current(state):
             execute_centralizer(state, physics='dynamic')
         return state
@@ -371,11 +375,15 @@ NO_DIESEL_A42 = {
 @pytest.mark.parametrize('job', JOBS)
 @pytest.mark.parametrize('mud', ['WBM', 'OBM'])
 def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
-    state = projects(job, active=False, mud=mud)
+    # Preserve the original four-stage source program and exact A-4-2 text
+    # snapshots. This is a source-projection test, not a Standalone Word build.
+    state = projects(job, active=False, mud=mud, include_standalone_spacer=True)
     specs = sync(state)
     assert (specs['exec_summary_text']['signature'], specs['procedure_text']['signature']) == NO_DIESEL_A42[job]
     assert 'Diesel' not in specs['exec_summary_text']['generated']
     assert 'Diesel' not in specs['procedure_text']['generated']
+    with pytest.raises(ValueError, match='Standalone Spacer.*pending'):
+        context(state)
 
 
 def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(projects):

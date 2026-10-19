@@ -80,11 +80,11 @@ def _seed_session():
         "job_type": 'CSG 9 5/8"',
         "geo_md": 3000.0, "geo_tvd": 3000.0,
         "hardware_table": _benchmark_hardware(),
-        "fluids_config": {"active": ["Pre Flush", "Spacer", "Lead", "Tail",
+        "fluids_config": {"active": ["Pre Flush", "Spacer Behind", "Lead", "Tail",
                                      "Displacement Fluid"]},
         "fluid_data": {
             "Pre Flush": {"volume": 80.0, "density": 75.0, "min_rate": 5.0},
-            "Spacer": {"volume": 150.0, "density": 95.0, "min_rate": 4.0},
+            "Spacer Behind": {"volume": 150.0, "density": 95.0, "min_rate": 4.0},
             "Lead": {"volume": 500.0, "density": 104.0, "min_rate": 4.0},
             "Tail": {"volume": 300.0, "density": 118.0, "min_rate": 3.0},
             "Displacement Fluid": {"volume": 1200.0, "density": 65.0, "min_rate": 6.0},
@@ -103,7 +103,7 @@ def _seed_session():
             [{"Additive": "Fluid Loss", "Concentration": "0.5 %"}]),
         "cement_calc_Tail": pd.DataFrame(
             [{"Additive": "Retarder", "Concentration": "0.2 %"}]),
-        "spacer_dfs": {"Spacer": pd.DataFrame([
+        "spacer_dfs": {"Spacer Behind": pd.DataFrame([
             {"Chemical": "Hematite", "User Input (% or gal)": 5.0,
              "Weighting Agent Type": "Hematite"}])},
         "preflush_config": {"type": "Combined (Water + NaCl + Wash)",
@@ -146,12 +146,12 @@ def _seed_wz217_apptest(at):
         "well_name": "WZ-217", "client": "NIDC",
         "geo_md": 3000.0, "geo_tvd": 3000.0,
         "hardware_table": _benchmark_hardware(),
-        "fluids_config": {"active": ["Pre Flush", "Spacer", "Lead", "Tail",
+        "fluids_config": {"active": ["Pre Flush", "Spacer Behind", "Lead", "Tail",
                                      "Displacement Fluid"]},
         "fluid_data": {
             "Pre Flush": {"name": "Pre Flush", "material_name": "Salt Saturated Water",
                           "volume": 80.0, "density": "75.0", "min_rate": 5.0},
-            "Spacer": {"name": "Spacer", "material_name": "Weighted Spacer",
+            "Spacer Behind": {"name": "Spacer Behind", "material_name": "Weighted Spacer",
                        "volume": 150.0, "density": "95.0", "min_rate": 4.0},
             "Lead": {"name": "Lead", "material_name": "Cement Slurry",
                      "volume": 500.0, "density": "104.0", "min_rate": 4.0},
@@ -174,7 +174,7 @@ def _seed_wz217_apptest(at):
             [{"Additive": "Fluid Loss", "Concentration": "0.5 %"}]),
         "cement_calc_Tail": pd.DataFrame(
             [{"Additive": "Retarder", "Concentration": "0.2 %"}]),
-        "spacer_dfs": {"Spacer": pd.DataFrame([
+        "spacer_dfs": {"Spacer Behind": pd.DataFrame([
             {"Chemical": "Hematite", "User Input (% or gal)": 5.0,
               "Weighting Agent Type": "Hematite"}])},
         "preflush_config": {"type": "Combined (Water + NaCl + Wash)",
@@ -436,9 +436,9 @@ def test_spacer_densities_sort_numerically():
     """F4 / P2-01: order spacer densities numerically, handling ranges safely."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
-    state["fluids_config"]["active"] = ["Pre Flush", "Spacer", "Spacer Ahead",
+    state["fluids_config"]["active"] = ["Pre Flush", "Spacer Behind", "Spacer Ahead",
                                         "Lead", "Tail", "Displacement Fluid"]
-    state["fluid_data"]["Spacer"]["density"] = "100.0"
+    state["fluid_data"]["Spacer Behind"]["density"] = "100.0"
     state["fluid_data"]["Spacer Ahead"] = {"volume": 120.0, "density": "95.0",
                                            "min_rate": 4.0}
     state["spacer_dfs"]["Spacer Ahead"] = pd.DataFrame(
@@ -450,7 +450,7 @@ def test_spacer_densities_sort_numerically():
     assert ctx["spacer_density_note"] == "95.0, 100.0", \
         ctx["spacer_density_note"]
 
-    state["fluid_data"]["Spacer"]["density"] = "115-118"
+    state["fluid_data"]["Spacer Behind"]["density"] = "115-118"
     ensure_current_centralizer(state)
     ctx2 = build_master_context(calculations_prepared=True)
     assert ctx2["spacer_density_note"] == "95.0, 115-118", \
@@ -461,7 +461,7 @@ def test_unreadable_fluid_volume_blocks_with_clear_message():
     """F3 / P1-03: malformed volume surfaces as controlled export-block naming fluid."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
-    state["fluid_data"]["Spacer"]["volume"] = "abc"
+    state["fluid_data"]["Spacer Behind"]["volume"] = "abc"
     with pytest.raises(ValueError) as ei:
         build_master_context(calculations_prepared=True)
     assert "Spacer" in str(ei.value) and "volume" in str(ei.value), str(ei.value)

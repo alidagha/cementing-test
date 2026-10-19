@@ -26,9 +26,9 @@ class Round2ReportUAT(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         case = audit.AuditRegressions()
-        app = case.configured_app('CSG 9 5/8"', optional_fluids=True)
+        app = case.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
         project = audit.round_trip(app.session_state.to_dict())
-        project['fluids_config']['active'] = ['Pre Flush', 'Spacer', 'Spacer Ahead',
+        project['fluids_config']['active'] = ['Pre Flush', 'Spacer Ahead',
                                              *ORDER, 'Spacer Behind', 'Displacement Fluid']
         for i, slurry in enumerate(ORDER):
             project['fluids_config']['params'][slurry] = deepcopy(project['fluids_config']['params']['Main'])
@@ -143,15 +143,15 @@ class Round2ReportUAT(unittest.TestCase):
         self.assertEqual(unescape(context['procedure_text']), state['procedure_text'])
         positions = [context['procedure_text'].index(f'{s} cement slurry (') for s in HYDRAULIC_SLURRIES]
         self.assertEqual(positions, sorted(positions))
-        self.assertEqual(state['total_pump_time_min'], 125.)
-        self.assertIn('Safety Factor is 156 min', context['note_maxpump'])
+        self.assertEqual(state['total_pump_time_min'], 112.5)
+        self.assertIn('Safety Factor is 141 min', context['note_maxpump'])
 
     def test_existing_preflush_spacer_payload_and_document_flow(self):
         context = self.context()
         self.assertTrue(context['has_preflush']); self.assertTrue(context['has_spacer'])
         self.assertEqual([s['Name'] for s in context['spacers'] if s['Material Type'] == 'Spacer'],
-                         ['Spacer', 'Spacer Ahead', 'Spacer Behind'])
-        self.assertEqual(context['spacer_volume_bbl'], 150.)
+                         ['Spacer Ahead', 'Spacer Behind'])
+        self.assertEqual(context['spacer_volume_bbl'], 100.)
         self.assertEqual(context['spacer_density_note'], '80.0')
         self.assertEqual(context['preflush']['volume'], 50.)
         doc = self.word(context)
@@ -160,7 +160,7 @@ class Round2ReportUAT(unittest.TestCase):
         self.assertEqual(titles.count('Spacer Formulation Data'), 1)
         spacer = doc.tables[titles.index('Spacer Formulation Data')]
         self.assertEqual([r.cells[1].text for r in spacer.rows[3:] if r.cells[2].text == 'Spacer'],
-                         ['Spacer', 'Spacer Ahead', 'Spacer Behind'])
+                         ['Spacer Ahead', 'Spacer Behind'])
         # XML body order includes paragraphs and tables, unlike separate python-docx lists.
         text = '\n'.join(''.join(t.text or '' for t in node.iter(qn('w:t'))) for node in doc.element.body)
         self.assertLess(text.index('Tail Cement Slurry Additives Data'), text.index('Pre Flush Data'))

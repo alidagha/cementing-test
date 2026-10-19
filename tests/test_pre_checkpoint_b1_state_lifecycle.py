@@ -18,6 +18,7 @@ import project_state as ps
 import pumping_simulation as pumping
 import cement_chart_model as chart
 import well_schematic_adapter as schematic
+import standalone_spacer as standalone
 from centralizer_fixtures import ensure_current_centralizer, execute_centralizer
 from test_uat_round10c_integration import save_project, restore_project
 from test_uat_round12c_sodium_silicate import project as sodium_project
@@ -178,6 +179,18 @@ def test_repeated_slurry_archive_navigation_restore_and_explicit_reactivation(co
 def test_operational_fluid_deactivation_restore_and_policy_specific_formulation(operational_project, fluid):
     app = restore_project(saved(deepcopy(operational_project)))
     CASE.phase(app, "phase4")
+    if fluid == "Spacer":
+        # Its A1 formulation is intentionally absent from the export fixture.
+        # Enter it through the real controls before exercising the lifecycle.
+        app.checkbox(key="chk_fluid_Spacer").check().run()
+        app.number_input(key="vol_Spacer").set_value(12.).run()
+        app.text_input(key="den_Spacer").set_value("95").run()
+        app.text_input(key="rate_Spacer").set_value("4").run()
+        CASE.phase(app, "phase6")
+        audit.configure_standalone_spacer(app, dead_vol=2.)
+        expected_formulation = deepcopy(app.session_state[standalone.CONFIG_KEY])
+        expected_recipe = standalone.formulation_from_state(app.session_state)
+        CASE.phase(app, "phase4")
     expected = deepcopy(app.session_state["fluids_config"]["params"][fluid])
     for _ in range(2):
         app.checkbox(key="chk_fluid_" + fluid).uncheck().run()
@@ -188,6 +201,8 @@ def test_operational_fluid_deactivation_restore_and_policy_specific_formulation(
         if fluid.startswith("Spacer"):
             # Existing policy deliberately clears spacer formulation on deselection.
             assert fluid not in state["spacer_dfs"]
+            if fluid == "Spacer":
+                assert standalone.CONFIG_KEY not in state
         else:
             assert state["preflush_calc"] is None
         app = restore_project(saved(state))
@@ -197,6 +212,14 @@ def test_operational_fluid_deactivation_restore_and_policy_specific_formulation(
         app.checkbox(key="chk_fluid_" + fluid).check().run()
         assert app.session_state["fluids_config"]["active"].count(fluid) == 1
         assert app.session_state["fluid_data"][fluid]["volume"] == expected["volume"]
+        if fluid == "Spacer":
+            CASE.phase(app, "phase6")
+            assert next(w for w in app.selectbox if w.label == "Weighting Agent Mode").value is None
+            assert eng.compute_phase_status(app.session_state)["phase6"]["level"] != "ok"
+            audit.configure_standalone_spacer(app, dead_vol=2.)
+            assert app.session_state[standalone.CONFIG_KEY] == expected_formulation
+            assert standalone.formulation_from_state(app.session_state) == expected_recipe
+            CASE.phase(app, "phase4")
 
 
 def test_obm_wbm_roundtrip_navigation_and_explicit_diesel_reactivation(operational_project):

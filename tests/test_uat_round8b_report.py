@@ -235,10 +235,10 @@ def test_template_dependency_and_protected_sources_identical():
     import subprocess
     for name in ['master_template.docx','requirements.txt','well_profile.py','placement.py','rheology.py','bhct_helper.py','test_regression_guardrails.py']:
         if name == 'test_regression_guardrails.py':
-            # Owner-approved 9G sequential-note/prerequisite fixture changes only;
+            # Owner-approved A1 generic-Spacer fixture identity changes only;
             # retain byte-level protection at this explicitly reviewed checkpoint.
             import hashlib
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '38c2ae0a7926d7b7a7aaa286981cb4bca6fa72d71f04efd8c8406794a5cf6231'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '6d671467013cd70ffb7e6007609ea5964a7c9af2b1cba2073044f92f3d9d2a2c'
         else:
             assert Path(name).read_bytes()==subprocess.check_output(['git','show','a61d61e:'+name])
 

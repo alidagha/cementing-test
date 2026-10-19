@@ -26,9 +26,9 @@ from test_uat_round10c_integration import inspect_word, save_project
 @pytest.fixture(scope="module")
 def built_state():
     case = audit.AuditRegressions()
-    app = case.configured_app('CSG 9 5/8"', optional_fluids=True)
+    app = case.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
     case.phase(app, "phase4")
-    for fluid in pumping.fcm.SPACER_TYPES:
+    for fluid in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
         app.number_input(key="vol_" + fluid).set_value(2.).run()
     execute_centralizer(app.session_state)
     app, calls = run_build(app.session_state.to_dict())

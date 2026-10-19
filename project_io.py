@@ -113,6 +113,9 @@ def _validate_project(data):
     for key, expected in schemas.items():
         if key in data and not isinstance(data[key], expected):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
+    if "standalone_spacer_config" in data:
+        from standalone_spacer import validate_config
+        validate_config(data["standalone_spacer_config"], data.get("job_type", 'CSG 20"'))
     for field, _, _ in EXCESS_FIELDS:
         excess_percentage(data.get("placement_config", {}), field)
     placement = data.get("placement_config", {})

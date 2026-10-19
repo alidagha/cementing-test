@@ -29,11 +29,11 @@ def projects():
     case = audit.AuditRegressions()
     states = {}
     for kind, job in JOBS.items():
-        app = case.configured_app(job, optional_fluids=kind == "casing")
+        app = case.configured_app(job, optional_fluids=kind == "casing", include_standalone_spacer=False)
         if kind == "casing":
             # Ordinary-size measured program; retain the shared real UI setup.
             case.phase(app, "phase4")
-            for fluid in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind"):
+            for fluid in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
                 app.number_input(key="vol_" + fluid).set_value(5.).run()
             app.checkbox(key="chk_fluid_Scavenger").check().run()
             app.number_input(key="vol_Scavenger").set_value(30.).run()
@@ -180,7 +180,8 @@ def test_save_fresh_restore_real_execute_and_build_are_deterministic(built_proje
     if kind == "casing":
         assert "Scavenger" in records[0]["inputs"]["fluid_data"]
         assert "Scavenger" in records[0]["inputs"]["rheology"]
-        assert all(name in records[0]["inputs"]["fluid_data"] for name in pumping.fcm.SPACER_TYPES)
+        assert set(records[0]["inputs"]["fluid_data"]).intersection(pumping.fcm.SPACER_TYPES) == {
+            "Pre Flush", "Spacer Ahead", "Spacer Behind"}
     elif kind == "liner":
         assert len(geometry.pipe_sections) == 2
         assert geometry.pipe_sections[0].z_bot == geometry.pipe_sections[1].z_top == 1000.
@@ -194,7 +195,7 @@ def test_save_fresh_restore_real_execute_and_build_are_deterministic(built_proje
 
 @pytest.mark.parametrize("missing, phase, fluid", [
     ("mud", "Phase II", "YP > 0"), ("slurry", "Phase VII", "Main"),
-    ("aux", "Phase IX", "Spacer"), ("scavenger", "Phase VII", "Scavenger"),
+    ("aux", "Phase IX", "Spacer Behind"), ("scavenger", "Phase VII", "Scavenger"),
 ])
 def test_missing_required_sources_block_before_solver_and_retire_real_doc(built_projects, missing, phase, fluid):
     state = deepcopy(built_projects["casing"][0])
@@ -202,7 +203,7 @@ def test_missing_required_sources_block_before_solver_and_retire_real_doc(built_
     if missing == "mud":
         state["yield_point"] = state["well_data"]["yield_point"] = "0"
     elif missing == "aux":
-        del state["centralizer_config"]["aux_rheology"]["Spacer"]
+        del state["centralizer_config"]["aux_rheology"]["Spacer Behind"]
     else:
         del state["lab_qc_params"]["Main" if missing == "slurry" else "Scavenger"]["rheology"]["bhct_down"]
     records = []

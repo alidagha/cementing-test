@@ -388,6 +388,14 @@ def require_diesel_density(value) -> float:
 
 def require_fluid_density(fluid, value) -> float:
     """Phase-IV density authority; existing fluids retain range/mean semantics."""
+    if fluid == "Spacer":
+        try:
+            numbers = _positive_density_values(value)
+            if len(numbers) == 1:
+                return numbers[0]
+        except ValueError:
+            pass
+        raise ValueError("Spacer density must be a single positive finite scalar in pcf; ranges are not accepted.")
     return require_diesel_density(value) if fluid == "Diesel" else require_positive_density(value)
 
 
@@ -1078,11 +1086,18 @@ def compute_phase_status(ss) -> dict:
         if has_preflush and not ss.get("preflush_calc"):
             problems.append("Pre Flush not configured")
         sdfs = ss.get("spacer_dfs", {})
-        empty_spacers = [s for s in spacer_types if len(sdfs.get(s, [])) == 0]
+        if "Spacer" in spacer_types:
+            from standalone_spacer import formulation_from_state
+            try:
+                formulation_from_state(ss)
+            except ValueError as exc:
+                problems.append(str(exc))
+        generic_spacers = [s for s in spacer_types if s != "Spacer"]
+        empty_spacers = [s for s in generic_spacers if len(sdfs.get(s, [])) == 0]
         if empty_spacers:
             problems.append(f"no chemicals for: {', '.join(empty_spacers)}")
         incomplete_spacers = []
-        for spacer in spacer_types:
+        for spacer in generic_spacers:
             table = sdfs.get(spacer)
             if table is None or not hasattr(table, "iterrows"):
                 continue

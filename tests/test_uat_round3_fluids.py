@@ -8,6 +8,7 @@ import pandas as pd
 from docx import Document
 import materials_db
 import phase_6_spacer as spacer
+import standalone_spacer as standalone
 import test_audit_regressions as audit
 from engineering_tools import compute_phase_status
 from project_state import prepare_calculations, refresh_fluids
@@ -29,7 +30,7 @@ class Round3FluidsUAT(unittest.TestCase):
         active = ["Pre Flush"] + (["Spacer", "Spacer Ahead", "Spacer Behind"] if extra_spacers else []) + ["Displacement Fluid"]
         return {"mud_density": "80-82", "effective_mud_density": 81.,
                 "fluids_config": {"active": active, "params": {s: {
-                    "volume": 25., "density": "85-87", "pump_rate": "3-5",
+                    "volume": 25., "density": "86" if s == "Spacer" else "85-87", "pump_rate": "3-5",
                     "material_name": name if s == "Pre Flush" else materials_db.DEFAULT_MATERIAL_NAMES[s]}
                     for s in active}},
                 "preflush_config": {"type": FORMULATIONS[-1], "nacl_multiplier": 126., "wash_multiplier": 3.}}
@@ -126,7 +127,7 @@ class Round3FluidsUAT(unittest.TestCase):
 
     def test_blank_custom_blocks_status_build_download_and_invalidates_compiled_word(self):
         case = audit.AuditRegressions()
-        app = case.configured_app(audit.BATCH1_JOBS[0], optional_fluids=True)
+        app = case.configured_app(audit.BATCH1_JOBS[0], optional_fluids=True, include_standalone_spacer=False)
         case.export(app)
         self.phase(app, "phase6")
         self.selector(app).set_value("Custom").run()
@@ -158,18 +159,23 @@ class Round3FluidsUAT(unittest.TestCase):
         refresh_fluids(other)
         self.assertEqual(other["fluid_data"]["Spacer"]["material_name"], "")
 
-    def test_spacer_choice_catalog_and_all_three_editors(self):
+    def test_spacer_catalog_two_generic_editors_and_standalone_controls(self):
         self.assertEqual(materials_db.SPACER_CHEMICALS, CHEMICALS)
         self.assertEqual(spacer.REQUIRED_SPACER_COLS, ["Chemical", "User Input (% or gal)", "Weighting Agent Type"])
         app = self.app(self.project(extra_spacers=True)); self.phase(app, "phase4"); self.phase(app, "phase6")
         editors = [e for e in app.dataframe if "_editor_spacer_tbl_" in e.proto.id]
-        self.assertEqual(len(editors), 3)
+        self.assertEqual(len(editors), 2)
         for editor in editors:
             self.assertEqual(json.loads(editor.proto.columns)["Chemical"]["type_config"]["options"], CHEMICALS)
+        mode = next(w for w in app.selectbox if w.label == "Weighting Agent Mode")
+        self.assertEqual(mode.options, ["Limestone", "Barite", "Ferro Bar", "Limestone + Barite"])
+        self.assertIsNone(mode.value)
+        self.assertIsNone(next(w for w in app.number_input if w.label == "Dead Volume (bbl) - Spacer").value)
+        self.assertNotIn("Spacer", app.session_state["spacer_dfs"])
 
     def test_spacer_first_rows_navigation_and_current_restore_preserve_exact_text(self):
         app = self.app(self.project(extra_spacers=True)); self.phase(app, "phase4"); self.phase(app, "phase6")
-        for s in ("Spacer", "Spacer Ahead", "Spacer Behind"):
+        for s in ("Spacer Ahead", "Spacer Behind"):
             for chemical in CHEMICALS[-2:]:
                 with self.subTest(spacer=s, chemical=chemical):
                     editor = next(e for e in app.dataframe if
@@ -187,22 +193,37 @@ class Round3FluidsUAT(unittest.TestCase):
                     row = app.session_state["spacer_dfs"][s].iloc[-1]
                     self.assertEqual(row["Chemical"], chemical)
                     self.assertEqual(row["User Input (% or gal)"], .125)
+        audit.configure_standalone_spacer(app, mode="Barite")
+        tank = next(w for w in app.selectbox if w.label == "Mixing Tank - Spacer")
+        self.assertEqual(tank.options, materials_db.get_available_tanks(app.session_state["job_type"]))
+        tank.set_value(tank.options[-1]).run()
+        for dead in (.5, 1.25):
+            with self.subTest(standalone_dead_volume=dead):
+                next(w for w in app.number_input if w.label == "Dead Volume (bbl) - Spacer").set_value(dead)
+                self.phase(app, "phase4"); self.phase(app, "phase6")
+                self.assertEqual(app.session_state[standalone.CONFIG_KEY]["dead_vol"], dead)
+                self.assertEqual(standalone.formulation_from_state(app.session_state)["pumped_volume_bbl"], 25.)
+        expected_config = deepcopy(app.session_state[standalone.CONFIG_KEY])
+        expected_recipe = standalone.formulation_from_state(app.session_state)
         restored = self.app(audit.round_trip(app.session_state.to_dict())); self.phase(restored, "phase6")
-        for s in ("Spacer", "Spacer Ahead", "Spacer Behind"):
+        for s in ("Spacer Ahead", "Spacer Behind"):
             self.assertEqual(list(restored.session_state["spacer_dfs"][s]["Chemical"]), CHEMICALS[-2:])
             self.assertEqual(list(restored.session_state["spacer_dfs"][s]["User Input (% or gal)"]), [.125, .125])
         self.assertNotIn("Magneser Thinner", materials_db.SPACER_CHEMICALS)
+        self.assertEqual(restored.session_state[standalone.CONFIG_KEY], expected_config)
+        self.assertEqual(standalone.formulation_from_state(restored.session_state), expected_recipe)
+        self.assertNotIn("Spacer", restored.session_state["spacer_dfs"])
 
     def test_actual_word_name_and_detailed_rows_independent_for_five_jobs(self):
         case = audit.AuditRegressions()
         for job in audit.BATCH1_JOBS:
             with self.subTest(job=job):
-                app = case.configured_app(job, optional_fluids=True)
+                app = case.configured_app(job, optional_fluids=True, include_standalone_spacer=False)
                 self.phase(app, "phase6")
                 self.selector(app).set_value("Custom").run()
                 self.custom(app).set_value("Field Wash Alpha").run()
                 baseline = deepcopy(app.session_state["preflush_calc"])
-                app.session_state["spacer_dfs"]["Spacer"] = pd.DataFrame([
+                app.session_state["spacer_dfs"]["Spacer Behind"] = pd.DataFrame([
                     {"Chemical": chemical, "User Input (% or gal)": 1.25, "Weighting Agent Type": "-"}
                     for chemical in CHEMICALS[-2:]], columns=spacer.REQUIRED_SPACER_COLS)
                 for name in ("Field Wash Alpha", NAME_OPTIONS[3]):

@@ -347,6 +347,13 @@ def migrate_material_properties(state):
 
 
 def purge_inactive_slurries(state, active):
+    # Standalone Spacer follows the existing generic Spacer cleanup policy,
+    # rather than cement's archived-formulation policy.
+    if "Spacer" not in active:
+        state.pop("standalone_spacer_config", None)
+        for key in list(state):
+            if str(key).startswith("_standalone_spacer_"):
+                state.pop(key, None)
     saved_fields = ("cement_additives_dfs", "cement_params", "lab_grid_dfs", "lab_qc_params")
     for key in (*saved_fields, "lab_source_signatures"):
         if not isinstance(state.get(key, {}), dict):
@@ -638,6 +645,13 @@ def prepare_calculations(state):
         issues += [f"Phase II & III: {issue}" for issue in well_issues]
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
+        if "Spacer" in state.get("fluids_config", {}).get("active", []):
+            from standalone_spacer import formulation_from_state, PENDING_INTEGRATION
+            try:
+                formulation_from_state(state)
+            except ValueError as exc:
+                issues.append(f"Phase VI: {exc}")
+            issues.append(PENDING_INTEGRATION)
         issues += refresh_lab_payloads(state)
         # Dormant Diesel sources are drafts, not current chart/report inputs.
         chart_fluids = deepcopy(state.get("fluids_config", {}))

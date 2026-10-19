@@ -1152,6 +1152,10 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
+    if "Spacer" in active_fluids:
+        from standalone_spacer import PENDING_INTEGRATION
+        invalidate_document(st.session_state)
+        raise ValueError(PENDING_INTEGRATION)
     specs = synchronize_report_texts()
     if any(spec["pending"] for spec in specs.values()):
         invalidate_document(st.session_state)
@@ -1676,6 +1680,13 @@ def render():
                     st.button(f"→ Phase {_phase_names[_phase_key].split(':')[0]}",
                               on_click=_go_to_phase, args=(_phase_key,),
                               key=f"_rescue_{_phase_key}")
+
+    if "Spacer" in _selected_fluids:
+        from standalone_spacer import PENDING_INTEGRATION
+        invalidate_document(st.session_state)
+        st.warning(PENDING_INTEGRATION)
+        st.button("Build Word Document", disabled=True)
+        return
 
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     job_type = st.session_state.get("job_type", "CSG 20\"")
