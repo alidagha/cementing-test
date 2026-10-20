@@ -1,8 +1,8 @@
 """Standalone Spacer source-input projection and fixed-20°C formulation.
 
 Reads Phase IV Spacer volume/density and independent Phase VI inputs. Returns
-recomputable quantities only; no session writes, persisted recipe or lab/report
-integration. Tank identities remain owned by materials_db.
+recomputable quantities only; no session writes or persisted recipe. The lab
+projection samples the target composition. Tank identities remain owned by materials_db.
 """
 import math
 
@@ -189,3 +189,25 @@ def field_rows(recipe):
                 f"{round_half_up(row['dose'], 1):.1f} {row['unit']}/bbl",
                 f"{round_half_up(row['gross'], 1):.1f} {row['unit']}")))
             for index, row in enumerate(recipe["materials"], 1)]
+
+
+def lab_sample(recipe):
+    """600 mL of finished target Spacer, never the Dead-Volume field extension.
+
+    Read the canonical target-batch masses/volumes; only unit conversion and
+    sample scaling belong here. Dissolved salt volume stays in working brine.
+    """
+    factor = 600. / (recipe["volume_bbl"] * BBL_M3 * 1e6)
+    components = {row["name"]: row for row in recipe["components"]}
+    water_mass = R["water"] * recipe["water_base_bbl"]
+    rows = [{"Material": "Fresh Water", "Concentration": recipe["water_base_bbl"] * BBL_M3 * 1e6 * factor,
+             "Unit": "mL/600 mL finished Spacer", "Mass": water_mass * 453.59237 * factor, "Lot No": ""}]
+    for material in recipe["materials"]:
+        mass = material["base"] if material["unit"] == "lb" else components[material["name"]]["mass_lb"]
+        rows.append({"Material": material["name"], "Concentration": material["dose"],
+                     "Unit": f"{material['unit']}/bbl {material['basis']}",
+                     "Mass": mass * 453.59237 * factor, "Lot No": ""})
+    mass_g = math.fsum(row["Mass"] for row in rows)
+    volume_ml = math.fsum(row["volume_bbl"] for row in components.values()) * BBL_M3 * 1e6 * factor
+    return {"rows": rows, "mass_g": mass_g, "volume_ml": volume_ml,
+            "density_pcf": (mass_g / 453.59237) / (volume_ml / (BBL_M3 * 1e6) * BBL_FT3)}

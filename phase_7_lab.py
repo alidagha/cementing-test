@@ -4,8 +4,8 @@ import pandas as pd
 import re
 import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
-from project_state import invalidate_document, available_fluid_types
-from project_state import lab_source_signature
+from project_state import invalidate_document
+from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload
 from engineering_tools import build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -110,6 +110,9 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
         row[field] = st.session_state[widget_key]
     else:
         row["readings"][str(rpm)] = st.session_state[widget_key]
+    if slurry == "Spacer":
+        st.session_state["lab_qc_params"][slurry]["reviewed"] = False
+        st.session_state.pop("lab_payload_Spacer", None)
     # Operational rheology-only fluids feed Word's engineering consumers only
     # through BHCT ramp-down; valid unused datasets do not retire that report.
     if (slurry not in materials_db.RHEOLOGY_ONLY_FLUIDS
@@ -370,6 +373,53 @@ def build_lab_df_from_phase5(
     
     return pd.DataFrame(lab_rows)
 
+def _commit_spacer_lots(edited, previous):
+    """Editor callback: only manual metadata can change; retire its review."""
+    grid = st.session_state["lab_grid_dfs"]["Spacer"]
+    if not edited.equals(grid):
+        st.session_state["lab_qc_params"]["Spacer"]["reviewed"] = False
+        st.session_state.pop("lab_payload_Spacer", None)
+        invalidate_document(st.session_state)
+    return edited
+
+
+def _render_spacer_lab(load_sig, bhct, bhst):
+    try:
+        grid = refresh_spacer_lab(st.session_state)
+    except ValueError as exc:
+        st.error(f"Spacer: {exc}. Complete the current formulation in Phase VI.")
+        return
+    qc = st.session_state["lab_qc_params"]["Spacer"]
+    st.markdown("#### Blend & Additives — 600 mL Cup")
+    st.caption("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
+    key = f"_editor_lab_tbl_spacer_{load_sig}_{st.session_state.get('_lab_grid_revision_Spacer', 0)}"
+    edited = persistent_data_editor(
+        grid, persist_to=("lab_grid_dfs", "Spacer"), normalize=_commit_spacer_lots,
+        key=key, num_rows="fixed", width="stretch",
+        disabled=["Material", "Concentration", "Unit", "Mass"],
+        column_config={column: st.column_config.TextColumn("Mass (grams)" if column == "Mass" else
+                                                         "Lot No." if column == "Lot No" else column)
+                       for column in LAB_GRID_COLUMNS})
+    st.session_state["lab_grid_dfs"]["Spacer"] = edited
+    _, issues = _render_rheology("Spacer", qc, load_sig)
+    temperature_valid = lab_temperature_valid(bhct, bhst)
+    try:
+        payload = spacer_lab_payload(st.session_state)
+    except ValueError:
+        st.session_state.pop("lab_payload_Spacer", None)
+        if st.button("Confirm measured lab results", key=f"_confirm_lab_btn_spacer_{load_sig}",
+                     disabled=bool(issues) or not temperature_valid):
+            qc["reviewed"] = True
+            qc["review_signature"] = lab_review_signature(qc, edited)
+            st.rerun()
+        st.warning("Confirm measured Spacer rheology for the current formulation; computed cup masses are not lab measurements.")
+        if not temperature_valid:
+            st.caption("Correct BHCT/BHST in Phase II & III before confirming.")
+    else:
+        st.session_state["lab_payload_Spacer"] = payload
+        st.success("Lab readings and formulation reviewed for Spacer.")
+
+
 def render():
     """Main render entrypoint called by main.py."""
     st.header("Phase VII: Lab Report")
@@ -377,10 +427,7 @@ def render():
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     
     # 1. Strict SSOT Tab Derivation from Phase IV sequence
-    active_pipeline = st.session_state.get("fluids_config", {}).get("active", [])
-    slurry_archetypes = materials_db.PHASE7_LAB_FLUIDS
-    active_slurries = [f for f in active_pipeline if f in slurry_archetypes
-                       and f in available_fluid_types(st.session_state)]
+    active_slurries = phase7_lab_fluids(st.session_state)
     st.markdown("Enter measured fluid rheology using the shared Fann 35 workflow."
                 if active_slurries and all(f in materials_db.RHEOLOGY_ONLY_FLUIDS for f in active_slurries)
                 else "Enter Lab QC parameters and inspect auto-calculated API lab test quantities (600 mL cup basis).")
@@ -425,6 +472,9 @@ def render():
             
             full_lab = slurry in materials_db.PLACEMENT_SLURRIES
             qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
+            if slurry == "Spacer":
+                _render_spacer_lab(load_sig, bhct, bhst)
+                continue
             if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
                 _render_rheology(slurry, qc, load_sig)
                 if not lab_temperature_valid(bhct, bhst):

@@ -205,6 +205,11 @@ def _validate_project(data):
                               f"cement_params.{name}", nullable=("dead_vol", "report_bottom_depth"),
                               nonnegative=("report_bottom_depth",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if name == "Spacer":
+            if "reviewed" in params and not isinstance(params["reviewed"], bool):
+                raise ValueError("lab_qc_params.Spacer.reviewed must be boolean.")
+            if "review_signature" in params and not isinstance(params["review_signature"], str):
+                raise ValueError("lab_qc_params.Spacer.review_signature must be text.")
         if "bhct" in params:
             raise ValueError(f"lab_qc_params.{name}.bhct is not allowed; BHCT belongs to Well Data.")
         if "compressive" in params or "comp_test" in params:

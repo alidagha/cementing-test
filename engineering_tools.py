@@ -1117,9 +1117,9 @@ def compute_phase_status(ss) -> dict:
         )
 
     # Phase VII: Lab Report
-    active_lab = [fluid for fluid in active if fluid in materials_db.PHASE7_LAB_FLUIDS
-                  and fluid in available_fluid_types(ss)]
-    rheology_only = any(fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
+    from project_state import phase7_lab_fluids, spacer_lab_payload
+    active_lab = phase7_lab_fluids(ss)
+    rheology_only = any(fluid == "Spacer" or fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
     if not active_lab:
         status["phase7"] = {"level": "empty", "message": "No cement slurry to report on."}
     else:
@@ -1127,6 +1127,12 @@ def compute_phase_status(ss) -> dict:
         grids = ss.get("lab_grid_dfs", {})
         missing = []
         for slurry in active_lab:
+            if slurry == "Spacer":
+                try:
+                    spacer_lab_payload(ss, rebuild=False)
+                except ValueError:
+                    missing.append(slurry)
+                continue
             if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
                 try:
                     if not isinstance(qc.get(slurry), dict):
