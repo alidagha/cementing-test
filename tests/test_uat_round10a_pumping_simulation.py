@@ -16,7 +16,7 @@ import rheology
 from placement import hardware_choices, target_descriptions
 from test_uat_round9b_geometry import hardware, state_for
 from test_uat_round9d_static_solver import zones_for
-from test_uat_round9e_dynamic_solver import dynamic_state, auxiliary, readings
+from test_uat_round9e_dynamic_solver import dynamic_state, auxiliary, readings, reviewed_spacer
 
 
 def adapter():
@@ -47,7 +47,7 @@ def program_state(kind="casing", fluids=None):
         "selected": True, "readings": readings(), "gel_10_sec": "-", "gel_10_min": "10"}}}
         for name in fluids if name in ("Main", "Tail", "Lead", "Lead #1", "Lead #2", "Scavenger")}
     state["centralizer_config"] = {"aux_rheology": auxiliary()}
-    return state
+    return reviewed_spacer(state)
 
 
 def test_zero_mud_yp_is_blocked_before_engine_acceptance_without_fabrication(monkeypatch):
@@ -373,10 +373,10 @@ def test_each_auxiliary_uses_exact_seven_rpm_bingham_authority(fluid, monkeypatc
 
 @pytest.mark.parametrize("fault", ["absent", "incomplete", "extra", "bool", "nonfinite", "zero", "invalid_fit", "wrong_shape"])
 def test_bad_auxiliary_readings_are_controlled(fault):
-    state = program_state(fluids={"Spacer": 1., "Tail": 2., "Displacement Fluid": 2.})
-    source = state["centralizer_config"]["aux_rheology"]["Spacer"]
+    state = program_state(fluids={"Spacer Ahead": 1., "Tail": 2., "Displacement Fluid": 2.})
+    source = state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]
     if fault == "absent":
-        state["centralizer_config"]["aux_rheology"].pop("Spacer")
+        state["centralizer_config"]["aux_rheology"].pop("Spacer Ahead")
     elif fault == "incomplete":
         source.pop("3")
     elif fault == "extra":
@@ -387,7 +387,7 @@ def test_bad_auxiliary_readings_are_controlled(fault):
         state["centralizer_config"]["aux_rheology"] = None
     else:
         source["300"] = {"bool": True, "nonfinite": float("inf"), "zero": 0.}[fault]
-    with pytest.raises(ValueError, match="Phase IX Spacer.*seven-RPM"):
+    with pytest.raises(ValueError, match="Phase IX Spacer Ahead.*seven-RPM"):
         adapter().prepare_pumping_simulation(state)
 
 

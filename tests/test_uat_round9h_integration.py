@@ -146,6 +146,9 @@ def test_real_project_restore_requires_execute_before_report(catalog, physics, u
 @pytest.mark.parametrize("edit", ["geometry", "fluid", "product", "zone", "mud", "lab", "aux", "pump"])
 def test_consumed_source_edit_blocks_report_without_implicit_reexecution(catalog, edit):
     state = configured(catalog, physics="dynamic", use_custom=True)
+    if edit == "aux":
+        state["fluids_config"]["active"].append("Spacer Ahead")
+        state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
     phase9.execute(state, catalog)
     if edit == "geometry": state["well_geometry"]["td_m"] = 1300.
     elif edit == "fluid": state["fluids_config"]["params"]["Tail"]["volume"] += 1.
@@ -153,7 +156,7 @@ def test_consumed_source_edit_blocks_report_without_implicit_reexecution(catalog
     elif edit == "zone": state["centralizer_config"]["zones"][0]["target_standoff_pct"] = 71.
     elif edit == "mud": state["plastic_viscosity"] = "18"
     elif edit == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"]["300"] += 1.
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer"]["300"] += 1.
+    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] += 1.
     else: state["fluids_config"]["params"]["Displacement Fluid"]["pump_rate"] = "5-7"
     with patch.object(adapter, "solve_dynamic", side_effect=AssertionError("Implicit re-execution")):
         assert not phase9.result_is_current(state, catalog)

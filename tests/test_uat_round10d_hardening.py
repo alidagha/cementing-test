@@ -19,6 +19,7 @@ from project_state import fingerprint
 import test_audit_regressions as audit
 from centralizer_fixtures import execute_centralizer
 from test_uat_round10a_pumping_simulation import program_state
+from test_uat_round9e_dynamic_solver import reviewed_spacer
 from test_uat_round10b_pumping_word import ANCHOR, run_build
 from test_uat_round10c_integration import inspect_word, save_project
 
@@ -80,19 +81,26 @@ def test_auxiliary_activation_failure_repair_cycle_never_uses_stale_rheology(flu
             state["fluids_config"]["active"].append(fluid)
             state["fluids_config"]["params"][fluid] = {
                 "volume": 1., "density": "80", "pump_rate": "4", "material_name": "WATER"}
-            readings = state["centralizer_config"]["aux_rheology"].pop(fluid)
-            with pytest.raises(ValueError, match=f"Phase IX {fluid}.*seven-RPM"):
+            if fluid == "Spacer":
+                reviewed_spacer(state)
+                sources = state["lab_qc_params"]
+                missing = "Phase VII Spacer.*bhct_down"
+            else:
+                sources = state["centralizer_config"]["aux_rheology"]
+                missing = f"Phase IX {fluid}.*seven-RPM"
+            readings = sources.pop(fluid)
+            with pytest.raises(ValueError, match=missing):
                 pumping.prepare_pumping_simulation(state)
-            state["centralizer_config"]["aux_rheology"][fluid] = readings
+            sources[fluid] = readings
             prepared = pumping.prepare_pumping_simulation(state)
             assert fluid in prepared["inputs"]["fluid_data"]
             assert pumping.source_signature(state) != initial
             state["fluids_config"]["active"].remove(fluid)
             # Inactive saved readings can be unfinished and must not participate.
-            state["centralizer_config"]["aux_rheology"][fluid] = {}
+            sources[fluid] = {}
             assert pumping.source_signature(state) == initial
             pumping.prepare_pumping_simulation(state)
-            state["centralizer_config"]["aux_rheology"][fluid] = readings
+            sources[fluid] = readings
 
 
 def test_two_sessions_and_prepared_outputs_are_independent(built_state):

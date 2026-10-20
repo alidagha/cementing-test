@@ -30,6 +30,24 @@ def readings(dials=DIALS):
     return dict(zip(map(str, rheology.RPM_ORDER), dials))
 
 
+def reviewed_spacer(state):
+    """Explicit A1/A2 source prerequisite for hydraulic tests with Spacer."""
+    if "Spacer" in state["fluids_config"]["active"]:
+        from project_state import refresh_spacer_lab
+        state["standalone_spacer_config"] = {"mode": "Barite", "dead_vol": 0.,
+            "tank_name": materials_db.get_tank_name(state["job_type"])}
+        state.update(bhct=150., bhst=200.)
+        state.setdefault("geothermal_config", {"version": 1, "source": "BHST",
+                                               "surface_temp": 80., "value": 200.})
+        state.setdefault("well_data", {}).update(bhct=150., bhst=200.)
+        state.setdefault("lab_qc_params", {})["Spacer"] = {"rheology": {"bhct_down": {
+            "selected": True, "readings": readings(), "gel_10_sec": "-", "gel_10_min": "-"}}}
+        refresh_spacer_lab(state)
+        qc = state["lab_qc_params"]["Spacer"]
+        qc.update(reviewed=True, review_signature=tools.lab_review_signature(qc, state["lab_grid_dfs"]["Spacer"]))
+    return state
+
+
 def dynamic_state(kind="casing", **fluids):
     if not fluids:
         fluids = {"Displacement Fluid": 200., "Tail": 100., "Spacer": 50.}
@@ -40,7 +58,7 @@ def dynamic_state(kind="casing", **fluids):
     state["lab_qc_params"] = {name: {"rheology": {"bhct_down": {
         "selected": True, "readings": readings(), "gel_10_sec": "", "gel_10_min": ""}}}
         for name in fluids if name in materials_db.RHEOLOGY_LAB_FLUIDS}
-    return state
+    return reviewed_spacer(state)
 
 
 def auxiliary():
@@ -100,7 +118,7 @@ def test_circulation_uses_raw_sources_exact_units_and_annulus_boundaries(catalog
         row = diagnostic["rheology"][fluid]
         assert {key: row[key] for key in ("pv_cp", "ty_lbf_100ft2", "iod")} == {
             key: fit[key] for key in ("pv_cp", "ty_lbf_100ft2", "iod")}
-        assert row["source"] == ("lab_bhct_down" if fluid in materials_db.RHEOLOGY_LAB_FLUIDS else "aux_rheology")
+        assert row["source"] == ("lab_bhct_down" if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer") else "aux_rheology")
     annulus = [r for r in snapshot["annulus_intervals"] if r["fluid"] not in ("Mud", "Displacement Fluid")]
     assert circulation["stages_rheology"] == [{"name": r["fluid"], "top_md": r["top_md"],
         "bottom_md": r["bottom_md"], "pv_pa_s": fit["pv_cp"] * .001,
@@ -146,7 +164,7 @@ def test_every_active_lab_fluid_requires_selected_bhct_down_even_inside(catalog,
         solve(state, zones_for(catalog), catalog)
 
 
-@pytest.mark.parametrize("fluid", AUX)
+@pytest.mark.parametrize("fluid", ("Pre Flush", "Spacer Ahead", "Spacer Behind"))
 def test_active_auxiliary_including_excluded_spacer_behind_requires_readings(catalog, fluid):
     state = dynamic_state(**{"Displacement Fluid": 1., fluid: 1.})
     with pytest.raises(ValueError, match="MissingRheology"):
@@ -265,11 +283,11 @@ def test_nonfinite_or_negative_raw_mud_never_uses_effective_cache(catalog, field
 @pytest.mark.parametrize("bad", [None, "", " ", "-", 0, -1, True, float("nan"), float("inf"),
                                  "NaN", "inf", "8-12", [], 1e300])
 def test_every_reading_must_be_positive_finite_and_resolvable(catalog, source, bad, monkeypatch):
-    fluid = "Tail" if source == "lab" else "Spacer"
+    fluid = "Tail" if source == "lab" else "Spacer Ahead"
     state = dynamic_state(**{"Displacement Fluid": 100., fluid: 100.})
-    auxiliary_inputs = {"Spacer": readings()}
+    auxiliary_inputs = {"Spacer Ahead": readings()}
     inputs = (state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"]
-              if source == "lab" else auxiliary_inputs["Spacer"])
+              if source == "lab" else auxiliary_inputs["Spacer Ahead"])
     inputs["6"] = bad
     monkeypatch.setattr(engine, "compute_standoff_profile", forbidden)
     with pytest.raises(ValueError, match="MissingRheology"):
@@ -279,14 +297,14 @@ def test_every_reading_must_be_positive_finite_and_resolvable(catalog, source, b
 @pytest.mark.parametrize("source", ["lab", "aux"])
 @pytest.mark.parametrize("change", ["missing", "extra", "integer_keys", "not_dict"])
 def test_exact_fixed_rpm_key_set_required(catalog, source, change):
-    fluid = "Tail" if source == "lab" else "Spacer"
+    fluid = "Tail" if source == "lab" else "Spacer Ahead"
     state = dynamic_state(**{"Displacement Fluid": 100., fluid: 100.})
     values = readings()
     if change == "missing": values.pop("3")
     elif change == "extra": values["gel_10_sec"] = "-"
     elif change == "integer_keys": values = dict(zip(rheology.RPM_ORDER, DIALS))
     else: values = list(DIALS)
-    aux = {"Spacer": values}
+    aux = {"Spacer Ahead": values}
     if source == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"] = values
     with pytest.raises(ValueError, match="MissingRheology"):
         prepare(state, zones_for(catalog), catalog, aux_rheology=aux)
@@ -320,11 +338,11 @@ def test_incomplete_or_malformed_lab_source_never_falls_back(catalog, change):
 def test_actual_ty_zero_fit_is_invalid_for_dynamic(catalog, source):
     values = readings((150., 100., 50., 30., 15., 2., 1.))
     assert rheology.calculate_cemcade_bingham([(rpm, values[str(rpm)]) for rpm in rheology.RPM_ORDER])["is_valid_bingham"] is False
-    fluid = "Tail" if source == "lab" else "Spacer"
+    fluid = "Tail" if source == "lab" else "Spacer Ahead"
     state = dynamic_state(**{"Displacement Fluid": 100., fluid: 100.})
     if source == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"] = values
     with pytest.raises(ValueError, match="MissingRheology"):
-        prepare(state, zones_for(catalog), catalog, aux_rheology={"Spacer": values})
+        prepare(state, zones_for(catalog), catalog, aux_rheology={"Spacer Ahead": values})
 
 
 @pytest.mark.parametrize("kind", ["casing", "liner", "tieback"])
@@ -336,13 +354,20 @@ def test_all_active_fann_fits_use_authority_in_rpm_order_and_ignore_gels(catalog
     for i, fluid in enumerate(name for name in program if name != "Displacement Fluid"):
         values = {str(rpm): str(dial * (1. + i / 10.)) for rpm, dial in zip(rheology.RPM_ORDER, DIALS)}
         values = dict(reversed(list(values.items())))  # Input dict order is not RPM order.
-        if fluid in materials_db.RHEOLOGY_LAB_FLUIDS:
+        if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer"):
             row = state["lab_qc_params"][fluid]["rheology"]["bhct_down"]
-            row.update(readings=values, gel_10_sec={"not_consumed": True}, gel_10_min=None)
-            row.update(pv_cp=-999., ty_lbf_100ft2=-999., iod=-999., is_valid_bingham=False)
+            row.update(readings=values, gel_10_sec="-" if fluid == "Spacer" else {"not_consumed": True},
+                       gel_10_min="-" if fluid == "Spacer" else None)
+            if fluid == "Spacer":
+                state["lab_payload_Spacer"] = {"rheology": {"bhct_down": {
+                    "pv_cp": -999., "ty_lbf_100ft2": -999., "iod": -999., "is_valid_bingham": False}}}
+            else:
+                row.update(pv_cp=-999., ty_lbf_100ft2=-999., iod=-999., is_valid_bingham=False)
         else:
             aux[fluid] = values
         expected.append((fluid, [(rpm, float(values[str(rpm)])) for rpm in rheology.RPM_ORDER]))
+    qc = state["lab_qc_params"]["Spacer"]
+    qc["review_signature"] = tools.lab_review_signature(qc, state["lab_grid_dfs"]["Spacer"])
     calls, fits = [], []
     real = rheology.calculate_cemcade_bingham
     def fit(points):
@@ -352,11 +377,12 @@ def test_all_active_fann_fits_use_authority_in_rpm_order_and_ignore_gels(catalog
         fits.append(deepcopy(result))
         return result
     monkeypatch.setattr(rheology, "calculate_cemcade_bingham", fit)
-    monkeypatch.setattr(rheology, "build_rheology", forbidden)  # Would impose Lab Gel completion.
     prepared = prepare(state, zones_for(catalog, kind), catalog, aux_rheology=aux)
-    assert calls == [points for _, points in expected]
-    assert len(calls) == len(materials_db.RHEOLOGY_LAB_FLUIDS) + len(AUX)
-    for (fluid, _), raw in zip(expected, fits):
+    expected_calls = [points for fluid, points in expected for _ in range(2 if fluid == "Spacer" else 1)]
+    assert calls == expected_calls  # Spacer first validates A2 review, then fits all seven hydraulic readings.
+    assert len(calls) == len(materials_db.RHEOLOGY_LAB_FLUIDS) + len(AUX) + 1
+    for fluid, points in expected:
+        raw = real(points)
         diagnostic = prepared["diagnostics"]["rheology"][fluid]
         assert {field: diagnostic[field] for field in ("pv_cp", "ty_lbf_100ft2", "iod")} == {
             field: raw[field] for field in ("pv_cp", "ty_lbf_100ft2", "iod")}
@@ -406,7 +432,11 @@ def test_same_density_names_keep_independent_fits_and_exact_annulus_interfaces(c
         row["density"] = "100"
     lead = readings(tuple(d * 1.3 for d in DIALS))
     state["lab_qc_params"]["Lead"]["rheology"]["bhct_down"]["readings"] = lead
-    aux = {"Spacer": readings(tuple(d * 1.6 for d in DIALS))}
+    reviewed_spacer(state)  # Reconfirm the deliberately changed composition, not an auxiliary fallback.
+    qc = state["lab_qc_params"]["Spacer"]
+    qc["rheology"]["bhct_down"]["readings"] = readings(tuple(d * 1.6 for d in DIALS))
+    qc["review_signature"] = tools.lab_review_signature(qc, state["lab_grid_dfs"]["Spacer"])
+    aux = {"Spacer": readings()}  # A conflicting legacy draft cannot win.
     snapshot = adapter.build_fluid_snapshot(state)
     assert any(r["fluid"] == "Tail" for r in snapshot["inside_intervals"])
     assert any(r["fluid"] == "Tail" for r in snapshot["annulus_intervals"])

@@ -197,7 +197,7 @@ def test_canonical_mud_and_pressure_sources_change_signature(field):
 
 @pytest.mark.parametrize("edit", ["density", "volume", "pump_rate", "lab", "gel", "aux", "hardware", "target", "host"])
 def test_other_consumed_sources_change_signature_without_execution(edit):
-    state = program_state("tieback", fluids={"Main": 2., "Spacer": 1., "Displacement Fluid": 2.})
+    state = program_state("tieback", fluids={"Main": 2., "Spacer Ahead": 1., "Displacement Fluid": 2.})
     old = pumping.source_signature(state)
     if edit in ("density", "volume", "pump_rate"):
         state["fluids_config"]["params"]["Main"][edit] = "117" if edit == "density" else 3.
@@ -205,7 +205,7 @@ def test_other_consumed_sources_change_signature_without_execution(edit):
         row = state["lab_qc_params"]["Main"]["rheology"]["bhct_down"]
         if edit == "lab": row["readings"]["300"] = "169"
         else: row["gel_10_min"] = "11"
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer"]["300"] = "169"
+    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] = "169"
     elif edit == "hardware": state["hardware_table"].at[0, "ID (in)"] = 6.1
     else: state["placement_config"][edit + "_row"] = "changed selection"
     with patch.object(pumping.fcm, "build_three_charts", side_effect=AssertionError("Signature ran solver")):

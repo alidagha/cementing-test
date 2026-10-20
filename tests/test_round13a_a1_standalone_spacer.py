@@ -20,6 +20,7 @@ from project_io import decode_project, replace_project_state
 import test_audit_regressions as audit
 import test_regression_guardrails as guards
 from test_uat_round10a_pumping_simulation import program_state
+from test_uat_round9e_dynamic_solver import reviewed_spacer
 from test_uat_round10c_integration import restore_project
 
 CASE = audit.AuditRegressions()
@@ -186,6 +187,7 @@ def test_scalar_rule_reaches_centralizer_and_pumping_admission_without_solver_ch
         with pytest.raises(ValueError, match="single.*scalar"):
             operation()
     s["fluids_config"]["params"]["Spacer"]["density"] = "110"
+    reviewed_spacer(s)  # A3 requires A2 review of the newly selected density.
     assert centralizer_adapter.build_fluid_snapshot(s)["diagnostics_available"]
     prepared = pumping_simulation.prepare_pumping_simulation(s)
     assert prepared["inputs"]["fluid_data"]["Spacer"]["effective_density"] == 110.
