@@ -67,6 +67,8 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     if config.get("params", {}).get(fluid, {}).get(field) != value:
         invalidate_document(st.session_state)
     config.setdefault("params", {}).setdefault(fluid, {})[field] = value
+    if st.session_state.get("job_type") == materials_db.CT_JOB and fluid == "Main":
+        st.session_state.pop("cement_note_Main", None)
 
     # This is the already-rendered record used by the following phase. Phase
     # IV recalculates durations and cumulative time when it renders again.

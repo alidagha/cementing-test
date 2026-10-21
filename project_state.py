@@ -157,6 +157,33 @@ def restore_canonical_fields(state):
             or any(key in well for key in ("geo_md", "geo_tvd", "bhst", "geo_gradient"))):
         refresh_well_derived(state)
     reconcile_fluid_applicability(state)
+    reconcile_ct_stage_selection(state)
+
+
+def reconcile_ct_stage_selection(state):
+    """Retire a CT choice on a real source transition; never choose another count."""
+    from ct_stages import CONFIG_KEY, main_volume
+    if CONFIG_KEY not in state:
+        return
+    record = state[CONFIG_KEY]
+    inactive = (state.get("job_type") != materials_db.CT_JOB
+                or "Main" not in state.get("fluids_config", {}).get("active", []))
+    changed = False
+    if isinstance(record, dict) and isinstance(record.get("main_volume"), str):
+        try:
+            volume = main_volume(state)
+        except ValueError:
+            changed = True  # An invalid source edit cannot preserve a prior choice.
+        else:
+            try:
+                from decimal import Decimal
+                changed = volume <= 12 or volume != Decimal(record["main_volume"])
+            except ArithmeticError:
+                pass  # Malformed records remain blocked by validation.
+    if inactive or changed:
+        state.pop(CONFIG_KEY, None)
+        state.pop("cement_note_Main", None)
+        invalidate_document(state)
 
 
 def available_fluid_types(state):
@@ -460,6 +487,7 @@ def refresh_fluids(state):
     '{name}: active fluid volume must be positive ...' surfaced as
     'Review the current calculation inputs before export (...)': the operator
     was told WHAT was wrong but never WHERE to go (audit L8-03)."""
+    reconcile_ct_stage_selection(state)
     if state.get("job_type") == materials_db.CT_JOB:
         forbidden = [name for name in state.get("fluids_config", {}).get("active", [])
                      if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
@@ -524,6 +552,9 @@ def refresh_fluids(state):
             "duration_str": format_to_hr_mm(duration), "cumul_time_min": cumulative,
             "cumul_time_str": format_to_hr_mm(cumulative),
         }
+    if state.get("job_type") == materials_db.CT_JOB and old.get("Main") != result.get("Main"):
+        state.pop("cement_note_Main", None)
+        invalidate_document(state)
     state["fluid_data"] = result
     state["total_pump_time_min"] = cumulative
     state["total_pump_time_hhmm"] = format_to_hr_mm(cumulative)

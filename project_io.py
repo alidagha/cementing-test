@@ -161,6 +161,9 @@ def _validate_project(data):
     for key in ("cement_params", "lab_qc_params", "report_text_state", "fluid_data"):
         if any(not isinstance(item, dict) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains an invalid record.")
+    if "ct_stage_config" in data:
+        from ct_stages import validate_stage_config
+        validate_stage_config(data)
     for key in ("cement_additives_dfs", "lab_grid_dfs", "spacer_dfs"):
         if any(not isinstance(item, pd.DataFrame) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains a table that could not be restored.")

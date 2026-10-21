@@ -82,12 +82,42 @@ def _commit_cement_param(slurry: str, field: str, widget_key: str) -> None:
     entry = st.session_state.get("cement_params", {}).get(slurry)
     if isinstance(entry, dict):
         entry[field] = value
+        if st.session_state.get("job_type") == materials_db.CT_JOB and slurry == "Main":
+            st.session_state.pop("cement_note_Main", None)
+            invalidate_document(st.session_state)
         if field in ("top_mode", "top_depth", "report_bottom_depth"):
             invalidate_document(st.session_state)
         if field == "cmt_sg":
             entry["cmt_sg_source"] = "manual"
         elif field == "base_cement" and entry.get("cmt_sg_source") == "catalog":
             entry["cmt_sg"] = catalog_cement_sg(value)
+
+
+def _commit_ct_stage_count(widget_key):
+    from ct_stages import CONFIG_KEY, main_volume, decimal_text
+    count = {"2 stages": 2, "3 stages": 3}.get(st.session_state[widget_key])
+    if count is None:
+        st.session_state.pop(CONFIG_KEY, None)
+    else:
+        st.session_state[CONFIG_KEY] = {"job_type": materials_db.CT_JOB,
+            "main_volume": decimal_text(main_volume(st.session_state)), "count": count}
+    st.session_state.pop("cement_note_Main", None)
+    invalidate_document(st.session_state)
+
+
+def _ct_main_note(state, slurry, note):
+    if state.get("job_type") != materials_db.CT_JOB or slurry != "Main":
+        return note
+    from ct_stages import ct_stage_projection, stage_note
+    try:
+        note += " " + stage_note(ct_stage_projection(state))
+    except ValueError:
+        state.pop("cement_note_Main", None)
+        invalidate_document(state)
+        raise
+    if state.get("cement_note_Main") != note:
+        invalidate_document(state)
+    return note
 
 
 def _commit_manual_override(slurry: str, field: str, widget_key: str) -> None:
@@ -99,6 +129,9 @@ def _commit_manual_override(slurry: str, field: str, widget_key: str) -> None:
     if isinstance(entry, dict):
         entry[field] = value
         entry[f"manual_{field}"] = value
+        if st.session_state.get("job_type") == materials_db.CT_JOB and slurry == "Main":
+            st.session_state.pop("cement_note_Main", None)
+            invalidate_document(st.session_state)
 
 
 def build_salt_additive_row(item: int, name: str, material_type: str,
@@ -326,8 +359,11 @@ def refresh_cement_calculations(state):
             state["cement_params"][slurry] = p
             state[f"cement_blend_{slurry}"] = blend
             state[f"cement_calc_{slurry}"] = adds
-            state[f"cement_note_{slurry}"] = note
+            state[f"cement_note_{slurry}"] = _ct_main_note(state, slurry, note)
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
+            if state.get("job_type") == materials_db.CT_JOB and slurry == "Main":
+                state.pop("cement_note_Main", None)
+                invalidate_document(state)
             issues.append(f"{slurry}: review Phase V inputs before export ({exc}).")
     return issues
 
@@ -533,6 +569,22 @@ def render():
                     args=(slurry, "dead_vol", dv_key),
                     help="Unpumpable liquid volume retained in the mixing tank."
                 )
+
+            if job_type == materials_db.CT_JOB and slurry == "Main":
+                from ct_stages import CONFIG_KEY, main_volume, decimal_text
+                try:
+                    stage_volume = main_volume(st.session_state)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    if stage_volume > 12:
+                        stage_key = f"_ct_stage_count_{decimal_text(stage_volume)}_{load_sig}"
+                        count = st.session_state.get(CONFIG_KEY, {}).get("count")
+                        choices = ["2 stages", "3 stages"]
+                        choice = {2: "2 stages", 3: "3 stages"}.get(count)
+                        st.session_state[stage_key] = choice
+                        st.selectbox("Stage count - Main", choices, index=None,
+                                     key=stage_key, on_change=_commit_ct_stage_count, args=(stage_key,))
 
             if slurry in materials_db.PLACEMENT_SLURRIES:
                 st.markdown("#### Slurry Placement")
@@ -897,5 +949,9 @@ def render():
             else:
                 st.info("No chemical additives configured in mix water.")
 
-            st.session_state[f"cement_note_{slurry}"] = note_text
-            st.info(f"**Generated Note:** {note_text}")
+            try:
+                note_text = _ct_main_note(st.session_state, slurry, note_text)
+                st.session_state[f"cement_note_{slurry}"] = note_text
+                st.info(f"**Generated Note:** {note_text}")
+            except ValueError as exc:
+                st.error(str(exc))

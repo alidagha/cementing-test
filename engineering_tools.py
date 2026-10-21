@@ -1088,6 +1088,13 @@ def compute_phase_status(ss) -> dict:
         else:
             status["phase5"] = {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated and placed."}
 
+    if ss.get("job_type") == materials_db.CT_JOB and "Main" in active:
+        from ct_stages import allocate_stages, main_volume, validate_stage_config
+        try:
+            allocate_stages(main_volume(ss), validate_stage_config(ss))
+        except ValueError as exc:
+            status["phase5"] = {"level": "warning", "message": str(exc)}
+
     if ss.get("job_type") == materials_db.CT_JOB and any(
             name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main" for name in active):
         status["phase5"] = {"level": "warning", "message": "CMT PLUG WITH CT permits only Main cement slurry."}
