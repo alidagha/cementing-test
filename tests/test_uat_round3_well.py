@@ -88,7 +88,7 @@ class Round3WellUAT(unittest.TestCase):
         # Preserve this existing WBM range-density fixture; Diesel is OBM-only.
         fluids=[name for name in materials_db.FLUID_TYPES if name != 'Diesel']
         state={'mud_density':'80-82','fluids_config':{'active':fluids,'params':{
-            s:{'volume':30.,'density':'80-82','pump_rate':'3-5'} for s in fluids}}}
+            s:{'volume':30.,'density':'81' if s == 'Spacer' else '80-82','pump_rate':'3-5'} for s in fluids}}}
         refresh_fluids(state)
         self.assertEqual(list(state['fluid_data']),fluids)
         for i,s in enumerate(fluids):
@@ -103,7 +103,7 @@ class Round3WellUAT(unittest.TestCase):
     def test_runtime_rate_minimum_representative_sequence_and_density_mean(self):
         fluids=['Pre Flush','Spacer','Main','Displacement Fluid']
         app=self.app({'mud_density':'80-82','effective_mud_density':81.,'fluids_config':{
-            'active':fluids,'params':{s:{'volume':30.,'density':'80-82','pump_rate':'3-5'} for s in fluids}}})
+            'active':fluids,'params':{s:{'volume':30.,'density':'81' if s == 'Spacer' else '80-82','pump_rate':'3-5'} for s in fluids}}})
         self.phase(app,'phase4')
         for i,s in enumerate(fluids):
             with self.subTest(fluid=s):

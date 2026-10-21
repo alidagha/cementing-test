@@ -353,19 +353,97 @@ def test_suggestion_cannot_apply_a_non_bhct_regime():
 
 
 def test_template_package_is_unchanged_outside_exact_section_vi_insertion():
+    from lxml import etree
+    from xml.parsers import expat
+
     original = BytesIO(subprocess.check_output(["git", "show", "80353e4:master_template.docx"]))
-    with ZipFile(original) as old, ZipFile(report.TEMPLATE_PATH) as new:
-        assert old.namelist() == new.namelist()
+    # A3 is the last approved template before the explicitly authorized A4
+    # Spacer table/NOTE/laboratory additions. Scavenger itself is unchanged.
+    a3 = BytesIO(subprocess.check_output(["git", "show",
+        "04a908c4adcfb112c733e2cc144293d79d105da5:master_template.docx"]))
+    with ZipFile(original) as old, ZipFile(a3) as parent, ZipFile(report.TEMPLATE_PATH) as new:
+        assert old.namelist() == parent.namelist() == new.namelist()
         for name in old.namelist():
-            if name != "word/document.xml": assert old.read(name) == new.read(name)
+            if name != "word/document.xml":
+                assert old.read(name) == parent.read(name) == new.read(name)
         before, after = old.read("word/document.xml"), new.read("word/document.xml")
-    paragraphs = list(re.finditer(rb'<w:p[ >].*?</w:p>', after, re.S))
-    start = next(p.start() for p in paragraphs if b'{%p if has_scavenger %}' in p.group())
-    end = next(p.end() for p in paragraphs if p.start() > start and b'{%p endif %}' in p.group())
-    fragment = after[start:end]
+        baseline = parent.read("word/document.xml")
+
+    def scavenger(xml):
+        paragraphs = list(re.finditer(rb'<w:p[ >].*?</w:p>', xml, re.S))
+        starts = [p.start() for p in paragraphs if b'{%p if has_scavenger %}' in p.group()]
+        assert len(starts) == 1
+        start = starts[0]
+        end = next(p.end() for p in paragraphs if p.start() > start and b'{%p endif %}' in p.group())
+        return xml[start:end], xml[:start] + xml[end:]
+
+    fragment, _ = scavenger(after)
     assert fragment.count(b'<w:tbl>') == 3
     assert not any(value in fragment for value in (b'excess_oh', b'excess_csg', b'.top', b'.bottom', b'.lab'))
-    assert after[:start] + after[end:] == before
+    assert fragment == scavenger(baseline)[0]  # Content, conditions, tags AND formatting.
+    assert scavenger(baseline)[1] == before  # Retain the original Round-6 protection.
+
+    def outside_spacer(xml, current):
+        root = etree.fromstring(xml)  # The current template must remain valid XML.
+        ns = {"w": root.nsmap["w"]}
+        body = list(root.find("w:body", ns))
+        text = lambda n: "".join(n.xpath(".//w:t/text()", namespaces=ns))
+        title = "Spacer Additives Data" if current else "Spacer Formulation Data"
+        tables = [i for i, n in enumerate(body) if text(n).startswith(title)]
+        assert len(tables) == 1
+        removed = set(tables)
+        if current:
+            note = tables[0] + 1
+            assert text(body[note]) == "{{ standalone_spacer.note_mix }}"
+            removed.add(note)
+            headings = [i for i, n in enumerate(body) if text(n) == "Spacer Results"]
+            assert len(headings) == 1
+            start = headings[0] - 1
+            assert text(body[start]) == "{%p if has_spacer %}"
+            assert text(body[start + 2]).startswith("Spacer Lab Results")
+            assert text(body[start + 3]) == ""  # Keep the table-separating paragraph.
+            assert text(body[start + 4]).startswith("Spacer Rheology")
+            assert text(body[start + 5]) == "{%p endif %}"
+            removed.update(range(start, start + 6))
+
+        # Remove ONLY the allowlisted top-level regions by original byte offset.
+        # No XML reserialization can normalize away an unrelated difference.
+        parser = expat.ParserCreate()
+        depth, starts, ranges = 0, [], []
+        def enter(name, attrs):
+            nonlocal depth
+            if depth == 2: starts.append(parser.CurrentByteIndex)
+            depth += 1
+        def leave(name):
+            nonlocal depth
+            depth -= 1
+            if depth == 2:
+                ranges.append((starts[-1], xml.index(b'>', parser.CurrentByteIndex) + 1))
+        parser.StartElementHandler, parser.EndElementHandler = enter, leave
+        parser.Parse(xml, True)
+        assert len(ranges) == len(body)
+        for i in sorted(removed, reverse=True):
+            a, b = ranges[i]
+            xml = xml[:a] + xml[b:]
+        return xml
+
+    assert outside_spacer(after, True) == outside_spacer(baseline, False)
+
+
+@pytest.mark.parametrize("old,new", [(b'Scavenger Cement Slurry Data', b'Changed Scavenger'),
+                                    (b'VII. Laboratory Report', b'Changed Laboratory Heading')])
+def test_template_integrity_rejects_scavenger_or_unrelated_mutation(tmp_path, monkeypatch, old, new):
+    target = tmp_path / "mutated.docx"
+    with ZipFile(report.TEMPLATE_PATH) as source, ZipFile(target, "w") as archive:
+        for info in source.infolist():
+            data = source.read(info.filename)
+            if info.filename == "word/document.xml":
+                assert old in data
+                data = data.replace(old, new, 1)
+            archive.writestr(info, data)
+    monkeypatch.setattr(report, "TEMPLATE_PATH", target)
+    with pytest.raises(AssertionError):
+        test_template_package_is_unchanged_outside_exact_section_vi_insertion()
 
 
 def test_protected_algorithms_and_properties_are_byte_or_ast_identical():

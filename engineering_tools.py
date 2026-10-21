@@ -388,6 +388,14 @@ def require_diesel_density(value) -> float:
 
 def require_fluid_density(fluid, value) -> float:
     """Phase-IV density authority; existing fluids retain range/mean semantics."""
+    if fluid == "Spacer":
+        try:
+            numbers = _positive_density_values(value)
+            if len(numbers) == 1:
+                return numbers[0]
+        except ValueError:
+            pass
+        raise ValueError("Spacer density must be a single positive finite scalar in pcf; ranges are not accepted.")
     return require_diesel_density(value) if fluid == "Diesel" else require_positive_density(value)
 
 
@@ -1078,11 +1086,18 @@ def compute_phase_status(ss) -> dict:
         if has_preflush and not ss.get("preflush_calc"):
             problems.append("Pre Flush not configured")
         sdfs = ss.get("spacer_dfs", {})
-        empty_spacers = [s for s in spacer_types if len(sdfs.get(s, [])) == 0]
+        if "Spacer" in spacer_types:
+            from standalone_spacer import formulation_from_state
+            try:
+                formulation_from_state(ss)
+            except ValueError as exc:
+                problems.append(str(exc))
+        generic_spacers = [s for s in spacer_types if s != "Spacer"]
+        empty_spacers = [s for s in generic_spacers if len(sdfs.get(s, [])) == 0]
         if empty_spacers:
             problems.append(f"no chemicals for: {', '.join(empty_spacers)}")
         incomplete_spacers = []
-        for spacer in spacer_types:
+        for spacer in generic_spacers:
             table = sdfs.get(spacer)
             if table is None or not hasattr(table, "iterrows"):
                 continue
@@ -1102,9 +1117,9 @@ def compute_phase_status(ss) -> dict:
         )
 
     # Phase VII: Lab Report
-    active_lab = [fluid for fluid in active if fluid in materials_db.PHASE7_LAB_FLUIDS
-                  and fluid in available_fluid_types(ss)]
-    rheology_only = any(fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
+    from project_state import phase7_lab_fluids, spacer_lab_payload
+    active_lab = phase7_lab_fluids(ss)
+    rheology_only = any(fluid == "Spacer" or fluid in materials_db.RHEOLOGY_ONLY_FLUIDS for fluid in active_lab)
     if not active_lab:
         status["phase7"] = {"level": "empty", "message": "No cement slurry to report on."}
     else:
@@ -1112,6 +1127,12 @@ def compute_phase_status(ss) -> dict:
         grids = ss.get("lab_grid_dfs", {})
         missing = []
         for slurry in active_lab:
+            if slurry == "Spacer":
+                try:
+                    spacer_lab_payload(ss, rebuild=False)
+                except ValueError:
+                    missing.append(slurry)
+                continue
             if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
                 try:
                     if not isinstance(qc.get(slurry), dict):

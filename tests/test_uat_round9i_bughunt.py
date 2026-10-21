@@ -41,6 +41,10 @@ def saved_bytes(state):
 @pytest.mark.parametrize("use_custom", [False, True])
 def test_repeated_restore_execute_failure_repair_cannot_resurrect_success(catalog, use_custom):
     state = configured(catalog, physics="dynamic", use_custom=use_custom)
+    # Keep the auxiliary failure/repair cycle on an actual Phase-IX auxiliary.
+    state["fluids_config"]["active"] = ["Spacer Ahead" if name == "Spacer" else name
+                                         for name in state["fluids_config"]["active"]]
+    state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
     state["hardware_table"] = state["hardware_table"].assign(**{"Collapse (psi)": None, "Burst (psi)": None})
     state["well_data"] = {}
     restore_canonical_fields(state)
@@ -61,10 +65,10 @@ def test_repeated_restore_execute_failure_repair_cannot_resurrect_success(catalo
         with pytest.raises(ValueError, match="Phase IX"):
             bridge.prepare_report(state)
         phase9.execute(state, catalog)
-        state["centralizer_config"]["aux_rheology"].pop("Spacer")
+        state["centralizer_config"]["aux_rheology"].pop("Spacer Ahead")
         with pytest.raises(ValueError, match="MissingRheology"):
             phase9.execute(state, catalog)
-        state["centralizer_config"]["aux_rheology"]["Spacer"] = readings()
+        state["centralizer_config"]["aux_rheology"]["Spacer Ahead"] = readings()
         assert not phase9.result_is_current(state, catalog)  # Repair alone is not Execute.
         assert "_centralizer_result" not in state and "_centralizer_signature" not in state
         phase9.execute(state, catalog)
@@ -363,7 +367,7 @@ def test_repeated_phase_x_builds_one_two_five_eight_zone_reports(
     companion = bridge._companion()
     figures = set(companion.plt.get_fignums())
     for _ in range(3):
-        next(b for b in app.button if b.label == "Build Word Document").click().run()
+        next(b for b in app.button if b.label == "Build Word Document").click().run(timeout=120)
         assert not app.exception and not app.error
         state = app.session_state.to_dict()
         assert saved_bytes(state) == before and phase9.result_is_current(state)

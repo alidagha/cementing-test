@@ -113,6 +113,9 @@ def _validate_project(data):
     for key, expected in schemas.items():
         if key in data and not isinstance(data[key], expected):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
+    if "standalone_spacer_config" in data:
+        from standalone_spacer import validate_config
+        validate_config(data["standalone_spacer_config"], data.get("job_type", 'CSG 20"'))
     for field, _, _ in EXCESS_FIELDS:
         excess_percentage(data.get("placement_config", {}), field)
     placement = data.get("placement_config", {})
@@ -202,6 +205,11 @@ def _validate_project(data):
                               f"cement_params.{name}", nullable=("dead_vol", "report_bottom_depth"),
                               nonnegative=("report_bottom_depth",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if name == "Spacer":
+            if "reviewed" in params and not isinstance(params["reviewed"], bool):
+                raise ValueError("lab_qc_params.Spacer.reviewed must be boolean.")
+            if "review_signature" in params and not isinstance(params["review_signature"], str):
+                raise ValueError("lab_qc_params.Spacer.review_signature must be text.")
         if "bhct" in params:
             raise ValueError(f"lab_qc_params.{name}.bhct is not allowed; BHCT belongs to Well Data.")
         if "compressive" in params or "comp_test" in params:

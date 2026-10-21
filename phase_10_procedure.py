@@ -50,6 +50,27 @@ def _word_program_quantities(row):
     return row
 
 
+def _word_rheology(source_rheology):
+    """Shared presentation of admitted readings/fits; never refit or edit sources."""
+    rheology = {}
+    for dataset, _ in RHEOLOGY_DATASETS:
+        source = source_rheology.get(dataset, {})
+        selected = source.get("selected", False)
+        rendered = {str(rpm): "-" for rpm in RPM_ORDER}
+        for rpm in RPM_ORDER:
+            value = source.get("readings", {}).get(str(rpm))
+            if selected and value is not None:
+                rendered[str(rpm)] = f"{value:g}"
+        for field, decimals in (("pv_cp", 3), ("ty_lbf_100ft2", 2), ("iod", 3)):
+            value = source.get(field)
+            rendered[field] = f"{value:.{decimals}f}" if selected and value is not None else "-"
+        for field in ("gel_10_sec", "gel_10_min"):
+            value = source.get(field, "-")
+            rendered[field] = f"{value:g}" if selected and isinstance(value, (int, float)) else "-"
+        rheology[dataset] = rendered
+    return rheology
+
+
 def _word_quantity_context(context):
     """Format a template-only copy after report arithmetic; retain raw context."""
     slurries = []
@@ -83,27 +104,25 @@ def _word_quantity_context(context):
             row["lab"]["thickening_cell"] = str(cell) if isinstance(cell, (int, float)) else "-"
         # Terminal Rheology presentation only; canonical readings/fits stay numeric.
         if "rheology" in row["lab"]:
-            rheology = {}
-            for dataset, _ in RHEOLOGY_DATASETS:
-                source = row["lab"].get("rheology", {}).get(dataset, {})
-                selected = source.get("selected", False)
-                rendered = {str(rpm): "-" for rpm in RPM_ORDER}
-                for rpm in RPM_ORDER:
-                    value = source.get("readings", {}).get(str(rpm))
-                    if selected and value is not None:
-                        rendered[str(rpm)] = f"{value:g}"
-                for field, decimals in (("pv_cp", 3), ("ty_lbf_100ft2", 2), ("iod", 3)):
-                    value = source.get(field)
-                    rendered[field] = f"{value:.{decimals}f}" if selected and value is not None else "-"
-                for field in ("gel_10_sec", "gel_10_min"):
-                    value = source.get(field, "-")
-                    rendered[field] = f"{value:g}" if selected and isinstance(value, (int, float)) else "-"
-                rheology[dataset] = rendered
-            row["lab"]["rheology"] = rheology
+            row["lab"]["rheology"] = _word_rheology(row["lab"]["rheology"])
         slurries.append(row)
     rendered = dict(context, slurries=slurries)
     if context.get("has_scavenger"):
         rendered["scavenger"] = _word_program_quantities(context["scavenger"])
+    if context.get("has_spacer"):
+        spacer = dict(context["standalone_spacer"], lab=dict(context["standalone_spacer"]["lab"]))
+        spacer["lab"]["rheology"] = _word_rheology(spacer["lab"]["rheology"])
+        spacer["lab_rows"] = []
+        for row in context["standalone_spacer"]["lab_rows"]:
+            concentration, mass = float(row["Concentration"]), float(row["Mass"])
+            water = row["Code"] == "Fresh Water"
+            spacer["lab_rows"].append(dict(row, **{
+                "Concentration": "1.0" if water else (f"{concentration:.3f}" if round(concentration, 2) != concentration else f"{concentration:.2f}"),
+                "Design Unit": "1.0" if water else "FW " + row["Design Unit"].split()[0],
+                "Mass": f"{mass:.1f}" if water or mass >= 10 else f"{mass:.2f}",
+            }))
+        spacer["lab_mass_g"] = f"{spacer['lab_mass_g']:.1f}"
+        rendered["standalone_spacer"] = spacer
     return rendered
 
 
@@ -187,7 +206,8 @@ def build_ordered_notes(
     has_open_hole_notes: bool,
     freshwater_note_style: str = "total hardness",
     scavenger_payload: dict = None,
-    is_vertical: bool = False
+    is_vertical: bool = False,
+    spacer_payload: dict = None
 ) -> dict:
     """
     Generates every NOTE in this report, in the single validated order found
@@ -198,6 +218,7 @@ def build_ordered_notes(
         2-4      Densities / Max Pumping Time / Displacement Volume  (always)
         5-6      Hydrostatic Pressure / Pore & Frac Pressure          (only if has_open_hole_notes)
         next..   One "Mix above Additives" note per active slurry, in slurry order
+        next..   Optional Spacer and Scavenger mixing notes, in table order
         next..   Per slurry (same order): Fresh Water composition, Rheology
                  (Bingham Model), surface-sample hardening observation
 
@@ -249,6 +270,9 @@ def build_ordered_notes(
         mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         s["note_mix"] = counter.next(mix_note)
 
+    if spacer_payload is not None:
+        spacer_payload["note_mix"] = counter.next(spacer_payload["note_body"])
+
     if scavenger_payload is not None:
         tank = scavenger_payload.get("mixing_tank") or "Mud Reserve Tanks"
         water = round_half_up(scavenger_payload["total_water_bbl"], 1)
@@ -275,6 +299,7 @@ def build_ordered_notes(
         [notes["note_geothermal"], notes["note_densities"], notes["note_maxpump"], notes["note_dispvol"]]
         + ([notes["note_hydrostatic"], notes["note_porefrac"]] if has_open_hole_notes else [])
         + [s["note_mix"] for s in slurries_payload]
+        + ([spacer_payload["note_mix"]] if spacer_payload is not None else [])
         + ([scavenger_payload["note_mix"]] if scavenger_payload is not None else [])
         + [x for s in slurries_payload for x in (s["lab"]["note_freshwater"], s["lab"]["note_rheology"], s["lab"]["note_thickening"])]
         + ([notes["note_vertical"]] if is_vertical else [])
@@ -1152,6 +1177,39 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
+    standalone_spacer = None
+    if "Spacer" in active_fluids:
+        from standalone_spacer import formulation_from_state, field_rows, lab_sample, FIELD_COLUMNS
+        from project_state import spacer_lab_payload
+        try:
+            # Rebuild at the report boundary even for calculations_prepared=True.
+            # Neither the legacy chemical editor nor a cached lab view is authority.
+            recipe = formulation_from_state(st.session_state)
+            lab = spacer_lab_payload(st.session_state)
+            # Keep A3's applicable hydraulic admission at this trust boundary;
+            # a prepared caller cannot leave old bytes authoritative on failure.
+            pumping_simulation.prepare_pumping_simulation(st.session_state)
+            rows = field_rows(recipe)
+            for row, material in zip(rows, recipe["materials"]):
+                row[FIELD_COLUMNS[4]] = (f"{round_half_up(material['dose'], 1):.1f}"
+                                       + (" gal/bbl" if material["unit"] == "gal" else ""))
+            material_types = {material["name"]: material["material_type"] for material in recipe["materials"]}
+            standalone_spacer = {
+                "source_signature": fingerprint(recipe),
+                "volume": f"{round_half_up(recipe['pumped_volume_bbl'], 1):.1f}",
+                "density": f"{recipe['density_pcf']:g}",
+                "rows": rows,
+                "note_body": recipe["note"],
+                "lab_rows": [dict(row, **{
+                    "Material Type": "Water" if row["Material"] == "Fresh Water" else material_types[row["Material"]],
+                    "Code": row["Material"], "Lot Number": row["Lot No"], "Design Unit": row["Unit"],
+                }) for row in lab["grid"].to_dict(orient="records")],
+                "lab_mass_g": lab_sample(recipe)["mass_g"],
+                "lab": {key: value for key, value in lab.items() if key != "grid"},
+            }
+        except ValueError:
+            invalidate_document(st.session_state)
+            raise
     specs = synchronize_report_texts()
     if any(spec["pending"] for spec in specs.values()):
         invalidate_document(st.session_state)
@@ -1348,15 +1406,10 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     preflush_data["volume"] = preflush_data.get("volume_bbl", 0.0)
     preflush_data["weight"] = preflush_data.get("density_pcf", "")
 
-    # 5. Spacers Serialization — BUG-05: the Word template now consumes this
-    # payload through a cloned "Spacer Formulation Data" table. The rows are
-    # FLATTENED to the exact same schema the Pre-flush table loops over
-    # (Item via loop.index, Name, Material Type, amount, ratio) so the
-    # template needs a single {%tr for r in spacers %} loop instead of
-    # fragile nested {%tr %} loops: one summary row per spacer followed by
-    # its chemical rows.
+    # Legacy sibling summaries remain available to operational context consumers.
+    # Only canonical exact Spacer owns the additives/laboratory Word tables.
     spacers_payload = []
-    for sp_name in ["Spacer", "Spacer Ahead", "Spacer Behind"]:
+    for sp_name in ["Spacer Ahead", "Spacer Behind"]:
         if sp_name in active_fluids and sp_name in st.session_state.get("spacer_dfs", {}):
             sp_df = st.session_state["spacer_dfs"][sp_name]
             spacers_payload.append({
@@ -1396,10 +1449,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         key=lambda s: (parse_effective_numeric(s, default=float("inf")), s)))
     spacer_density_note = spacer_densities or "-"  # The Word cell supplies pcf.
 
-    # فلگ‌های شرطی برای تمپلیت ورد — has_spacer reflects whether actual
-    # spacer rows were built (a Spacer selected in Phase IV without any
-    # formulation data prints nothing rather than an empty table).
-    has_spacer = bool(spacer_rows)
+    has_spacer = standalone_spacer is not None
     has_preflush = "Pre Flush" in active_fluids
     # BUG-14 (confirmed): 'CSG 18 5/8"' takes the surface stab-in inner-string
     # procedure branch above (grouped with 20"/24"/30"), so it must also be
@@ -1420,7 +1470,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         slurries_payload=slurries_payload,
         has_open_hole_notes=has_open_hole_notes,
         scavenger_payload=scavenger_payload,
-        is_vertical=st.session_state.get("well_geometry", {}).get("type") == "Vertical"
+        is_vertical=st.session_state.get("well_geometry", {}).get("type") == "Vertical",
+        spacer_payload=standalone_spacer
     )
 
     proc_text = st.session_state.get("procedure_text", "")
@@ -1480,6 +1531,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "scavenger": scavenger_payload,
         "preflush": preflush_data,
         "spacers": spacer_rows,
+        "standalone_spacer": standalone_spacer,
         "spacer_volume_bbl": spacer_volume_bbl,
         "spacer_density_note": spacer_density_note,
         

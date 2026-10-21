@@ -347,6 +347,19 @@ def migrate_material_properties(state):
 
 
 def purge_inactive_slurries(state, active):
+    # Standalone Spacer follows the existing generic Spacer cleanup policy,
+    # rather than cement's archived-formulation policy.
+    if "Spacer" not in active:
+        state.pop("standalone_spacer_config", None)
+        state.pop("lab_payload_Spacer", None)
+        state.get("lab_source_signatures", {}).pop("Spacer", None)
+        spacer_qc = state.get("lab_qc_params", {}).get("Spacer")
+        if isinstance(spacer_qc, dict):
+            spacer_qc["reviewed"] = False
+        for key in list(state):
+            if str(key).startswith(("_standalone_spacer_", "_rheo_spacer_", "_editor_lab_tbl_spacer_",
+                                    "_editor_source__editor_lab_tbl_spacer_")):
+                state.pop(key, None)
     saved_fields = ("cement_additives_dfs", "cement_params", "lab_grid_dfs", "lab_qc_params")
     for key in (*saved_fields, "lab_source_signatures"):
         if not isinstance(state.get(key, {}), dict):
@@ -513,7 +526,93 @@ def refresh_preflush(state):
     return []
 
 
+def phase7_lab_fluids(state):
+    """Phase-VII admission only; A3 hydraulic source routing remains unchanged."""
+    return [fluid for fluid in state.get("fluids_config", {}).get("active", [])
+            if fluid in (*materials_db.PHASE7_LAB_FLUIDS, "Spacer")
+            and fluid in available_fluid_types(state)]
+
+
+def spacer_lab_grid(state):
+    """Rebuild every computed cell; retain only Lot No. by ingredient identity."""
+    from standalone_spacer import formulation_from_state, lab_sample
+    grid = pd.DataFrame(lab_sample(formulation_from_state(state))["rows"])
+    previous = state.get("lab_grid_dfs", {}).get("Spacer")
+    lots = (dict(zip(previous["Material"], previous["Lot No"]))
+            if isinstance(previous, pd.DataFrame) and {"Material", "Lot No"}.issubset(previous.columns) else {})
+    grid["Lot No"] = grid["Material"].map(lots).fillna("")
+    # Display precision only; the solver and unrounded lab sample stay intact.
+    for column in ("Concentration", "Mass"):
+        grid[column] = grid[column].map(lambda value: f"{value:.12g}")
+    return grid
+
+
+def _spacer_lab_source(state):
+    from standalone_spacer import formulation_from_state
+    recipe = formulation_from_state(state)
+    well = state.get("well_data", {})
+    # Solo composition is fixed by mode/density. Mix additionally depends on
+    # the solved solids per target bbl, including inventory/Dead Volume effects.
+    # Never use rounded table cells as the review's source authority.
+    defoamer = next(row for row in recipe["materials"] if row["name"] == "Defoamer")
+    composition = {"mode": recipe["mode"], "density_pcf": recipe["density_pcf"],
+                   "defoamer": {"dose": defoamer["dose"], "basis": defoamer["basis"]}}
+    if recipe["mode"] == "Limestone + Barite":
+        composition["solids_lb_per_bbl"] = {name: mass / recipe["volume_bbl"]
+                                          for name, mass in recipe["solids_lb"].items()}
+    return fingerprint({"composition": composition,
+                        "bhct": well.get("bhct", state.get("bhct")),
+                        "bhst": well.get("bhst", state.get("bhst"))})
+
+
+def refresh_spacer_lab(state):
+    """One rebuild boundary for UI, readiness and restored/cached lab input."""
+    try:
+        grid = spacer_lab_grid(state)
+    except ValueError:
+        state.pop("lab_payload_Spacer", None)
+        state.get("lab_source_signatures", {}).pop("Spacer", None)
+        qc = state.get("lab_qc_params", {}).get("Spacer")
+        if isinstance(qc, dict):
+            qc["reviewed"] = False
+        invalidate_document(state)
+        raise
+    signature = _spacer_lab_source(state)
+    signatures = state.setdefault("lab_source_signatures", {})
+    qc = state.setdefault("lab_qc_params", {}).setdefault("Spacer", {})
+    previous = state.setdefault("lab_grid_dfs", {}).get("Spacer")
+    if (signatures.get("Spacer") != signature
+            or not isinstance(previous, pd.DataFrame) or not previous.equals(grid)):
+        qc["reviewed"] = False
+        state.pop("lab_payload_Spacer", None)
+        state["_lab_grid_revision_Spacer"] = state.get("_lab_grid_revision_Spacer", 0) + 1
+        invalidate_document(state)
+    state["lab_grid_dfs"]["Spacer"] = grid
+    signatures["Spacer"] = signature
+    return grid
+
+
+def spacer_lab_payload(state, *, rebuild=True):
+    """Only a current cup and explicitly confirmed measured rheology are ready."""
+    grid = refresh_spacer_lab(state) if rebuild else spacer_lab_grid(state)
+    qc = state.get("lab_qc_params", {}).get("Spacer", {})
+    if (state.get("lab_source_signatures", {}).get("Spacer") != _spacer_lab_source(state)
+            or not isinstance(state.get("lab_grid_dfs", {}).get("Spacer"), pd.DataFrame)
+            or not state["lab_grid_dfs"]["Spacer"].equals(grid)):
+        raise ValueError("Review the current Spacer formulation in Phase VII")
+    rheology = validate_lab_rheology(qc, "Spacer")
+    well = state.get("well_data", {})
+    bhct, bhst = well.get("bhct", state.get("bhct")), well.get("bhst", state.get("bhst"))
+    if not lab_temperature_valid(bhct, bhst):
+        raise ValueError("Review BHCT/BHST in Phase II & III")
+    if not qc.get("reviewed", False) or qc.get("review_signature") != lab_review_signature(qc, grid):
+        raise ValueError("Confirm measured Spacer lab results for the current formulation")
+    return {"grid": grid, "rheology": rheology, "bhct": bhct, "bhst": bhst}
+
+
 def lab_source_signature(state, slurry):
+    if slurry == "Spacer":
+        return _spacer_lab_source(state)
     p = state.get("cement_params", {}).get(slurry, {})
     fluid = state.get("fluid_data", {}).get(slurry, {})
     # Cup masses do not depend on field volume, tank or manual field water.
@@ -538,6 +637,13 @@ def lab_source_signature(state, slurry):
 def refresh_lab_payloads(state):
     issues = []
     for slurry in state.get("fluids_config", {}).get("active", []):
+        if slurry == "Spacer":
+            try:
+                state["lab_payload_Spacer"] = spacer_lab_payload(state)
+            except ValueError as exc:
+                state.pop("lab_payload_Spacer", None)
+                issues.append(f"Spacer: Phase VII {exc}.")
+            continue
         if slurry not in materials_db.RHEOLOGY_LAB_FLUIDS:
             continue
         full_lab = slurry in materials_db.PLACEMENT_SLURRIES
@@ -638,6 +744,12 @@ def prepare_calculations(state):
         issues += [f"Phase II & III: {issue}" for issue in well_issues]
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
+        if "Spacer" in state.get("fluids_config", {}).get("active", []):
+            from standalone_spacer import formulation_from_state
+            try:
+                formulation_from_state(state)
+            except ValueError as exc:
+                issues.append(f"Phase VI: {exc}")
         issues += refresh_lab_payloads(state)
         # Dormant Diesel sources are drafts, not current chart/report inputs.
         chart_fluids = deepcopy(state.get("fluids_config", {}))

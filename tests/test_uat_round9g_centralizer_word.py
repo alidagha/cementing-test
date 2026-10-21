@@ -27,7 +27,7 @@ from centralizer_fixtures import execute_centralizer
 BODY = "Recommended Centralizer Performance Data is Based on API 10D Specifications."
 IX = "IX. Centralizer Placement Recommendation"
 X = "X. Cementing Procedure"
-TEMPLATE_SHA = "0c3d911e471aae22c0b18fecc53ed99caa7e7479d94b22640bc19439da92e331"
+TEMPLATE_SHA = "c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670"
 
 
 def bridge():

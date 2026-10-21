@@ -74,7 +74,7 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     if isinstance(record, dict):
         record[field] = value
         if field == "density":
-            if fluid == "Diesel":
+            if fluid in ("Diesel", "Spacer"):
                 try:
                     record["effective_density"] = require_fluid_density(fluid, value)
                 except ValueError:
@@ -306,7 +306,8 @@ def render():
                     f"Density (pcf) - {fluid}",
                     value=disp_density_text,
                     help=("Enter a single density between 51 and 54 pcf; ranges are not accepted."
-                          if fluid == "Diesel" else "Enter density in pcf (e.g. 118.0 or range 115-118)"),
+                          if fluid == "Diesel" else "Enter one positive finite density in pcf; ranges are not accepted."
+                          if fluid == "Spacer" else "Enter density in pcf (e.g. 118.0 or range 115-118)"),
                     key=f"den_{fluid}",
                     on_change=_commit_fluid_widget,
                     args=(fluid, "density", f"den_{fluid}")

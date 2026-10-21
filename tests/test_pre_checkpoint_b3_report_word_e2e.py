@@ -417,10 +417,11 @@ def multi_slurry(projects):
     return app.session_state.to_dict()
 
 
-def test_multislurry_scavenger_and_all_spacer_variants_render_once_in_their_own_orders(multi_slurry):
+def test_multislurry_scavenger_and_legacy_spacers_render_once_in_their_own_orders(multi_slurry):
     state = deepcopy(multi_slurry)
     doc, ctx = assert_document(state["_compiled_doc_bytes"], state)
-    assert [r["name"] for r in ctx["fluids_train"]] == list(db.HYDRAULIC_EXECUTION_ORDER[:7]) + ["Tail", "Spacer Behind", "Displacement Fluid"]
+    assert [r["name"] for r in ctx["fluids_train"]] == ["Diesel", "Pre Flush", "Spacer Ahead", "Scavenger",
+                                                     "Main", "Lead", "Tail", "Spacer Behind", "Displacement Fluid"]
     assert ctx["has_scavenger"]
     assert [r["name"] for r in ctx["slurries"]] == ["Lead", "Main", "Tail"]
     actual = [p.text for p in doc.paragraphs if p.text.endswith(" Cement Slurry Results")]

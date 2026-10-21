@@ -534,10 +534,33 @@ def _dynamic_fann(readings, fluid):
             raise ValueError("Invalid Bingham PV/Ty.")
         return result
     except ValueError as exc:
-        guidance = ("Complete Diesel rheology in Phase VII BHCT — Ramp-Down. " if fluid == "Diesel" else
+        guidance = (f"Complete {fluid} rheology in Phase VII BHCT — Ramp-Down. " if fluid in ("Diesel", "Spacer") else
                     "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. ")
         raise ValueError(f"[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid '{fluid}'. "
                          f"{guidance}{exc}") from None
+
+
+def spacer_bhct_down(state):
+    """Pure A2 admission plus the existing strict seven-RPM hydraulic fit.
+
+    Legacy Phase-IX Spacer drafts are deliberately never read. Review metadata
+    gates admission, but only consumed readings enter hydraulic fingerprints.
+    """
+    from project_state import spacer_lab_payload
+    try:
+        lab = state.get("lab_qc_params", {})
+        if not isinstance(lab, dict) or not isinstance(lab.get("Spacer"), dict):
+            raise ValueError("Spacer lab data is missing or malformed.")
+        payload = spacer_lab_payload(state, rebuild=False)
+        row = payload["rheology"]["bhct_down"]
+        if not row["selected"]:
+            raise ValueError("Select BHCT — Ramp-Down.")
+        readings = lab["Spacer"]["rheology"]["bhct_down"]["readings"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError(f"[MissingRheology] Spacer: review current Phase VII BHCT — Ramp-Down. {exc}") from None
+    fit = _dynamic_fann(readings, "Spacer")
+    return {"source": {"selected": True, "readings": {str(rpm): rheology._numeric(readings[str(rpm)])
+                                                    for rpm in rheology.RPM_ORDER}}, "fit": fit}
 
 
 def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None, custom_products=()):
@@ -575,6 +598,8 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
     for fluid in active:
         if fluid == "Displacement Fluid":
             per_active[fluid] = dict(mud)
+        elif fluid == "Spacer":
+            per_active[fluid] = {"source": "lab_bhct_down", **spacer_bhct_down(state)["fit"]}
         elif fluid in materials_db.PHASE7_LAB_FLUIDS:
             lab = state.get("lab_qc_params", {})
             qc = lab.get(fluid, {}) if isinstance(lab, dict) else {}

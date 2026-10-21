@@ -96,11 +96,11 @@ def dataframe_probe(state, change):
             table["Lot No"] = 123
         else: state["lab_grid_dfs"]["Main"] = table.drop(columns="Material")
     else:
-        table = state["spacer_dfs"]["Spacer"]
+        table = state["spacer_dfs"]["Spacer Behind"]
         if change == "spacer numeric Chemical": table["Chemical"] = 123
         elif change == "spacer text dosage": table["User Input (% or gal)"] = "1.0"
         elif change == "spacer boolean dosage": table["User Input (% or gal)"] = True
-        else: state["spacer_dfs"]["Spacer"] = table.drop(columns="Chemical")
+        else: state["spacer_dfs"]["Spacer Behind"] = table.drop(columns="Chemical")
 
 
 @pytest.mark.parametrize("change,phase", DF_PROBES, ids=[row[0] for row in DF_PROBES])

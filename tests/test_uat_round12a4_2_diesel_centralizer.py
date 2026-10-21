@@ -47,17 +47,17 @@ def carrier(state):
     """
     state = deepcopy(state)
     cfg = state["fluids_config"]
-    cfg["active"] = ["Spacer" if name == "Diesel" else name for name in cfg["active"]]
-    cfg["params"]["Spacer"] = cfg["params"].pop("Diesel")
+    cfg["active"] = ["Spacer Ahead" if name == "Diesel" else name for name in cfg["active"]]
+    cfg["params"]["Spacer Ahead"] = cfg["params"].pop("Diesel")
     return state
 
 
 def isolated_snapshot(state):
     snapshot = adapter.build_fluid_snapshot(carrier(state))
-    snapshot["per_fluid"]["Diesel"] = snapshot["per_fluid"].pop("Spacer")
+    snapshot["per_fluid"]["Diesel"] = snapshot["per_fluid"].pop("Spacer Ahead")
     for column in ("inside_intervals", "annulus_intervals"):
         for row in snapshot[column]:
-            if row["fluid"] == "Spacer":
+            if row["fluid"] == "Spacer Ahead":
                 row["fluid"] = "Diesel"
     return snapshot
 
@@ -76,9 +76,9 @@ def test_real_frozen_engine_accepts_diesel_contract(catalog, physics, mode):
         payload = adapter.build_static_payload(state, zones, catalog)
     else:
         payload = adapter.build_dynamic_payload(state, zones, catalog,
-                                                 aux_rheology={"Spacer": readings()})["payload"]
+                                                 aux_rheology={"Spacer Ahead": readings()})["payload"]
         stages = payload["fluids"]["circulation"]["stages_rheology"]
-        assert stages and all(row["name"] == "Spacer" for row in stages)
+        assert stages and all(row["name"] == "Spacer Ahead" for row in stages)
         for row in stages:
             row["name"] = "Diesel"
     engine.validate_well_data(payload)
@@ -400,15 +400,15 @@ def test_diesel_does_not_create_phase9_auxiliary_controls(catalog):
     from test_uat_round9f_phase9 import ui_app
     app = ui_app(project(catalog))
     assert not app.exception
-    assert any("Cement/Scavenger/Diesel: Phase VII BHCT" in item.value for item in app.caption)
+    assert any("Cement/Scavenger/Diesel/Spacer: Phase VII BHCT" in item.value for item in app.caption)
     assert not any((widget.key or "").startswith("_centralizer_aux_") for widget in app.number_input)
     assert "Diesel" not in app.session_state["centralizer_config"]["aux_rheology"]
 
 
 def test_existing_non_diesel_missing_rheology_guidance_is_unchanged():
     with pytest.raises(ValueError) as error:
-        adapter._dynamic_fann(None, "Spacer")
+        adapter._dynamic_fann(None, "Spacer Ahead")
     assert str(error.value) == (
-        "[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid 'Spacer'. "
+        "[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid 'Spacer Ahead'. "
         "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. "
         "Exactly all seven RPM readings are required.")

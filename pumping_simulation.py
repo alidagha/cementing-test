@@ -7,6 +7,7 @@ import pandas as pd
 import cement_chart_model as chart_model
 import fluids_charts_module_v1_4_2 as fcm
 import materials_db
+from centralizer_adapter import spacer_bhct_down
 from engineering_tools import parse_effective_numeric
 from placement import HOST_DESCRIPTIONS, hardware_choices, measured_depth, target_depth, target_descriptions
 from project_state import fingerprint, refresh_fluids
@@ -117,7 +118,13 @@ def prepare_pumping_simulation(state):
     fluid_data = projected["fluid_data"]
     lab_results = {}
     for name in fluid_data:
-        if name in materials_db.PHASE7_LAB_FLUIDS:
+        if name == "Spacer":
+            try:
+                fit = spacer_bhct_down(state)["fit"]
+            except ValueError as exc:
+                raise ValueError(f"Phase VII Spacer: Pumping Simulation requires current reviewed bhct_down rheology. {exc}") from None
+            fluid_data[name].update(pv_cp=fit["pv_cp"], yp_lbf100ft2=fit["ty_lbf_100ft2"])
+        elif name in materials_db.PHASE7_LAB_FLUIDS:
             try:
                 lab = _record(state.get("lab_qc_params", {}), "Phase VII Lab")
                 qc = _record(lab.get(name, {}), f"Phase VII {name}")
@@ -177,7 +184,9 @@ def source_signature(state):
         row = _record(params.get(name, old.get(name, {})), f"Phase IV {name}")
         fields = ("volume", "pump_rate", "material_name") if name == "Displacement Fluid" else ("volume", "density", "pump_rate", "material_name")
         fluids[name] = {key: row.get(key) for key in fields}
-        if name in materials_db.PHASE7_LAB_FLUIDS:
+        if name == "Spacer":
+            lab[name] = spacer_bhct_down(state)["source"]
+        elif name in materials_db.PHASE7_LAB_FLUIDS:
             qc = state.get("lab_qc_params", {}).get(name, {})
             lab[name] = qc.get("rheology", {}).get("bhct_down", {})
         elif name in fcm.SPACER_TYPES:

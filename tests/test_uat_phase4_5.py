@@ -64,7 +64,7 @@ class Phase45UAT(unittest.TestCase):
 
     def test_blank_required_density_blocks_export_for_all_jobs(self):
         for job in audit.BATCH1_JOBS:
-            valid = self.configured_app(job, optional_fluids=True)
+            valid = self.configured_app(job, optional_fluids=True, include_standalone_spacer=False)
             self.export(valid, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
             saved = valid.session_state.to_dict()
             for name in ("Pre Flush", "Main"):

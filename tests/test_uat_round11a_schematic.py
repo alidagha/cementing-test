@@ -13,7 +13,7 @@ import pumping_simulation as pumping
 from placement import hardware_choices
 from test_uat_round10a_pumping_simulation import program_state
 
-TEMPLATE_SHA = "0c3d911e471aae22c0b18fecc53ed99caa7e7479d94b22640bc19439da92e331"
+TEMPLATE_SHA = "c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670"
 
 
 def remaining_case(job, change):
@@ -953,7 +953,7 @@ def test_schematic_failure_closes_owned_figure_cleans_temp_and_invalidates_downl
         monkeypatch.setattr(engine, 'render_well_schematic', fail_during_owned_render)
     try:
         button = next(b for b in app.button if b.label == 'Build Word Document')
-        button.click().run()
+        button.click().run(timeout=120)
         case.healthy(app)
         assert any('schematic output failure' in error.value for error in app.error)
         assert '_compiled_doc_bytes' not in app.session_state

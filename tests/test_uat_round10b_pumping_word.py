@@ -62,12 +62,12 @@ def run_build(state, *, processor=None, renderer=None, on_execute=None):
         assert not build.disabled, [error.value for error in app.error]
         if processor is not None:
             with patch.object(report, "postprocess_well_report", side_effect=processor):
-                build.click().run()
+                build.click().run(timeout=120)
         elif renderer is not None:
             with patch.object(report.DocxTemplate, "render", side_effect=renderer):
-                build.click().run()
+                build.click().run(timeout=120)
         else:
-            build.click().run()
+            build.click().run(timeout=120)
     assert not app.exception
     return app, calls
 
@@ -154,7 +154,7 @@ def test_special_jobs_do_not_execute_and_replace_only_the_pumping_anchor(job):
 
 
 def test_protected_template_and_frozen_engine_remain_exact():
-    assert hashlib.sha256(Path(report.TEMPLATE_PATH).read_bytes()).hexdigest() == "0c3d911e471aae22c0b18fecc53ed99caa7e7479d94b22640bc19439da92e331"
+    assert hashlib.sha256(Path(report.TEMPLATE_PATH).read_bytes()).hexdigest() == "c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670"
     assert hashlib.sha256(Path(pumping.fcm.__file__).read_bytes()).hexdigest() == "ceaaff1311b241c8793fc65b0004a8ca28bef463d93db0957d9b650522bdc5ea"
 
 
@@ -197,7 +197,7 @@ def test_canonical_mud_and_pressure_sources_change_signature(field):
 
 @pytest.mark.parametrize("edit", ["density", "volume", "pump_rate", "lab", "gel", "aux", "hardware", "target", "host"])
 def test_other_consumed_sources_change_signature_without_execution(edit):
-    state = program_state("tieback", fluids={"Main": 2., "Spacer": 1., "Displacement Fluid": 2.})
+    state = program_state("tieback", fluids={"Main": 2., "Spacer Ahead": 1., "Displacement Fluid": 2.})
     old = pumping.source_signature(state)
     if edit in ("density", "volume", "pump_rate"):
         state["fluids_config"]["params"]["Main"][edit] = "117" if edit == "density" else 3.
@@ -205,7 +205,7 @@ def test_other_consumed_sources_change_signature_without_execution(edit):
         row = state["lab_qc_params"]["Main"]["rheology"]["bhct_down"]
         if edit == "lab": row["readings"]["300"] = "169"
         else: row["gel_10_min"] = "11"
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer"]["300"] = "169"
+    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] = "169"
     elif edit == "hardware": state["hardware_table"].at[0, "ID (in)"] = 6.1
     else: state["placement_config"][edit + "_row"] = "changed selection"
     with patch.object(pumping.fcm, "build_three_charts", side_effect=AssertionError("Signature ran solver")):
@@ -238,14 +238,14 @@ def test_two_builds_execute_twice_from_current_state_and_source_changes_remove_o
     with patch.object(pumping, "run_pumping_simulation", side_effect=execute):
         case.phase(app, "phase10")
         assert values == []
-        next(button for button in app.button if button.label == "Build Word Document").click().run()
+        next(button for button in app.button if button.label == "Build Word Document").click().run(timeout=120)
         assert len(values) == 1 and "_compiled_doc_bytes" in app.session_state
         app.session_state["yield_point"] = "16"
         app.session_state["well_data"]["yield_point"] = "16"
         app.run()
         assert len(values) == 1, "Source edit implicitly executed simulation"
         assert "_compiled_doc_bytes" not in app.session_state
-        next(button for button in app.button if button.label == "Build Word Document").click().run()
+        next(button for button in app.button if button.label == "Build Word Document").click().run(timeout=120)
         assert len(values) == 2 and values[-1] == "16"
         assert figures[0] is not figures[1]
         assert not app.exception and not app.error

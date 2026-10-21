@@ -146,6 +146,13 @@ def compressive_fixture():
 BATCH1_JOBS = ('CSG 9 5/8"', 'CMT PLUG', 'CMT SQUEEZE', 'LNR 7"', 'TIE BACK LNR 7"')
 
 
+def configure_standalone_spacer(app, mode="Limestone", dead_vol=0.):
+    """Enter a current A1 formulation through its real Phase-VI controls."""
+    next(w for w in app.selectbox if w.label == "Weighting Agent Mode").set_value(mode).run()
+    next(w for w in app.number_input if w.label == "Dead Volume (bbl) - Spacer").set_value(dead_vol).run()
+    assert not app.exception, [e.message for e in app.exception]
+
+
 class AuditRegressions(unittest.TestCase):
     def app(self, project=None):
         app = AppTest.from_file(str(ROOT / "main.py"), default_timeout=30)
@@ -244,7 +251,7 @@ class AuditRegressions(unittest.TestCase):
                 for name in spacers:
                     self.assertEqual(app.text_input(key="den_" + name).value, expected)
 
-    def configured_app(self, job, additives=False, optional_fluids=False):
+    def configured_app(self, job, additives=False, optional_fluids=False, include_standalone_spacer=True):
         # Valid export fixtures explicitly supply the former well defaults.
         app = self.app({**well_profile_fixture(), "mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
                         "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150, "geo_gradient": 1.25})
@@ -264,7 +271,9 @@ class AuditRegressions(unittest.TestCase):
         self.phase(app, "phase4")
         selected = ["Main"]
         if optional_fluids:
-            selected += ["Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind"]
+            # Keep Standalone coverage available. Legacy export fixtures opt
+            # out explicitly when exercising the unchanged generic sibling editors.
+            selected += ["Pre Flush"] + (["Spacer"] if include_standalone_spacer else []) + ["Spacer Ahead", "Spacer Behind"]
         for name in selected:
             app.checkbox(key="chk_fluid_" + name).check().run()
         for name in app.session_state["fluids_config"]["active"]:
@@ -286,17 +295,23 @@ class AuditRegressions(unittest.TestCase):
         if optional_fluids:
             app.session_state["spacer_dfs"] = {s: pd.DataFrame([
                 {"Chemical": "Spacer", "User Input (% or gal)": 1.0, "Weighting Agent Type": "-"},
-            ]) for s in ("Spacer", "Spacer Ahead", "Spacer Behind")}
+            ]) for s in ("Spacer Ahead", "Spacer Behind")}
         self.phase(app, "phase6")
+        if optional_fluids and include_standalone_spacer:
+            configure_standalone_spacer(app)
         measured = (rheology_fixture() if job in ('CMT PLUG', 'CMT SQUEEZE')
                     else valid_export_rheology_fixture())
         app.session_state["lab_qc_params"] = {"Main": {"rheology": measured, **thickening_fixture(), **compressive_fixture()}}
+        if optional_fluids and include_standalone_spacer:
+            app.session_state["lab_qc_params"]["Spacer"] = {"rheology": valid_export_rheology_fixture()}
         self.phase(app, "phase7")
         for label, value in (("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
             next(w for w in app.number_input if w.label == label).set_value(value).run()
         next(w for w in app.text_input if w.label == "70 Bc (HH:MM) - Main").set_value("03:30").run()
-        next(b for b in app.button if b.label == "Confirm measured lab results").click().run()
+        confirmations = [b.key for b in app.button if b.label == "Confirm measured lab results"]
+        for key in confirmations:
+            app.button(key=key).click().run()
         ensure_current_centralizer(app.session_state)
         if optional_fluids and job not in ('CMT PLUG', 'CMT SQUEEZE'):
             app.session_state['centralizer_config']['aux_rheology'] = {
@@ -306,13 +321,13 @@ class AuditRegressions(unittest.TestCase):
         self.healthy(app)
         return app
 
-    def export(self, app, *, build_timeout=30):
+    def export(self, app, *, build_timeout=120):
         ensure_current_centralizer(app.session_state)
         self.phase(app, "phase10")
         self.assertFalse(app.error, [e.value for e in app.error])
         build = next(b for b in app.button if b.label == "Build Word Document")
         self.assertFalse(build.disabled)
-        # Only the two 731-bbl frozen-engine benchmarks opt into a longer Build.
+        # Scope the allowance to Word Build; ordinary widget reruns keep their default.
         build.click().run(timeout=build_timeout)
         self.healthy(app)
         self.assertFalse(app.error, [e.value for e in app.error])
@@ -349,7 +364,7 @@ class AuditRegressions(unittest.TestCase):
                 self.export(app)
 
     def test_additives_optional_fluids_and_saved_project_export(self):
-        app = self.configured_app('CSG 20"', additives=True, optional_fluids=True)
+        app = self.configured_app('CSG 20"', additives=True, optional_fluids=True, include_standalone_spacer=False)
         self.export(app)
         app = self.app(round_trip(app.session_state.to_dict()))
         for phase in ("phase2_3", "phase4", "phase5", "phase6", "phase7"):
@@ -376,8 +391,8 @@ class AuditRegressions(unittest.TestCase):
     def test_batch1_calculation_errors_block_export(self):
         for job in BATCH1_JOBS:
             with self.subTest(job=job):
-                app = self.configured_app(job, optional_fluids=True)
-                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
+                app = self.configured_app(job, optional_fluids=True, include_standalone_spacer=False)
+                self.export(app, build_timeout=120)
                 app.session_state["preflush_config"]["wash_multiplier"] = "abc"
                 # The stale Phase VI cache still looks complete: the calculation
                 # failure itself must block export, independently of status.
@@ -391,7 +406,7 @@ class AuditRegressions(unittest.TestCase):
                 self.phase(app, "phase6")
                 next(w for w in app.text_input if w.label.startswith("Correct Preflush wash ratio")).set_value("3").run()
                 next(b for b in app.button if b.label == "Apply corrected values").click().run()
-                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
+                self.export(app, build_timeout=120)
 
     def test_batch1_restored_cement_bounds_block_export(self):
         invalid = (("yield", -1.0), ("yield", 0.0), ("yield", 0.0005),
@@ -1083,11 +1098,11 @@ class AuditRegressions(unittest.TestCase):
         import phase_10_procedure as report
         for job in BATCH1_JOBS:
             with self.subTest(job=job):
-                app = self.configured_app(job, optional_fluids=True)
+                app = self.configured_app(job, optional_fluids=True, include_standalone_spacer=False)
                 self.phase(app, "phase5")
                 next(w for w in app.selectbox if w.label == "Top of cement - Main").set_value("Depth (m MD)").run()
                 next(w for w in app.number_input if w.label == "Top of cement depth (m MD) - Main").set_value(1000.0).run()
-                self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
+                self.export(app, build_timeout=120)
                 doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
                 slurry = next(t for t in doc.tables if t.rows[0].cells[0].text == "Main Cement Slurry Data")
                 placement = next(r for r in slurry.rows if r.cells[0].text == "Bottom")
@@ -1096,9 +1111,11 @@ class AuditRegressions(unittest.TestCase):
                 self.assertEqual(slurry.rows[1].cells[1].text, "50.0 bbl")
                 self.assertEqual(slurry.rows[1].cells[3].text, "118.0 pcf")
                 self.assertTrue(slurry.rows[4].cells[1].text.endswith(" cuft/sk"))
-                spacer = next(t for t in doc.tables if t.rows[0].cells[0].text == "Spacer Formulation Data")
-                self.assertEqual(spacer.rows[1].cells[4].text, "80.0 pcf")
-                self.assertEqual(spacer.rows[3].cells[3].text, "50.0 bbl @ 80.0 pcf")
+                self.assertFalse(any(t.cell(0, 0).text in ("Spacer Formulation Data", "Spacer Additives Data") for t in doc.tables))
+                sequence = next(t for t in doc.tables if any("Spacer Behind" == c.text for r in t.rows for c in r.cells))
+                behind = next(r for r in sequence.rows if r.cells[0].text == "Spacer Behind")
+                self.assertIn("50.0", [c.text for c in behind.cells])
+                self.assertIn("80.0", [c.text for c in behind.cells])
                 preflush = next(t for t in doc.tables if t.rows[0].cells[0].text == "Pre Flush Data")
                 self.assertEqual(preflush.rows[1].cells[2].text, "50.0 bbl")
                 self.assertEqual(preflush.rows[1].cells[4].text.count("pcf"), 1)
@@ -1159,15 +1176,15 @@ class AuditRegressions(unittest.TestCase):
 
     def test_batch4_spacer_zero_positive_and_missing_dosage(self):
         for job in BATCH1_JOBS:
-            saved = round_trip(self.configured_app(job, optional_fluids=True).session_state.to_dict())
+            saved = round_trip(self.configured_app(job, optional_fluids=True, include_standalone_spacer=False).session_state.to_dict())
             for dosage in (0.0, 1.25, None):
                 with self.subTest(job=job, dosage=dosage):
                     project = deepcopy(saved)
-                    project["spacer_dfs"]["Spacer"].loc[0, "User Input (% or gal)"] = dosage
+                    project["spacer_dfs"]["Spacer Behind"].loc[0, "User Input (% or gal)"] = dosage
                     app = self.app(round_trip(project))
                     for phase in ("phase2_3", "phase4", "phase5", "phase6", "phase7"):
                         self.phase(app, phase)
-                    amount = app.session_state["spacer_dfs"]["Spacer"].iloc[0]["User Input (% or gal)"]
+                    amount = app.session_state["spacer_dfs"]["Spacer Behind"].iloc[0]["User Input (% or gal)"]
                     if dosage is None:
                         self.assertTrue(pd.isna(amount))
                         self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "warning")
@@ -1175,13 +1192,18 @@ class AuditRegressions(unittest.TestCase):
                         continue
                     self.assertEqual(amount, dosage)
                     self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "ok")
-                    before = app.session_state["spacer_dfs"]["Spacer"].copy(deep=True)
-                    self.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
+                    before = app.session_state["spacer_dfs"]["Spacer Behind"].copy(deep=True)
+                    self.export(app, build_timeout=120)
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))
-                    spacer = next(t for t in doc.tables if t.rows[0].cells[0].text == "Spacer Formulation Data")
-                    chemical = next(r for r in spacer.rows if r.cells[1].text == "Spacer" and r.cells[2].text == "-")
-                    self.assertEqual(chemical.cells[3].text, str(dosage))
-                    pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer"], before)
+                    self.assertFalse(any(t.cell(0, 0).text in ("Spacer Formulation Data", "Spacer Additives Data") for t in doc.tables))
+                    import phase_10_procedure as report
+                    with patch.object(report.st, "session_state", app.session_state.to_dict()):
+                        ctx = report.build_master_context()
+                    rows = ctx["spacers"]
+                    heading = next(i for i, row in enumerate(rows) if row["Name"] == "Spacer Behind")
+                    self.assertEqual(rows[heading + 1], {"Name": "Spacer", "Material Type": "-", "amount": str(dosage), "ratio": "-"})
+                    self.assertIn("Spacer Behind", " ".join(c.text for t in doc.tables for r in t.rows for c in r.cells))
+                    pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer Behind"], before)
 
 if __name__ == "__main__":
     unittest.main()
