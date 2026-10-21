@@ -338,6 +338,12 @@ def _content_width(doc, paragraph):
 
 def render_schematic_png(payload):
     """The owner renderer owns drawing; its temporary output never enters state."""
+    from materials_db import CT_JOB
+    if payload.get("job_type") == CT_JOB:
+        if payload.get("available") is not True:
+            from well_schematic_adapter import CT_SCHEMATIC_UNAVAILABLE
+            raise ValueError(CT_SCHEMATIC_UNAVAILABLE)
+        payload = payload["payload"]
     from pathlib import Path
     from tempfile import TemporaryDirectory
     from well_schematic_engine import render_well_schematic
@@ -492,9 +498,16 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
         for text in texts:
             text.text = ""
         run = Run(texts[0].getparent(), schematic_anchor)
-        picture = run.add_picture(BytesIO(render_schematic_png(schematic_report)),
-                                  width=_content_width(doc, schematic_anchor))
-        picture._inline.docPr.set("descr", "Well Schematic")
+        from materials_db import CT_JOB
+        if schematic_report.get("job_type") == CT_JOB and schematic_report.get("available") is False:
+            from well_schematic_adapter import CT_SCHEMATIC_UNAVAILABLE
+            if schematic_report.get("message") != CT_SCHEMATIC_UNAVAILABLE or schematic_report.get("payload") is not None:
+                raise ValueError("Invalid CT schematic unavailable presentation")
+            texts[0].text = CT_SCHEMATIC_UNAVAILABLE
+        else:
+            picture = run.add_picture(BytesIO(render_schematic_png(schematic_report)),
+                                      width=_content_width(doc, schematic_anchor))
+            picture._inline.docPr.set("descr", "Well Schematic")
     result = BytesIO()
     doc.save(result)
     return result.getvalue()

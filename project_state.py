@@ -839,16 +839,17 @@ def prepare_calculations(state):
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
             issues.append(f"Pumping Simulation: {exc}")
         try:
-            if state.get("job_type") == materials_db.CT_JOB:
-                state.pop("_well_schematic_source", None)
-                raise ValueError(materials_db.CT_REPORT_PENDING)
             prepare_schematic(state)
             schematic_source = schematic_source_signature(state)
             if state.get("_well_schematic_source") != schematic_source:
                 invalidate_document(state)
             state["_well_schematic_source"] = schematic_source
         except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            if state.get("job_type") == materials_db.CT_JOB:
+                state.pop("_well_schematic_source", None)
             issues.append(f"Phase II & III Well schematic: {exc}")
+        if state.get("job_type") == materials_db.CT_JOB:
+            issues.append(materials_db.CT_REPORT_PENDING)
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

@@ -403,7 +403,14 @@ def render():
     for idx, row in edited_df.iterrows():
         desc = str(row.get("Description") or "").strip()
         if not desc or desc in ["None", "nan"]:
+            if st.session_state.get("job_type") == materials_db.CT_JOB:
+                cleaned_rows.append(row.to_dict())
             incomplete_hardware = True
+            continue
+        if desc == "CT" or st.session_state.get("job_type") == materials_db.CT_JOB:
+            # Retained CT rows keep their edited values across job switches too.
+            # The CT schematic projection validates supplied geometry without repairs.
+            cleaned_rows.append(row.to_dict())
             continue
 
         def hardware_number(field):
@@ -525,7 +532,23 @@ def render():
             on_change=_commit_placement, args=("host_row", f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}")
         )
     if job_type == materials_db.CT_JOB:
-        st.info("CT Well Schematic implementation pending.")
+        from well_schematic_adapter import prepare_schematic, source_signature
+        try:
+            presentation = prepare_schematic(st.session_state)
+            signature = source_signature(st.session_state)
+            if st.session_state.get("_well_schematic_source") != signature:
+                invalidate_document(st.session_state)
+            st.session_state["_well_schematic_source"] = signature
+            if not presentation["available"]:
+                st.info(presentation["message"])
+                st.caption("; ".join(presentation["missing_geometry"]))
+            elif st.button("Preview Well Schematic", key="_ct_schematic_preview"):
+                from well_report import render_schematic_png
+                st.image(render_schematic_png(presentation))
+        except ValueError as exc:
+            st.session_state.pop("_well_schematic_source", None)
+            invalidate_document(st.session_state)
+            st.warning(str(exc))
     else:
         _render_schematic_inputs(load_sig)
     for field, label, _ in EXCESS_FIELDS:

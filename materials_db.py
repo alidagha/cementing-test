@@ -6,7 +6,7 @@ Formatted in Title Case (Capitalizing the first letter of each word) per enginee
 """
 
 CT_JOB = "CMT PLUG WITH CT"
-CT_REPORT_PENDING = "CT Procedure, Well Schematic and final Word export are implementation pending (Round 13B)."
+CT_REPORT_PENDING = "CT Procedure and final Word export are implementation pending (Round 13B)."
 
 JOB_TYPES = [
     'CSG 30"',

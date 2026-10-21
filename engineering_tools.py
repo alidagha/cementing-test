@@ -935,15 +935,13 @@ def compute_phase_status(ss) -> dict:
     elif geo_tvd > geo_md:
         status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
     elif ss.get("job_type") == materials_db.CT_JOB:
-        from placement import ct_setting_depth
+        from well_schematic_adapter import prepare_schematic
         try:
-            depth = ct_setting_depth(hw)
-            historical = hw[~hw["Description"].eq("CT")]
-            if any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
-                   or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
-                   for _, row in historical.iterrows()):
-                raise ValueError("Complete historical hardware description, depth, size and ID.")
-            status["phase2_3"] = {"level": "warning", "message": f"CT Setting Depth: {depth:g} m MD. Well Schematic implementation pending."}
+            presentation = prepare_schematic(ss)
+            status["phase2_3"] = {"level": "ok", "message": "CT depth and Main placement validated; Well Schematic available."
+                                  if presentation["available"] else presentation["message"]}
+            if not presentation["available"]:
+                status["phase2_3"]["warnings"] = presentation["missing_geometry"]
         except ValueError as exc:
             status["phase2_3"] = {"level": "warning", "message": str(exc)}
     elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
