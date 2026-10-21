@@ -336,7 +336,7 @@ def _render_zones(config, candidates):
 def render():
     st.header("Phase IX: Centralizer")
     job = st.session_state.get("job_type")
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         st.info("Not applicable: Centralizer calculation is not required for Plug or Squeeze.")
         return
     if not adapter.centralizer_applicable(job):

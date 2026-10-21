@@ -162,7 +162,10 @@ def restore_canonical_fields(state):
 def available_fluid_types(state):
     """Project Mud Type governs eligibility; ordering stays in materials_db."""
     mud_type = state.get("mud_type", state.get("well_data", {}).get("mud_type", "WBM"))
-    return [name for name in materials_db.FLUID_TYPES if name != "Diesel" or mud_type == "OBM"]
+    return [name for name in materials_db.FLUID_TYPES
+            if (name != "Diesel" or mud_type == "OBM")
+            and (state.get("job_type") != materials_db.CT_JOB
+                 or name not in materials_db.CEMENT_FORMULATION_FLUIDS or name == "Main")]
 
 
 def reconcile_fluid_applicability(state):
@@ -173,6 +176,17 @@ def reconcile_fluid_applicability(state):
     """
     cfg = state.get("fluids_config", {})
     active = cfg.get("active", [])
+    if state.get("job_type") == materials_db.CT_JOB:
+        forbidden = [name for name in active if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
+        if forbidden:
+            cfg["active"] = [name for name in active if name not in forbidden]
+            purge_inactive_slurries(state, cfg["active"])
+            for name in forbidden:
+                state.pop("chk_fluid_" + name, None)
+                state.get("fluid_data", {}).pop(name, None)
+                state.get("active_fluids", {}).pop(name, None)
+            invalidate_document(state)
+            active = cfg["active"]
     unique = list(dict.fromkeys(active))
     if unique != active:
         cfg["active"] = unique
@@ -429,6 +443,13 @@ def purge_inactive_slurries(state, active):
                     break
 
 
+def require_ct_report_implementation(state, job_type=None):
+    """B1 must never fall through to the ordinary Drill-Pipe Plug report."""
+    if (state.get("job_type") if job_type is None else job_type) == materials_db.CT_JOB:
+        invalidate_document(state)
+        raise ValueError(materials_db.CT_REPORT_PENDING)
+
+
 def refresh_fluids(state):
     """Same phase-IV calculation, fed by its canonical inputs rather than caches.
 
@@ -439,6 +460,12 @@ def refresh_fluids(state):
     '{name}: active fluid volume must be positive ...' surfaced as
     'Review the current calculation inputs before export (...)': the operator
     was told WHAT was wrong but never WHERE to go (audit L8-03)."""
+    if state.get("job_type") == materials_db.CT_JOB:
+        forbidden = [name for name in state.get("fluids_config", {}).get("active", [])
+                     if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
+        if forbidden:
+            invalidate_document(state)
+            raise ValueError("Phase IV: CMT PLUG WITH CT permits only Main cement slurry; deselect " + ", ".join(forbidden))
     reconcile_fluid_applicability(state)
     cfg = state.get("fluids_config", {})
     active = sorted(cfg.get("active", []), key=materials_db.HYDRAULIC_EXECUTION_ORDER.index)
@@ -781,6 +808,9 @@ def prepare_calculations(state):
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as exc:
             issues.append(f"Pumping Simulation: {exc}")
         try:
+            if state.get("job_type") == materials_db.CT_JOB:
+                state.pop("_well_schematic_source", None)
+                raise ValueError(materials_db.CT_REPORT_PENDING)
             prepare_schematic(state)
             schematic_source = schematic_source_signature(state)
             if state.get("_well_schematic_source") != schematic_source:

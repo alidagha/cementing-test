@@ -14,7 +14,7 @@ HYDRAULIC_EXECUTION_ORDER = materials_db.HYDRAULIC_EXECUTION_ORDER
 def _commit_fluid_selection(fluid, key):
     cfg = st.session_state["fluids_config"]
     selected = set(cfg["active"])
-    if st.session_state[key]:
+    if st.session_state[key] and fluid in available_fluid_types(st.session_state):
         selected.add(fluid)
     else:
         selected.discard(fluid)

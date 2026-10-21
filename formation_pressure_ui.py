@@ -137,7 +137,7 @@ def render_formation_inputs(state, commit_basic):
 def render_static_security(state):
     """Both phases use one current B-1 preparation and format its records only."""
     st.subheader('Static Well Security')
-    if state.get('job_type') in ('CMT PLUG', 'CMT SQUEEZE'):
+    if state.get('job_type') in ('CMT PLUG', 'CMT SQUEEZE', 'CMT PLUG WITH CT'):
         st.info('Static Well Security: Not applicable for Plug/Squeeze.')
         return
     domain_resolved = False

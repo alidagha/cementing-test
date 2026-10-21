@@ -934,6 +934,18 @@ def compute_phase_status(ss) -> dict:
         status["phase2_3"] = {"level": "warning", "message": "Enter positive MD and TVD in Phase II & III."}
     elif geo_tvd > geo_md:
         status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
+    elif ss.get("job_type") == materials_db.CT_JOB:
+        from placement import ct_setting_depth
+        try:
+            depth = ct_setting_depth(hw)
+            historical = hw[~hw["Description"].eq("CT")]
+            if any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
+                   or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
+                   for _, row in historical.iterrows()):
+                raise ValueError("Complete historical hardware description, depth, size and ID.")
+            status["phase2_3"] = {"level": "warning", "message": f"CT Setting Depth: {depth:g} m MD. Well Schematic implementation pending."}
+        except ValueError as exc:
+            status["phase2_3"] = {"level": "warning", "message": str(exc)}
     elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
              or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
              for _, row in hw.iterrows()):
@@ -1076,6 +1088,10 @@ def compute_phase_status(ss) -> dict:
         else:
             status["phase5"] = {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated and placed."}
 
+    if ss.get("job_type") == materials_db.CT_JOB and any(
+            name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main" for name in active):
+        status["phase5"] = {"level": "warning", "message": "CMT PLUG WITH CT permits only Main cement slurry."}
+
     # Phase VI: Pre-flush & Spacer
     has_preflush = "Pre Flush" in active
     spacer_types = [f for f in active if f in ("Spacer", "Spacer Ahead", "Spacer Behind")]
@@ -1189,7 +1205,7 @@ def compute_phase_status(ss) -> dict:
     from centralizer_adapter import centralizer_applicable
     from phase_9_centralizer import result_is_current
     job = ss.get("job_type")
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         status["phase9"] = {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
     elif not centralizer_applicable(job):
         status["phase9"] = {"level": "empty", "message": "Select a supported Centralizer job in Phase I."}

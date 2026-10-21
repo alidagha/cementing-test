@@ -303,10 +303,11 @@ def render():
     normalize_hardware_text_columns(st.session_state.get("hardware_editor_draft"))
 
     # Ensure float typing for numeric columns
-    for col in ["ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"]:
-        st.session_state["hardware_table"][col] = pd.to_numeric(
-            st.session_state["hardware_table"][col], errors="coerce"
-        ).fillna(0.0).astype(float)
+    for col in ([] if st.session_state.get("job_type") == materials_db.CT_JOB else ["ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"]):
+        numeric = pd.to_numeric(st.session_state["hardware_table"][col], errors="coerce")
+        st.session_state["hardware_table"][col] = numeric.where(
+            st.session_state["hardware_table"]["Description"].eq("CT"), numeric.fillna(0.0)
+        ).astype(float)
 
     # --- SECTION 1: TUBULAR AND CASING HARDWARE ---
     st.subheader("1. Tubular and Casing Hardware")
@@ -324,7 +325,7 @@ def render():
         column_config={
             "Description": st.column_config.SelectboxColumn(
                 "Description",
-                options=materials_db.HARDWARE_DESCRIPTIONS,
+                options=materials_db.HARDWARE_DESCRIPTIONS + (["CT"] if st.session_state.get("job_type") == materials_db.CT_JOB else []),
                 default="Casing",
                 required=True,
                 width="medium"
@@ -354,7 +355,7 @@ def render():
                 help="Joint / single-pipe length in meters (e.g. 12.2). 0 for Open Hole.",
                 format="%.1f",
                 step=0.1,
-                default=12.2,
+                default=None if st.session_state.get("job_type") == materials_db.CT_JOB else 12.2,
                 required=False
             ),
             "Weight (ppf)": st.column_config.NumberColumn(
@@ -407,6 +408,8 @@ def render():
 
         def hardware_number(field):
             raw = row.get(field)
+            if desc == "CT" and (raw is None or pd.isna(raw) or raw == ""):
+                return None
             numeric = pd.to_numeric(raw, errors="coerce")
             if pd.isna(numeric) or not math.isfinite(float(numeric)):
                 if raw is not None and str(raw).strip() not in ("", "nan", "None"):
@@ -425,7 +428,7 @@ def render():
         # Guardrail: Check ID vs OD
         if desc != "Open Hole Size" and size_str:
             od_val = parse_fractional_size(size_str)
-            if od_val > 0.0 and id_val >= od_val:
+            if od_val > 0.0 and id_val is not None and id_val >= od_val:
                 dimension_warnings.append(f"Row {idx+1} ({desc}): ID ({id_val}\") is equal to or larger than Size ({size_str}\").")
         
         # Open hole specific rules
@@ -479,29 +482,36 @@ def render():
         placement["job_type"] = job_type
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     choice_key = f"_placement_target_{fingerprint(job_type)[:10]}_{load_sig}"
-    targets = hardware_choices(st.session_state["hardware_table"], target_descriptions(job_type))
-    options = ["", *targets, "__manual__"]
-    selected = placement.get("target_row", "")
-    selected = selected if selected in options else ""
-    placement["target_row"] = st.selectbox(
-        "Target shoe / treatment depth source",
-        options,
-        index=options.index(selected),
-        format_func=lambda token: ("Select a hardware row or enter a measured depth" if not token
-                                   else "Enter measured depth manually" if token == "__manual__"
-                                   else targets[token]["label"]),
-        key=choice_key,
-        on_change=_commit_placement, args=("target_row", choice_key),
-        help="Choose the actual target row for this job. Changing its MD invalidates the previous selection."
-    )
-    if placement["target_row"] == "__manual__":
-        placement["manual_depth_m"] = st.number_input(
-            "Measured target depth (m MD)", min_value=0.0, step=1.0,
-            value=float(placement.get("manual_depth_m") or 0.0),
-            key=f"_placement_manual_depth_{load_sig}",
-            on_change=_commit_placement, args=("manual_depth_m", f"_placement_manual_depth_{load_sig}"),
-            help="0 means not entered; only a measured job-specific depth is printed."
+    if job_type == materials_db.CT_JOB:
+        from placement import ct_setting_depth
+        try:
+            st.caption(f"CT Setting Depth / RIH / circulation / Main Plug Bottom: {ct_setting_depth(st.session_state['hardware_table']):g} m MD")
+        except ValueError as exc:
+            st.warning(str(exc))
+    else:
+        targets = hardware_choices(st.session_state["hardware_table"], target_descriptions(job_type))
+        options = ["", *targets, "__manual__"]
+        selected = placement.get("target_row", "")
+        selected = selected if selected in options else ""
+        placement["target_row"] = st.selectbox(
+            "Target shoe / treatment depth source",
+            options,
+            index=options.index(selected),
+            format_func=lambda token: ("Select a hardware row or enter a measured depth" if not token
+                                       else "Enter measured depth manually" if token == "__manual__"
+                                       else targets[token]["label"]),
+            key=choice_key,
+            on_change=_commit_placement, args=("target_row", choice_key),
+            help="Choose the actual target row for this job. Changing its MD invalidates the previous selection."
         )
+        if placement["target_row"] == "__manual__":
+            placement["manual_depth_m"] = st.number_input(
+                "Measured target depth (m MD)", min_value=0.0, step=1.0,
+                value=float(placement.get("manual_depth_m") or 0.0),
+                key=f"_placement_manual_depth_{load_sig}",
+                on_change=_commit_placement, args=("manual_depth_m", f"_placement_manual_depth_{load_sig}"),
+                help="0 means not entered; only a measured job-specific depth is printed."
+            )
     if "TIE BACK" in job_type.upper():
         hosts = hardware_choices(st.session_state["hardware_table"], HOST_DESCRIPTIONS)
         host_options = ["", *hosts]
@@ -514,7 +524,10 @@ def render():
             key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}",
             on_change=_commit_placement, args=("host_row", f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}")
         )
-    _render_schematic_inputs(load_sig)
+    if job_type == materials_db.CT_JOB:
+        st.info("CT Well Schematic implementation pending.")
+    else:
+        _render_schematic_inputs(load_sig)
     for field, label, _ in EXCESS_FIELDS:
         widget_key = f"_placement_{field}_{load_sig}"
         if widget_key not in st.session_state:
@@ -531,7 +544,7 @@ def render():
                      format_func=lambda value: "Apply Excess" if value == "apply" else "Ignore Excess",
                      key=widget_key, on_change=_commit_placement, args=("chart_excess_mode", widget_key),
                      help="Choose explicitly. Annular capacity and modelled cement placement use this mode.")
-    if placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
+    if job_type != materials_db.CT_JOB and placement["target_row"] == "__manual__" and measured_depth(placement.get("manual_depth_m")) is None:
         st.warning("Enter the actual target depth before citing it in the executive summary.")
 
     st.markdown("---")

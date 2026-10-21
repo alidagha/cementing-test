@@ -358,6 +358,23 @@ class AuditRegressions(unittest.TestCase):
     def test_neat_cement_export_for_every_job_type(self):
         for job in materials_db.JOB_TYPES:
             with self.subTest(job=job):
+                if job == materials_db.CT_JOB:
+                    import phase_10_procedure as report
+                    app = self.app({"job_type": job, "_compiled_doc_bytes": b"old"})
+                    self.phase(app, "phase10")
+                    self.assertTrue(any("CT" in w.value and "implementation pending" in w.value
+                                        for w in app.warning))
+                    self.assertFalse(any(b.label == "Build Word Document" for b in app.button))
+                    self.assertFalse(app.get("download_button"))
+                    self.assertNotIn("_compiled_doc_bytes", app.session_state)
+                    for prepared in (False, True):
+                        state = app.session_state.to_dict()
+                        state["_compiled_doc_bytes"] = b"old"
+                        with patch.object(report.st, 'session_state', state):
+                            with self.assertRaisesRegex(ValueError, "CT.*pending"):
+                                report.build_master_context(calculations_prepared=prepared)
+                        self.assertNotIn("_compiled_doc_bytes", state)
+                    continue
                 app = self.configured_app(job)
                 self.assertTrue(app.session_state["cement_additives_dfs"]["Main"].empty)
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")

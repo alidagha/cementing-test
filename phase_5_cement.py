@@ -536,7 +536,7 @@ def render():
 
             if slurry in materials_db.PLACEMENT_SLURRIES:
                 st.markdown("#### Slurry Placement")
-                volume_driven = job_type not in ("CMT PLUG", "CMT SQUEEZE")
+                volume_driven = job_type not in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB)
                 if volume_driven:
                     if p.get("top_job_type") not in (None, job_type):
                         p["report_bottom_depth"] = None

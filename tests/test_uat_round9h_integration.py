@@ -45,9 +45,9 @@ def directional(state):
 
 @pytest.mark.parametrize("job", materials_db.JOB_TYPES)
 def test_all_jobs_navigate_without_implicit_execution_or_false_completion(job):
-    assert len(materials_db.JOB_TYPES) == 14
+    assert len(materials_db.JOB_TYPES) == 15
     state = {"job_type": job, "mud_density": "80", **audit.well_profile_fixture(),
-             **audit.chart_fixture(job)}
+             **(audit.chart_fixture(job) if job != materials_db.CT_JOB else {})}
     app = AppTest.from_file(str(audit.ROOT / "main.py"), default_timeout=30)
     for key, value in state.items():
         app.session_state[key] = value
@@ -58,7 +58,7 @@ def test_all_jobs_navigate_without_implicit_execution_or_false_completion(job):
         assert not app.exception
         assert app.radio(key="_app_mode_key").value == "phase9"
         status = tools.compute_phase_status(app.session_state)["phase9"]
-        if job in ("CMT PLUG", "CMT SQUEEZE"):
+        if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
             assert not adapter.centralizer_applicable(job)
             assert status == {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
             assert not any(button.label == "Execute Centralizer" for button in app.button)

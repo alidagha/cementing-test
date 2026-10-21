@@ -538,6 +538,8 @@ def generate_executive_summary(
     executive_summary_config: dict = None
 ) -> str:
     """Locked preamble/safety paragraphs and a deterministic report-only narrative."""
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state, job_type)
     p1 = ("Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention "
           "on the referenced well. The proposal includes well data, materials and resources requirements.")
 
@@ -677,6 +679,8 @@ def generate_official_procedure(
     Constructs the 100% authentic, company-standard cementing procedure
     matching the exact template archetype for the selected job_type.
     """
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state, job_type)
     job_upper = str(job_type).upper()
     sc = StepCounter()
 
@@ -991,6 +995,8 @@ def _escape_xml_special_chars(value):
 
 def synchronize_report_texts():
     state = st.session_state
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(state)
     job = state.get("job_type", 'CSG 20"')
     active = state.get("fluids_config", {}).get("active", [])
     fluids = state.get("fluid_data", {})
@@ -1143,6 +1149,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     """
     # The export screen has already refreshed calculations this rerun; direct
     # callers still get a fresh validation by default.
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state)
     issues = [] if calculations_prepared else prepare_calculations(st.session_state)
     if issues:
         raise ValueError(" | ".join(issues))
@@ -1670,6 +1678,13 @@ def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
 
 def render():
     st.header("Phase X: Procedure & Export")
+    if st.session_state.get("job_type") == materials_db.CT_JOB:
+        from project_state import require_ct_report_implementation
+        try:
+            require_ct_report_implementation(st.session_state)
+        except ValueError as exc:
+            st.warning(str(exc))
+        return
     st.markdown("Review official executive summary and execution instructions, then export the complete engineering dossier to Word.")
 
     # FIX (requested): before this, the first sign of an incomplete project

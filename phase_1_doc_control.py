@@ -98,6 +98,10 @@ def on_job_type_change():
             params["top_job_type"] = st.session_state["job_type"]
 
     _commit_doc_widget("job_type")
+    if new_job == materials_db.CT_JOB:
+        from project_state import reconcile_fluid_applicability, invalidate_document
+        reconcile_fluid_applicability(st.session_state)
+        invalidate_document(st.session_state)
     st.session_state["cementing_method"] = new_method
     st.session_state[_doc_widget_key("cementing_method")] = new_method
     _commit_doc_widget("cementing_method")

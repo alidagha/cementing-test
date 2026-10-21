@@ -127,7 +127,7 @@ def test_custom_management_identity_maximum_and_selected_deletion(catalog):
 def test_phase9_job_applicability(job):
     result = tools.compute_phase_status({"job_type":job})
     assert "phase9" in result, "Phase IX status is missing"
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         assert result["phase9"]["level"] == "ok"
         assert "Not applicable" in result["phase9"]["message"]
     else:

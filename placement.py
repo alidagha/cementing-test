@@ -30,7 +30,48 @@ def measured_depth(value):
     return depth if math.isfinite(depth) and depth > 0 else None
 
 
+def ct_setting_depth(table):
+    """The single CT Hardware MD authority; optional dimensions are never inferred."""
+    from engineering_tools import parse_fractional_size
+    if not isinstance(table, pd.DataFrame) or "Description" not in table:
+        raise ValueError("CT Setting Depth: add exactly one CT Hardware row with a positive scalar MD (m).")
+    rows = table[table["Description"].eq("CT")]
+    if len(rows) != 1:
+        raise ValueError("CT Setting Depth: exactly one CT Hardware row is required; missing or duplicate CT rows are not resolved automatically.")
+    row = rows.iloc[0]
+    raw = row.get("MD (m)")
+    try:
+        if pd.api.types.is_bool(raw):
+            raise ValueError
+        depth = float(raw)
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("CT Setting Depth: MD (m) must be one positive finite scalar, not an interval.") from None
+    if not math.isfinite(depth) or depth <= 0:
+        raise ValueError("CT Setting Depth: MD (m) must be one positive finite scalar.")
+    supplied = {}
+    for field in ("Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"):
+        raw = row.get(field)
+        if raw is None or (not isinstance(raw, (list, dict)) and pd.isna(raw)) or raw == "":
+            continue
+        if pd.api.types.is_bool(raw) or isinstance(raw, (list, dict)):
+            raise ValueError(f"CT Hardware {field} must be a finite nonnegative measurement when supplied.")
+        try:
+            value = parse_fractional_size(str(raw)) if field == "Size (in)" else float(raw)
+        except (ValueError, TypeError, OverflowError):
+            value = float("nan")
+        if not math.isfinite(value) or value < 0 or (field == "Size (in)" and value == 0 and pd.to_numeric(raw, errors="coerce") != 0):
+            raise ValueError(f"CT Hardware {field} must be a finite nonnegative measurement when supplied.")
+        if value > 0:  # An editor default zero is not measured geometry.
+            supplied[field] = value
+    if ("Size (in)" in supplied and "ID (in)" in supplied
+            and supplied["ID (in)"] >= supplied["Size (in)"]):
+        raise ValueError("CT Hardware ID (in) must be smaller than Size (in).")
+    return depth
+
+
 def target_descriptions(job_type):
+    if job_type == "CMT PLUG WITH CT":
+        return {"CT"}
     name = str(job_type).upper()
     if "TIE BACK" in name:
         return {"Tie Back"}
@@ -58,6 +99,8 @@ def hardware_choices(table, descriptions):
 
 
 def target_depth(table, job_type, config):
+    if job_type == "CMT PLUG WITH CT":
+        return ct_setting_depth(table)
     if config.get("job_type") != job_type:
         return None
     if config.get("target_row") == "__manual__":
@@ -117,7 +160,12 @@ def slurry_intervals(table, job_type, config, active_slurries, cement_params, fl
                               "top_depth": row["top_md"], "bottom": f"{row['bottom_md']:.1f} m MD",
                               "bottom_depth": row["bottom_md"], "returned_bbl": row["returned_bbl"]}
                 for row in rows}
-    target = target_depth(table, job_type, config)
+    try:
+        target = target_depth(table, job_type, config)
+    except ValueError as exc:
+        return {name: {"top": ".... m [PLACEMENT INCOMPLETE]", "top_depth": None,
+                       "bottom": ".... m [PLACEMENT INCOMPLETE]", "bottom_depth": None,
+                       "issue": str(exc)} for name in active_slurries}
     target_text = (f"{target:.1f} m MD" if target is not None
                    else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]")
     job = str(job_type).upper()

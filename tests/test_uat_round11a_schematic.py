@@ -729,6 +729,17 @@ def test_genuine_missing_or_contradictory_schematic_authority_blocks(fault, matc
 def test_current_supported_job_fixtures_translate_without_new_inputs(job):
     import test_audit_regressions as audit
     import well_schematic_adapter as schematic
+    if job == materials_db.CT_JOB:
+        from unittest.mock import patch
+        import phase_10_procedure as report
+        from engineering_tools import compute_phase_status
+        state = {"job_type": job, "_compiled_doc_bytes": b"old"}
+        with patch.object(report.st, "session_state", state):
+            with pytest.raises(ValueError, match="CT.*pending"):
+                report.build_master_context(calculations_prepared=True)
+        assert "_compiled_doc_bytes" not in state
+        assert compute_phase_status(state)["phase2_3"]["level"] != "ok"
+        return
     state = {"job_type": job, **audit.valid_export_chart_fixture(job)}
     if job == "CMT PLUG":
         state["cement_params"] = {"Main": {"top_mode": "Depth (m MD)", "top_depth": 2000., "top_job_type": job}}
