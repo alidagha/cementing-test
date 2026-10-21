@@ -6,7 +6,7 @@ from input_guard import repair_invalid_inputs
 from engineering_tools import round_half_up, clean_number, safe_float
 from editor_state import persistent_data_editor
 from phase_4_fluids import render_preflush_material_name
-from standalone_spacer import CONFIG_KEY, MODES, formulation_from_state, field_rows
+from standalone_spacer import CONFIG_KEY, MODES, formulation_from_state, field_rows, FIELD_COLUMNS
 from project_state import invalidate_document
 
 REQUIRED_SPACER_COLS = ["Chemical", "User Input (% or gal)", "Weighting Agent Type"]
@@ -29,6 +29,18 @@ def _commit_standalone_spacer(field, widget_key):
         if config.get(field) != st.session_state[widget_key]:
             invalidate_document(st.session_state)
         config[field] = st.session_state[widget_key]
+
+
+def _standalone_field_display(recipe):
+    """Cement field presentation rules; keep the shared Word projection intact."""
+    rows = field_rows(recipe)
+    for row, material in zip(rows, recipe["materials"]):
+        for source, column in (("base", FIELD_COLUMNS[3]), ("gross", FIELD_COLUMNS[5])):
+            amount = round_half_up(material[source], 1 if material["unit"] == "lb" else 2)
+            precision = 2 if material["unit"] == "gal" and round(amount, 1) != amount else 1
+            row[column] = f"{amount:.{precision}f} {material['unit']}"
+        row[FIELD_COLUMNS[4]] = f"{round_half_up(material['dose'], 3):.3f} {material['unit']}/bbl"
+    return rows
 
 
 def _render_standalone_spacer(load_sig):
@@ -73,17 +85,18 @@ def _render_standalone_spacer(load_sig):
     st.markdown('<div style="background:#17365d;color:white;padding:8px;font-weight:bold">'
                 'Spacer Additives Data</div>', unsafe_allow_html=True)
     st.write(f"Volume: {recipe['volume_bbl']:.1f} bbl | Weight: {recipe['density_pcf']:g} pcf")
-    st.write(f"Fresh Water: {recipe['water_base_bbl']:.3f} bbl (target batch); "
-             f"{recipe['water_total_bbl']:.3f} bbl (including Dead Volume).")
-    st.table(pd.DataFrame(field_rows(recipe)))
-    st.caption("Doses are per bbl fresh water, except Defoamer: per bbl finished Spacer. "
+    st.write(f"Fresh Water: {recipe['water_base_bbl']:.2f} bbl (target batch); "
+             f"{recipe['water_total_bbl']:.2f} bbl (including Dead Volume).")
+    st.table(pd.DataFrame(_standalone_field_display(recipe)))
+    st.caption("Doses are per bbl fresh water, including Defoamer. "
                "The last column includes Dead Volume for every material.")
     if recipe["inventory"]:
-        st.table(pd.DataFrame([{"Material": name, **values} for name, values in recipe["inventory"].items()]))
+        st.table(pd.DataFrame([{"Material": name, **{key: f"{round_half_up(value, 1):.1f}"
+                             for key, value in values.items()}} for name, values in recipe["inventory"].items()]))
         st.caption("Weighting solids: " + "; ".join(f"{name}: {pct:.2f}%" for name, pct in recipe["weighting_pct"].items()))
     st.info(recipe["note"])
-    st.caption(f"Operational mixed volume: {recipe['mixed_volume_bbl']:.3f} bbl; "
-               f"programmed pumped volume: {recipe['pumped_volume_bbl']:g} bbl. "
+    st.caption(f"Operational mixed volume: {recipe['mixed_volume_bbl']:.1f} bbl; "
+               f"programmed pumped volume: {recipe['pumped_volume_bbl']:.1f} bbl. "
                f"Closure residuals — mass: {recipe['closure']['mass_lb']:.3g} lb; "
                f"volume: {recipe['closure']['volume_bbl']:.3g} bbl; "
                f"density: {recipe['closure']['density_pcf']:.3g} pcf.")

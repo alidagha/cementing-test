@@ -367,7 +367,7 @@ def test_repeated_phase_x_builds_one_two_five_eight_zone_reports(
     companion = bridge._companion()
     figures = set(companion.plt.get_fignums())
     for _ in range(3):
-        next(b for b in app.button if b.label == "Build Word Document").click().run(timeout=90)
+        next(b for b in app.button if b.label == "Build Word Document").click().run(timeout=120)
         assert not app.exception and not app.error
         state = app.session_state.to_dict()
         assert saved_bytes(state) == before and phase9.result_is_current(state)

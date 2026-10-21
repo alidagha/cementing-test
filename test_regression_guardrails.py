@@ -313,12 +313,13 @@ def test_master_context_contains_placement_keys():
 
 
 def test_template_has_spacer_block():
-    """BUG-05: the Word template must consume the spacers payload."""
+    """BUG-05 / A4: exact Spacer consumes its canonical six-column payload."""
     xml = zipfile.ZipFile(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                        "master_template.docx")
                           ).read("word/document.xml").decode("utf-8")
-    assert "has_spacer" in xml and "spacers" in xml, \
-        "Spacer block missing from template (BUG-05 unfixed)"
+    assert "has_spacer" in xml and "standalone_spacer.rows" in xml
+    assert "Spacer Additives Data" in xml and "with dead Vol." in xml
+    assert "Spacer Formulation Data" not in xml
 
 
 def test_serialize_numpy_and_nat():
@@ -636,8 +637,8 @@ def test_render_master_document_smoke():
     from phase_10_procedure import build_master_context
     _seed_session()
     ctx = build_master_context(calculations_prepared=True)
-    assert ctx.get("has_spacer") is True, \
-        "seeded spacer_dfs must produce has_spacer=True (critique round)"
+    assert ctx.get("has_spacer") is False, \
+        "a generic Spacer Behind draft must not activate the exact-Spacer table"
     assert any(r.get("Name") == "Hematite" for r in ctx.get("spacers", [])), \
         "seeded spacer chemical missing from payload"
     assert ctx["preflush"]["volume"] == 80.0, ctx["preflush"].get("volume")
@@ -656,10 +657,10 @@ def test_render_master_document_smoke():
         "rendered Word document missing or suspiciously small"
     rendered_xml = zipfile.ZipFile(io.BytesIO(rendered)).read(
         "word/document.xml").decode("utf-8")
-    assert "Spacer Formulation Data" in rendered_xml, \
-        "spacer table block did not render into the document (critique round)"
-    assert "Hematite" in rendered_xml, \
-        "seeded spacer chemical did not render into the document"
+    assert "Spacer Formulation Data" not in rendered_xml
+    assert "Spacer Additives Data" not in rendered_xml
+    assert "Hematite" not in rendered_xml
+    assert "Spacer Behind" in rendered_xml, "sibling operational identity was lost"
     assert "Pre Flush Data" in rendered_xml, \
         "pre-flush table block did not render into the document (F11)"
     assert "10080.0 lb" in rendered_xml, \

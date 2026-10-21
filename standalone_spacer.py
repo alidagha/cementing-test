@@ -11,10 +11,6 @@ from engineering_tools import normalize_digits, require_fluid_density, round_hal
 
 CONFIG_KEY = "standalone_spacer_config"
 MODES = ("Limestone", "Barite", "Ferro Bar", "Limestone + Barite")
-PENDING_INTEGRATION = (
-    "Standalone Spacer: laboratory, Dynamic/Pumping and Word integrations are "
-    "pending Gates A2–A4. Final Word export is blocked."
-)
 BBL_M3 = 0.158987294928
 BBL_FT3 = 42 / 7.48051948051948
 KG_LB = 2.2046226218487758
@@ -22,10 +18,8 @@ R = {name: density * BBL_M3 * KG_LB for name, density in (
     ("water", 998.20675), ("brine", 1201.13), ("O-Spacer", 1620.),
     ("Surfactant", 940.), ("Defoamer", 1000.),
     ("Limestone", 2700.), ("Barite", 4200.), ("Ferro Bar", 4800.))}
-A = R["water"] + 126 + 10 + 2 / 42 * R["Surfactant"]
-BV = (R["water"] + 126) / R["brine"] + 10 / R["O-Spacer"] + 2 / 42
-CM = .5 / 42 * R["Defoamer"]
-CV = .5 / 42
+A = R["water"] + 126 + 10 + 2 / 42 * R["Surfactant"] + .5 / 42 * R["Defoamer"]
+BV = (R["water"] + 126) / R["brine"] + 10 / R["O-Spacer"] + 2 / 42 + .5 / 42
 
 
 def _number(value, label, *, positive=False):
@@ -59,8 +53,8 @@ def _solo(volume, density, mode):
     denominator = BV - A / R[mode]
     if not math.isfinite(denominator) or denominator == 0:
         raise ValueError("Standalone Spacer: singular mass/volume balance.")
-    water = volume * (1 - CV - (density * BBL_FT3 - CM) / R[mode]) / denominator
-    mass = volume * (density * BBL_FT3 - CM) - A * water
+    water = volume * (1 - density * BBL_FT3 / R[mode]) / denominator
+    mass = volume * density * BBL_FT3 - A * water
     return water, mass
 
 
@@ -84,14 +78,14 @@ def calculate_spacer(volume_bbl, density_pcf, mode, dead_vol_bbl,
         available_l = _number(limestone_available_lb, "Available Limestone inventory", positive=True)
         available_b = _number(barite_available_lb, "Available Barite inventory", positive=True)
         _, cap = _solo(volume, 100., "Limestone")
-        a = volume * (1 - CV - (density * BBL_FT3 - CM) / R["Barite"]) / (BV - A / R["Barite"])
+        a = volume * (1 - density * BBL_FT3 / R["Barite"]) / (BV - A / R["Barite"])
         b = (1 / R["Barite"] - 1 / R["Limestone"]) / (BV - A / R["Barite"])
 
         def candidate(limestone):
             w = a + b * limestone
             if not math.isfinite(w) or w <= 0:
                 raise ValueError("Standalone Spacer: nonpositive freshwater in Mix balance.")
-            barite = volume * (density * BBL_FT3 - CM) - A * w - limestone
+            barite = volume * density * BBL_FT3 - A * w - limestone
             return w, barite, 1 + dead / w
 
         # W=a+bL, b<0: gross L=L(1+Dead/W) increases strictly.
@@ -130,7 +124,7 @@ def calculate_spacer(volume_bbl, density_pcf, mode, dead_vol_bbl,
          "volume_bbl": (R["water"] + 126) * water / R["brine"]},
         {"name": "O-Spacer", "mass_lb": 10 * water, "volume_bbl": 10 * water / R["O-Spacer"]},
         {"name": "Surfactant", "mass_lb": 2 / 42 * water * R["Surfactant"], "volume_bbl": 2 / 42 * water},
-        {"name": "Defoamer", "mass_lb": CM * volume, "volume_bbl": CV * volume},
+        {"name": "Defoamer", "mass_lb": .5 / 42 * water * R["Defoamer"], "volume_bbl": .5 / 42 * water},
         *[{"name": name, "mass_lb": mass, "volume_bbl": mass / R[name]} for name, mass in solids.items()],
     ]
     mass = math.fsum(c["mass_lb"] for c in components)
@@ -146,7 +140,7 @@ def calculate_spacer(volume_bbl, density_pcf, mode, dead_vol_bbl,
         ("Salt", "NaCl", 126 * water, "lb", 126., "freshwater"),
         ("O-Spacer", "Spacer", 10 * water, "lb", 10., "freshwater"),
         ("Surfactant", "Surfactant", 2 * water, "gal", 2., "freshwater"),
-        ("Defoamer", "Anti Foam", .5 * volume, "gal", .5, "finished Spacer"),
+        ("Defoamer", "Anti Foam", .5 * water, "gal", .5, "freshwater"),
         *[(name, "Weighting Agent", mass, "lb", mass / water, "freshwater") for name, mass in solids.items()],
     ]
     return {"volume_bbl": volume, "density_pcf": density, "mode": mode,

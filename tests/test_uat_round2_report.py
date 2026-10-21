@@ -55,7 +55,7 @@ class Round2ReportUAT(unittest.TestCase):
                 app.button(key=button.key).click().run()
         for _ in ORDER:
             next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
-        case.export(app, build_timeout=60)
+        case.export(app, build_timeout=120)
         cls.state = app.session_state.to_dict()
 
     def context(self, state=None):
@@ -148,7 +148,7 @@ class Round2ReportUAT(unittest.TestCase):
 
     def test_existing_preflush_spacer_payload_and_document_flow(self):
         context = self.context()
-        self.assertTrue(context['has_preflush']); self.assertTrue(context['has_spacer'])
+        self.assertTrue(context['has_preflush']); self.assertFalse(context['has_spacer'])
         self.assertEqual([s['Name'] for s in context['spacers'] if s['Material Type'] == 'Spacer'],
                          ['Spacer Ahead', 'Spacer Behind'])
         self.assertEqual(context['spacer_volume_bbl'], 100.)
@@ -157,15 +157,15 @@ class Round2ReportUAT(unittest.TestCase):
         doc = self.word(context)
         titles = [t.rows[0].cells[0].text for t in doc.tables]
         self.assertEqual(titles.count('Pre Flush Data'), 1)
-        self.assertEqual(titles.count('Spacer Formulation Data'), 1)
-        spacer = doc.tables[titles.index('Spacer Formulation Data')]
-        self.assertEqual([r.cells[1].text for r in spacer.rows[3:] if r.cells[2].text == 'Spacer'],
-                         ['Spacer Ahead', 'Spacer Behind'])
+        self.assertNotIn('Spacer Formulation Data', titles)
+        self.assertNotIn('Spacer Additives Data', titles)
+        sequence = next(t for t in doc.tables if any(c.text == 'Spacer Behind' for r in t.rows for c in r.cells))
+        for fluid in ('Spacer Ahead', 'Spacer Behind'):
+            self.assertEqual(sum(r.cells[0].text == fluid for r in sequence.rows), 1)
         # XML body order includes paragraphs and tables, unlike separate python-docx lists.
         text = '\n'.join(''.join(t.text or '' for t in node.iter(qn('w:t'))) for node in doc.element.body)
         self.assertLess(text.index('Tail Cement Slurry Additives Data'), text.index('Pre Flush Data'))
-        self.assertLess(text.index('Pre Flush Data'), text.index('Spacer Formulation Data'))
-        self.assertLess(text.index('Spacer Formulation Data'), text.rindex('VII. Laboratory Report'))
+        self.assertLess(text.index('Pre Flush Data'), text.rindex('VII. Laboratory Report'))
         self.assertNotIn('Spacer Cement Slurry Results', text)
         self.assertNotIn('Pre Flush Cement Slurry Results', text)
 

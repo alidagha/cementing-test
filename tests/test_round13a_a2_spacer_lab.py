@@ -1,5 +1,6 @@
 """Gate A2: finished-Spacer cup, shared measured rheology and review lifecycle."""
 from copy import deepcopy
+from types import SimpleNamespace
 import json
 import math
 import pytest
@@ -11,7 +12,7 @@ import materials_db as db
 import rheology
 import test_audit_regressions as audit
 from project_io import decode_project, replace_project_state
-from test_round13a_a1_standalone_spacer import state as a1_state
+from test_round13a_a1_standalone_spacer import state as a1_state, mix_oracle
 from test_uat_round10c_integration import save_project, restore_project
 
 CASE = audit.AuditRegressions()
@@ -104,8 +105,8 @@ def test_all_modes_independent_cup_closure_and_concentration_bases(mode, density
     assert rows["Salt"]["Concentration"] == 126.
     assert rows["Salt"]["Unit"] == "lb/bbl freshwater"
     assert rows["Surfactant"]["Unit"] == "gal/bbl freshwater"
-    assert rows["Defoamer"]["Unit"] == "gal/bbl finished Spacer"
-    assert grams["Defoamer"] == pytest.approx(600 * .5 / 42, rel=1e-13)
+    assert rows["Defoamer"]["Unit"] == "gal/bbl freshwater"
+    assert grams["Defoamer"] == pytest.approx(600 * .5 / 42 * recipe["water_base_bbl"] / recipe["volume_bbl"], rel=1e-13)
     assert set(grams) == {"Fresh Water", *[row["name"] for row in recipe["materials"]]}
 
 
@@ -326,7 +327,7 @@ def test_malformed_lab_import_rejected_before_publication(bad):
     assert ps.fingerprint(current) == before
 
 
-def test_compiled_document_retires_on_lot_edit_and_final_word_stays_blocked():
+def test_compiled_document_retires_on_lot_edit_and_unreviewed_word_stays_blocked():
     app = CASE.app(measured(state()))
     CASE.phase(app, "phase7")
     app.session_state["_compiled_doc_bytes"] = b"old"
@@ -335,7 +336,7 @@ def test_compiled_document_retires_on_lot_edit_and_final_word_stays_blocked():
     assert "lab_payload_Spacer" not in app.session_state
     CASE.phase(app, "phase10")
     assert widget(app, "button", "Build Word Document").disabled
-    assert any("Gates A2–A4" in error.value for error in app.error)
+    assert any("Confirm measured Spacer" in error.value for error in app.error)
 
 
 def test_real_phase_iv_order_tabs_and_manual_sources_stay_independent():
@@ -370,7 +371,7 @@ def test_mode_and_inventory_ui_changes_rebuild_current_cup_with_metadata():
     CASE.phase(app, "phase7")
     grid_d = app.session_state["lab_grid_dfs"]["Spacer"].copy()
     assert grid_d.iloc[0]["Lot No"] == "Water retained"
-    expected = 1390.942174 * 453.59237 * 600 / (20 * 158987.294928)
+    expected = mix_oracle(20, 110, 1, 1500)[1] * 453.59237 * 600 / (20 * 158987.294928)
     assert float(grid_d.loc[grid_d["Material"] == "Limestone", "Mass"].iloc[0]) == pytest.approx(expected, abs=6e-8)
     CASE.phase(app, "phase6")
     widget(app, "selectbox", "Weighting Agent Mode").set_value("Barite")
@@ -420,3 +421,37 @@ def test_publication_failure_rolls_back_spacer_manual_data():
     with pytest.raises(RuntimeError, match="controlled publication"):
         replace_project_state(current, state("Ferro Bar"), "new project")
     assert ps.fingerprint(current) == before
+
+
+@pytest.mark.parametrize("mode,density", [("Limestone", 95), ("Barite", 110),
+                                        ("Ferro Bar", 140), ("Limestone + Barite", 110)])
+def test_superseded_defoamer_review_cannot_authorize_new_composition(mode, density):
+    source = state(mode)
+    source["fluids_config"]["params"]["Spacer"]["density"] = str(density)
+    measured(source)
+    source["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] = "retain lot"
+    qc = source["lab_qc_params"]["Spacer"]
+    qc["review_signature"] = et.lab_review_signature(qc, source["lab_grid_dfs"]["Spacer"])
+    readings = deepcopy(qc["rheology"])
+    recipe = sp.formulation_from_state(source)
+    composition = {"mode": mode, "density_pcf": float(density)}
+    if mode == "Limestone + Barite":
+        composition["solids_lb_per_bbl"] = {name: mass / recipe["volume_bbl"]
+                                          for name, mass in recipe["solids_lb"].items()}
+    # Persisted pre-correction signature lacks the Defoamer formulation basis.
+    obsolete = ps.fingerprint({"composition": composition, "bhct": 150., "bhst": 200.})
+    assert ps.lab_source_signature(source, "Spacer") != obsolete
+    source["lab_source_signatures"]["Spacer"] = obsolete
+    source["_compiled_doc_bytes"] = b"previous successful Word"
+    with pytest.raises(ValueError, match="Review|Confirm"):
+        ps.spacer_lab_payload(source, rebuild=False)
+    restored = restore_project(save_project(SimpleNamespace(session_state=source))).session_state.to_dict()
+    ps.refresh_spacer_lab(restored)
+    assert not restored["lab_qc_params"]["Spacer"]["reviewed"]
+    assert restored["lab_qc_params"]["Spacer"]["rheology"] == readings
+    assert restored["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] == "retain lot"
+    assert "_compiled_doc_bytes" not in restored
+    qc = restored["lab_qc_params"]["Spacer"]
+    qc["reviewed"] = True
+    qc["review_signature"] = et.lab_review_signature(qc, restored["lab_grid_dfs"]["Spacer"])
+    assert ps.spacer_lab_payload(restored)["rheology"]

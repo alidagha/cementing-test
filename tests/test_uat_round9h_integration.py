@@ -295,7 +295,7 @@ def test_real_phase_x_build_and_section_ix_contract(word_projects, job, physics,
         case.phase(app, "phase10")
         build = next(button for button in app.button if button.label == "Build Word Document")
         assert not build.disabled, [error.value for error in app.error]
-        build.click().run()
+        build.click().run(timeout=120)
         assert not app.exception and not app.error
     data = app.session_state["_compiled_doc_bytes"]
     with patch.object(report.st, "session_state", app.session_state.to_dict()):

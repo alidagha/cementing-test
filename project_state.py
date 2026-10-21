@@ -554,7 +554,9 @@ def _spacer_lab_source(state):
     # Solo composition is fixed by mode/density. Mix additionally depends on
     # the solved solids per target bbl, including inventory/Dead Volume effects.
     # Never use rounded table cells as the review's source authority.
-    composition = {"mode": recipe["mode"], "density_pcf": recipe["density_pcf"]}
+    defoamer = next(row for row in recipe["materials"] if row["name"] == "Defoamer")
+    composition = {"mode": recipe["mode"], "density_pcf": recipe["density_pcf"],
+                   "defoamer": {"dose": defoamer["dose"], "basis": defoamer["basis"]}}
     if recipe["mode"] == "Limestone + Barite":
         composition["solids_lb_per_bbl"] = {name: mass / recipe["volume_bbl"]
                                           for name, mass in recipe["solids_lb"].items()}
@@ -743,12 +745,11 @@ def prepare_calculations(state):
         issues += refresh_cement_calculations(state)
         issues += refresh_preflush(state)
         if "Spacer" in state.get("fluids_config", {}).get("active", []):
-            from standalone_spacer import formulation_from_state, PENDING_INTEGRATION
+            from standalone_spacer import formulation_from_state
             try:
                 formulation_from_state(state)
             except ValueError as exc:
                 issues.append(f"Phase VI: {exc}")
-            issues.append(PENDING_INTEGRATION)
         issues += refresh_lab_payloads(state)
         # Dormant Diesel sources are drafts, not current chart/report inputs.
         chart_fluids = deepcopy(state.get("fluids_config", {}))

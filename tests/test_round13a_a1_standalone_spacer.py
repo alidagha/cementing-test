@@ -43,12 +43,11 @@ def oracle(volume, density, agent):
         rw, br = rbbl("998.20675"), rbbl("1201.13")
         ro, rs, rd = rbbl(1620), rbbl(940), rbbl(1000)
         ra = rbbl({"Limestone": 2700, "Barite": 4200, "Ferro Bar": 4800}[agent])
-        a = rw + 126 + 10 + D(2) / 42 * rs
-        b = (rw + 126) / br + 10 / ro + D(2) / 42
-        cm, cv = D("0.5") / 42 * rd, D("0.5") / 42
+        a = rw + 126 + 10 + D(2) / 42 * rs + D(".5") / 42 * rd
+        b = (rw + 126) / br + 10 / ro + D(2) / 42 + D(".5") / 42
         v, t = D(str(volume)), D(str(density)) * 42 / D("7.48051948051948")
-        water = v * (1 - cv - (t - cm) / ra) / (b - a / ra)
-        return float(water), float(v * (t - cm) - a * water)
+        water = v * (1 - t / ra) / (b - a / ra)
+        return float(water), float(v * t - a * water)
 
 
 def assert_closure(recipe):
@@ -72,34 +71,51 @@ def assert_closure(recipe):
     assert all(math.isfinite(n) for n in recipe["closure"].values())
 
 
-@pytest.mark.parametrize("agent,density,water,mass", [
-    ("Limestone", 75, 16.453257, 85.997), ("Limestone", 95, 12.887781, 4120.158),
-    ("Limestone", 100, 11.996412, 5128.699), ("Barite", 75, None, None),
-    ("Barite", 100, 14.260498, 3993.106), ("Barite", 110, 13.368208, 5563.566),
-    ("Barite", 125, 12.029774, 7919.257), ("Ferro Bar", 75, None, None),
-    ("Ferro Bar", 125, 12.779044, 7543.447), ("Ferro Bar", 140, 11.663490, 9787.348),
-    ("Ferro Bar", 160, 10.176086, 12779.216)])
-def test_solo_endpoints_and_decimal_oracle(agent, density, water, mass):
+@pytest.mark.parametrize("agent,density", [
+    ("Limestone", 75), ("Limestone", 95), ("Limestone", 100), ("Barite", 75),
+    ("Barite", 100), ("Barite", 110), ("Barite", 125), ("Ferro Bar", 75),
+    ("Ferro Bar", 125), ("Ferro Bar", 140), ("Ferro Bar", 160)])
+def test_solo_endpoints_and_decimal_oracle(agent, density):
     r = sp.calculate_spacer(20., density, agent, 0.)
     expected_w, expected_m = oracle(20, density, agent)
     assert r["water_base_bbl"] == pytest.approx(expected_w, rel=1e-13)
     assert r["solids_lb"][agent] == pytest.approx(expected_m, rel=1e-12)
-    if water is not None:
-        assert r["water_base_bbl"] == pytest.approx(water, abs=.00000051)
-        assert r["solids_lb"][agent] == pytest.approx(mass, abs=.00051)
     assert_closure(r)
 
 
-@pytest.mark.parametrize("dead,stock_l,stock_b,w,l,b,used_b", [
-    (0., 1500., 5000., 12.70602704, 1500., 4395.695251, 4395.695251),
-    (0., 10000., 10000., 11.10412295, 5128.698549, 1570.460216, 1570.460216),
-    (1., 1500., 5000., 12.754171072, 1390.942174, 4480.605581, 4831.910699)])
-def test_mix_a_b_d_gross_inventory_and_maximum_limestone(dead, stock_l, stock_b, w, l, b, used_b):
+def mix_oracle(volume, density, dead, stock_l):
+    """45-digit simultaneous balances plus the gross-stock quadratic root."""
+    with localcontext() as context:
+        context.prec = 45
+        D = Decimal
+        v, rho, dead, stock = map(lambda x: D(str(x)), (volume, density, dead, stock_l))
+        rb = lambda r: D(str(r)) * D(".158987294928") * D("2.2046226218487758")
+        rw, br, ro, rs, rd, rl, rh = map(rb, ("998.20675", "1201.13", 1620, 940, 1000, 2700, 4200))
+        a = rw + 126 + 10 + D(2) / 42 * rs + D(".5") / 42 * rd
+        b = (rw + 126) / br + 10 / ro + D(2) / 42 + D(".5") / 42
+        t = rho * 42 / D("7.48051948051948")
+        t100 = D(100) * 42 / D("7.48051948051948")
+        cap_water = v * (rl - t100) / (rl * b - a)
+        cap = v * t100 - a * cap_water
+        intercept = v * (rh - t) / (rh * b - a)
+        slope = (1 - rh / rl) / (rh * b - a)
+        coefficient = intercept + dead - stock * slope
+        stock_limit = 2 * stock * intercept / (coefficient + (coefficient**2 + 4 * slope * stock * intercept).sqrt())
+        limestone = min(cap, stock_limit)
+        water = intercept + slope * limestone
+        barite = v * t - a * water - limestone
+        return tuple(float(x) for x in (water, limestone, barite, cap))
+
+
+@pytest.mark.parametrize("dead,stock_l,stock_b", [(0., 1500., 5000.),
+    (0., 10000., 10000.), (1., 1500., 5000.)])
+def test_mix_a_b_d_gross_inventory_and_maximum_limestone(dead, stock_l, stock_b):
     r = sp.calculate_spacer(20, 110, "Limestone + Barite", dead, stock_l, stock_b)
-    assert r["water_base_bbl"] == pytest.approx(w, abs=6e-9)
-    assert r["solids_lb"]["Limestone"] == pytest.approx(l, abs=6e-7)
-    assert r["solids_lb"]["Barite"] == pytest.approx(b, abs=6e-7)
-    assert r["inventory"]["Barite"]["used_lb"] == pytest.approx(used_b, abs=6e-7)
+    w, l, b, _ = mix_oracle(20, 110, dead, stock_l)
+    assert r["water_base_bbl"] == pytest.approx(w, rel=2e-13)
+    assert r["solids_lb"]["Limestone"] == pytest.approx(l, rel=2e-13)
+    assert r["solids_lb"]["Barite"] == pytest.approx(b, rel=2e-13)
+    assert r["inventory"]["Barite"]["used_lb"] == pytest.approx(b * (1 + dead / w), rel=2e-13)
     assert all(0 <= v["remaining_lb"] <= v["available_lb"] for v in r["inventory"].values())
     cap = oracle(20, 100, "Limestone")[1]
     if r["solids_lb"]["Limestone"] < cap - 1e-6:
@@ -110,7 +126,8 @@ def test_mix_a_b_d_gross_inventory_and_maximum_limestone(dead, stock_l, stock_b,
 
 
 def test_mix_c_shortage_and_100_pcf_true_mix_rule():
-    with pytest.raises(ValueError, match="Barite inventory shortage.*4395.695251.*395.695251"):
+    need = mix_oracle(20, 110, 0, 1500)[2]
+    with pytest.raises(ValueError, match=rf"Barite inventory shortage.*{need:.6f}.*{need - 4000:.6f}"):
         sp.calculate_spacer(20, 110, "Limestone + Barite", 0, 1500, 4000)
     with pytest.raises(ValueError, match="zero-Barite.*Limestone-only"):
         sp.calculate_spacer(20, 100, "Limestone + Barite", 0, 10000, 10000)
@@ -122,16 +139,16 @@ def test_dead_volume_full_composition_and_display_bases():
     before = ps.fingerprint(source)
     r = sp.formulation_from_state(source)
     assert ps.fingerprint(source) == before
-    assert r["water_base_bbl"] == pytest.approx(13.3682082905, abs=1e-10)
-    assert r["water_total_bbl"] == pytest.approx(18.3682082905, abs=1e-10)
-    assert r["mixed_volume_bbl"] == pytest.approx(27.4804340138, abs=1e-10)
+    assert r["water_base_bbl"] == pytest.approx(13.4378344880, abs=1e-10)
+    assert r["water_total_bbl"] == pytest.approx(18.4378344880, abs=1e-10)
+    assert r["mixed_volume_bbl"] == pytest.approx(20 * (1 + 5 / oracle(20, 110, "Barite")[0]), rel=1e-13)
     assert r["pumped_volume_bbl"] == source["fluids_config"]["params"]["Spacer"]["volume"] == 20.
     rows = sp.field_rows(r)
     assert list(rows[0]) == sp.FIELD_COLUMNS and len(rows[0]) == 6
     assert [row["Name"] for row in rows] == ["Salt", "O-Spacer", "Surfactant", "Defoamer", "Barite"]
-    assert [row[sp.FIELD_COLUMNS[5]] for row in rows] == ["2314.4 lb", "183.7 lb", "36.7 gal", "13.7 gal", "7644.5 lb"]
-    assert r["materials"][3]["basis"] == "finished Spacer"
-    assert r["materials"][3]["gross"] == .5 * r["mixed_volume_bbl"]
+    assert [row[sp.FIELD_COLUMNS[5]] for row in rows] == [f"{et.round_half_up(row['base'] * (1 + 5 / oracle(20, 110, 'Barite')[0]), 1):.1f} {row['unit']}" for row in r["materials"]]
+    assert r["materials"][3]["basis"] == "freshwater"
+    assert r["materials"][3]["gross"] == pytest.approx(.5 * r["water_total_bbl"], rel=1e-14)
     assert r["note"] == f"Mix above Additives in 18.4 bbl Fresh Water at {db.get_tank_name('CMT PLUG')}."
     assert_closure(r)
 
@@ -412,12 +429,12 @@ def test_export_block_includes_prepared_context_and_retires_old_bytes(prepared):
                                       for name, row in s["fluid_data"].items()}
     s["_compiled_doc_bytes"] = b"old"
     with patch.object(report.st, "session_state", s):
-        with pytest.raises(ValueError, match="Standalone Spacer.*pending"):
+        with pytest.raises(ValueError, match="Standalone Spacer.*Mixing Tank"):
             report.build_master_context(calculations_prepared=prepared)
     assert "_compiled_doc_bytes" not in s
 
 
-def test_invalid_volume_message_precedes_pending_guard():
+def test_invalid_volume_message_precedes_formulation_admission():
     s = dict(guards._seed_session())
     s["fluids_config"]["active"].append("Spacer")
     s["fluid_data"]["Spacer"] = {"volume": "abc", "density": "110"}
@@ -426,15 +443,87 @@ def test_invalid_volume_message_precedes_pending_guard():
             report.build_master_context(calculations_prepared=True)
 
 
-def test_phase10_is_explicitly_pending_with_no_legacy_download_or_review_mutation():
+def test_incomplete_phase10_has_no_legacy_download_or_review_loss():
     app = CASE.app(state())
     CASE.phase(app, "phase6")
     app.session_state["_compiled_doc_bytes"] = b"old"
-    app.session_state["report_text_state"] = {"procedure": {"history": ["reviewed text"]}}
+    app.session_state["procedure_text"] = "Owner reviewed operational instruction."
+    app.session_state["report_text_state"] = {"procedure_text": {
+        "history": ["previous reviewed text"], "generated": "Previous generated instruction.",
+        "source_signature": "previous source"}}
     before = deepcopy(app.session_state["report_text_state"])
     CASE.phase(app, "phase10")
     assert widget(app, "button", "Build Word Document").disabled
-    assert any("pending Gates A2–A4" in warning.value for warning in app.warning)
+    assert any("Spacer" in error.value for error in app.error)
     assert "_compiled_doc_bytes" not in app.session_state
     assert not app.get("download_button")
-    assert app.session_state["report_text_state"] == before
+    assert app.session_state["procedure_text"] == "Owner reviewed operational instruction."
+    assert app.session_state["report_text_state"]["procedure_text"] == before["procedure_text"]
+
+
+@pytest.mark.parametrize("mode,density,dead,water,gross", [
+    ("Limestone", 95, 5, 12.9669852355, 8.9834926177),
+    ("Barite", 110, 5, 13.4378344880, 9.2189172440),
+    ("Ferro Bar", 140, 5, 11.7501266437, 8.3750633218),
+    ("Limestone + Barite", 110, 1, 12.8299828150, 6.9149914075)])
+def test_corrected_freshwater_defoamer_independent_references(mode, density, dead, water, gross):
+    recipe = sp.calculate_spacer(20, density, mode, dead, 1500, 5000)
+    assert recipe["water_base_bbl"] == pytest.approx(water, abs=6e-11)
+    defoamer = next(row for row in recipe["materials"] if row["name"] == "Defoamer")
+    assert defoamer["base"] == .5 * recipe["water_base_bbl"]
+    assert defoamer["gross"] == pytest.approx(gross, abs=6e-11)
+    assert defoamer["basis"] == "freshwater"
+    assert_closure(recipe)
+
+
+@pytest.mark.parametrize("mode,density", [
+    ("Limestone", d) for d in (75, 87.375, 95, 100)] + [
+    ("Barite", d) for d in (75, 99.125, 110, 125)] + [
+    ("Ferro Bar", d) for d in (75, 117.875, 140, 160)] + [
+    ("Limestone + Barite", d) for d in (100, 110, 112.625, 125)])
+@pytest.mark.parametrize("volume", [.125, 20., 137.375, 1000.])
+@pytest.mark.parametrize("dead", [0., 1.375, 25.])
+def test_parametric_freshwater_recipe_and_finished_sample(mode, density, volume, dead):
+    # Stock is an actual gross ceiling, independently varied with operational scale.
+    stock_l, stock_b = 75 * volume, 5000 * (volume + dead)
+    r = sp.calculate_spacer(volume, density, mode, dead, stock_l, stock_b)
+    if mode == "Limestone + Barite":
+        water, limestone, barite, cap = mix_oracle(volume, density, dead, stock_l)
+        assert r["solids_lb"] == pytest.approx({"Limestone": limestone, "Barite": barite}, rel=2e-12)
+        assert 0 < limestone <= cap
+        assert barite > 0
+        assert r["inventory"]["Limestone"]["used_lb"] == pytest.approx(stock_l, rel=2e-12)
+        assert r["inventory"]["Barite"]["used_lb"] <= stock_b
+    else:
+        water, mass = oracle(volume, density, mode)
+        assert r["solids_lb"][mode] == pytest.approx(mass, rel=2e-12)
+    assert r["water_base_bbl"] == pytest.approx(water, rel=2e-13)
+    assert r["water_total_bbl"] == pytest.approx(water + dead, rel=2e-13)
+    assert r["pumped_volume_bbl"] == volume
+    assert r["mixed_volume_bbl"] == pytest.approx(volume * (water + dead) / water, rel=2e-13)
+    for row in r["materials"]:
+        amount = (row["dose"] * water if row["name"] not in r["solids_lb"] else r["solids_lb"][row["name"]])
+        assert row["base"] == pytest.approx(amount, rel=2e-13)
+        assert row["gross"] == pytest.approx(amount * (water + dead) / water, rel=2e-13)
+        assert row["basis"] == "freshwater"
+    assert len(r["materials"]) == (6 if mode == "Limestone + Barite" else 5)
+    assert r == sp.calculate_spacer(volume, density, mode, dead, stock_l, stock_b)
+    assert_closure(r)
+    sample = sp.lab_sample(r)
+    assert sample["volume_ml"] == pytest.approx(600, abs=1e-9)
+    assert sample["density_pcf"] == pytest.approx(density, abs=1e-9)
+    grams = {row["Material"]: row["Mass"] for row in sample["rows"]}
+    assert grams["Defoamer"] == pytest.approx(.5 * water / volume / 42 * 600, rel=2e-13)
+    # Independently reconstruct the final cup using grams and physical SGs.
+    ml = (grams["Fresh Water"] + grams["Salt"]) / 1.20113
+    ml += grams["O-Spacer"] / 1.62 + grams["Surfactant"] / .94 + grams["Defoamer"]
+    ml += sum(grams[n] / sg for n, sg in (("Limestone", 2.7), ("Barite", 4.2), ("Ferro Bar", 4.8)) if n in grams)
+    assert ml == pytest.approx(600, abs=1e-9)
+
+
+@pytest.mark.parametrize("mode,bound", [(m, b) for m, lo, hi in (
+    ("Limestone", 75, 100), ("Barite", 75, 125), ("Ferro Bar", 75, 160),
+    ("Limestone + Barite", 100, 125)) for b in (lo - .000001, hi + .000001)])
+def test_immediately_outside_density_bands_is_rejected(mode, bound):
+    with pytest.raises(ValueError, match="target density"):
+        sp.calculate_spacer(20, bound, mode, 1, 1500, 5000)

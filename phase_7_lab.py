@@ -373,14 +373,31 @@ def build_lab_df_from_phase5(
     
     return pd.DataFrame(lab_rows)
 
+def _spacer_lab_display(grid):
+    """A view only: Cement lab precision, with the original Spacer units."""
+    view = grid.copy(deep=True)
+    for index, row in grid.iterrows():
+        concentration, mass = float(row["Concentration"]), float(row["Mass"])
+        view.at[index, "Concentration"] = (f"{concentration:.3f}" if round(concentration, 2) != concentration
+                                            else f"{concentration:.2f}")
+        view.at[index, "Mass"] = (f"{mass:.1f}" if row["Material"] == "Fresh Water" or mass >= 10
+                                 else f"{mass:.2f}")
+    return view
+
+
 def _commit_spacer_lots(edited, previous):
     """Editor callback: only manual metadata can change; retire its review."""
     grid = st.session_state["lab_grid_dfs"]["Spacer"]
-    if not edited.equals(grid):
+    # Only manual Lots may cross the display/source boundary. Never publish
+    # the rounded, disabled numeric cells returned by the editor.
+    saved = grid.copy(deep=True)
+    lots = dict(zip(edited["Material"], edited["Lot No"]))
+    saved["Lot No"] = [lots.get(material, value) for material, value in zip(saved["Material"], saved["Lot No"])]
+    if not saved.equals(grid):
         st.session_state["lab_qc_params"]["Spacer"]["reviewed"] = False
         st.session_state.pop("lab_payload_Spacer", None)
         invalidate_document(st.session_state)
-    return edited
+    return saved
 
 
 def _render_spacer_lab(load_sig, bhct, bhst):
@@ -393,14 +410,17 @@ def _render_spacer_lab(load_sig, bhct, bhst):
     st.markdown("#### Blend & Additives — 600 mL Cup")
     st.caption("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
     key = f"_editor_lab_tbl_spacer_{load_sig}_{st.session_state.get('_lab_grid_revision_Spacer', 0)}"
-    edited = persistent_data_editor(
-        grid, persist_to=("lab_grid_dfs", "Spacer"), normalize=_commit_spacer_lots,
+    persistent_data_editor(
+        _spacer_lab_display(grid), persist_to=("lab_grid_dfs", "Spacer"), normalize=_commit_spacer_lots,
         key=key, num_rows="fixed", width="stretch",
         disabled=["Material", "Concentration", "Unit", "Mass"],
         column_config={column: st.column_config.TextColumn("Mass (grams)" if column == "Mass" else
                                                          "Lot No." if column == "Lot No" else column)
                        for column in LAB_GRID_COLUMNS})
-    st.session_state["lab_grid_dfs"]["Spacer"] = edited
+    edited = st.session_state["lab_grid_dfs"]["Spacer"]
+    from standalone_spacer import formulation_from_state, lab_sample
+    sample = lab_sample(formulation_from_state(st.session_state))
+    st.caption(f"Total Mass: {sample['mass_g']:.1f} g / 600 mL")
     _, issues = _render_rheology("Spacer", qc, load_sig)
     temperature_valid = lab_temperature_valid(bhct, bhst)
     try:

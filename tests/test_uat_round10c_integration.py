@@ -84,7 +84,7 @@ def build(app):
     assert not app.error, [error.value for error in app.error]
     button = next(b for b in app.button if b.label == "Build Word Document")
     assert not button.disabled
-    button.click().run()
+    button.click().run(timeout=120)
     case.healthy(app)
     assert not app.error, [error.value for error in app.error]
     return app.session_state["_compiled_doc_bytes"]

@@ -3,12 +3,14 @@ from copy import deepcopy
 from io import BytesIO
 import unittest
 import json
+from unittest.mock import patch
 
 import pandas as pd
 from docx import Document
 import materials_db
 import phase_6_spacer as spacer
 import standalone_spacer as standalone
+import phase_10_procedure as report
 import test_audit_regressions as audit
 from engineering_tools import compute_phase_status
 from project_state import prepare_calculations, refresh_fluids
@@ -226,6 +228,7 @@ class Round3FluidsUAT(unittest.TestCase):
                 app.session_state["spacer_dfs"]["Spacer Behind"] = pd.DataFrame([
                     {"Chemical": chemical, "User Input (% or gal)": 1.25, "Weighting Agent Type": "-"}
                     for chemical in CHEMICALS[-2:]], columns=spacer.REQUIRED_SPACER_COLS)
+                expected_behind = app.session_state["spacer_dfs"]["Spacer Behind"].copy(deep=True)
                 for name in ("Field Wash Alpha", NAME_OPTIONS[3]):
                     if name != "Field Wash Alpha":
                         self.phase(app, "phase6"); self.selector(app).set_value(name).run()
@@ -243,7 +246,18 @@ class Round3FluidsUAT(unittest.TestCase):
                     for detailed in ("Fresh Water", "Salt", "Chemical Wash"): self.assertIn(detailed, text)
                     self.assertNotIn(name, text)
                     all_text = "\n".join(c.text for t in doc.tables for r in t.rows for c in r.cells)
-                    for chemical in CHEMICALS[-2:]: self.assertIn(chemical, all_text)
+                    # A4 removes sibling formulation tables, while retaining
+                    # their operational identity, editor data and legacy summary.
+                    self.assertNotIn("Spacer Formulation Data", all_text)
+                    self.assertNotIn("Spacer Additives Data", all_text)
+                    self.assertIn("Spacer Behind", all_text)
+                    self.assertNotIn("Magneset Thinner", all_text)
+                    pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer Behind"], expected_behind)
+                    with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
+                        context = report.build_master_context(calculations_prepared=True)
+                    for chemical in CHEMICALS[-2:]:
+                        self.assertTrue(any(row["Name"] == chemical and row["amount"] == "1.25"
+                                            for row in context["spacers"]))
                     self.assertNotIn("Magneser Thinner", all_text)
 
 
