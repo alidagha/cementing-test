@@ -234,11 +234,12 @@ def test_incomplete_model_is_controlled_and_no_image_rendered(project):
 def test_template_dependency_and_protected_sources_identical():
     import subprocess
     for name in ['master_template.docx','requirements.txt','well_profile.py','placement.py','rheology.py','bhct_helper.py','test_regression_guardrails.py']:
-        if name == 'test_regression_guardrails.py':
+        if name == 'master_template.docx':
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670'
+        elif name == 'test_regression_guardrails.py':
             # Owner-approved A1 generic-Spacer fixture identity changes only;
             # retain byte-level protection at this explicitly reviewed checkpoint.
-            import hashlib
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '6d671467013cd70ffb7e6007609ea5964a7c9af2b1cba2073044f92f3d9d2a2c'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '6b7f4a0ca3088ef42031babaf65ae81e8a1485554ba6ed7dfd023f17ee653ff6'
         else:
             assert Path(name).read_bytes()==subprocess.check_output(['git','show','a61d61e:'+name])
 

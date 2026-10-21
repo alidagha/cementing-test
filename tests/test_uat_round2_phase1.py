@@ -201,8 +201,8 @@ class Round2Phase1UAT(unittest.TestCase):
     def test_template_change_preserves_all_structure_and_other_zip_parts(self):
         with ZipFile(audit.ROOT / 'master_template.docx') as z:
             root = ET.fromstring(z.read('word/document.xml'))
-            # Round 6 authorizes only this additional Section-VI program block.
-            # Keep every original structure/hash assertion on the untouched XML.
+            # Round 6's three-table insertion is checked separately. Pin the
+            # remaining structure to the approved A4 Spacer field/NOTE/lab layout.
             body = root.find(W + 'body')
             nodes = list(body)
             text = lambda node: ''.join(t.text or '' for t in node.iter(W + 't'))
@@ -217,15 +217,40 @@ class Round2Phase1UAT(unittest.TestCase):
             structure = [(e.tag, sorted(e.attrib.items()), None if e.tag == W + 't' else e.text, e.tail)
                          for e in root.iter()]
             self.assertEqual(hashlib.sha256(json.dumps(structure, ensure_ascii=False).encode()).hexdigest(),
-                             '6048e0ddcde0566fb09c6ec1f7d321f491ff8391ed76fade9b4f68cdb201a897')
+                             '417ad56058e3028133b336007925102e3bd1f149178606e5a879190a8640d9df')
             parts = [(n, hashlib.sha256(z.read(n)).hexdigest()) for n in sorted(z.namelist())
                      if n != 'word/document.xml']
             self.assertEqual(hashlib.sha256(json.dumps(parts).encode()).hexdigest(),
                              'ddc72f1d3a17172292a248ca6797f333394bd0050fd5b4b0e4ad0a90dc9ec1c3')
             self.assertEqual({t: len(list(root.iter(W + t))) for t in ('tbl', 'tr', 'tc', 'sectPr')},
-                             {'tbl': 22, 'tr': 143, 'tc': 574, 'sectPr': 1})
+                             {'tbl': 24, 'tr': 163, 'tc': 662, 'sectPr': 1})
             paragraphs = {p.get(W14 + 'paraId'): ''.join(t.text or '' for t in p.iter(W + 't'))
                           for p in root.iter(W + 'p')}
             self.assertEqual(paragraphs['47C1ADEC'], '')
             self.assertEqual(paragraphs['355F3FFE'], '{{ job_type }}')
             self.assertEqual(paragraphs['40EF166E'], '{{ revision_no }}')
+
+    def test_template_integrity_rejects_structure_parts_and_protected_text(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        with ZipFile(audit.ROOT / 'master_template.docx') as archive:
+            parts = [(info, archive.read(info.filename)) for info in archive.infolist()]
+        for change in ('table_width', 'styles_part', 'job_placeholder'):
+            with self.subTest(change=change), TemporaryDirectory(prefix='round2-template-') as folder:
+                with ZipFile(Path(folder) / 'master_template.docx', 'w') as archive:
+                    for info, original in parts:
+                        data = original
+                        if info.filename == 'word/document.xml' and change != 'styles_part':
+                            root = ET.fromstring(data)
+                            if change == 'table_width':
+                                next(root.iter(W + 'tblW')).set(W + 'w', '1')
+                            else:
+                                paragraph = next(p for p in root.iter(W + 'p')
+                                                 if p.get(W14 + 'paraId') == '355F3FFE')
+                                next(paragraph.iter(W + 't')).text = 'Unapproved job placeholder'
+                            data = ET.tostring(root)
+                        elif info.filename == 'word/styles.xml' and change == 'styles_part':
+                            data += b'<!-- unapproved change -->'
+                        archive.writestr(info, data)
+                with patch.object(audit, 'ROOT', Path(folder)), self.assertRaises(AssertionError):
+                    self.test_template_change_preserves_all_structure_and_other_zip_parts()

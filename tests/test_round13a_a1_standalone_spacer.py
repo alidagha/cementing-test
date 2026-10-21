@@ -423,6 +423,9 @@ def test_deactivation_restore_reactivation_clears_formulation_not_operational_dr
 @pytest.mark.parametrize("prepared", [True, False])
 def test_export_block_includes_prepared_context_and_retires_old_bytes(prepared):
     s = dict(guards._seed_session())
+    s["material_property_schema"] = et.MATERIAL_PROPERTY_SCHEMA
+    for params in s["cement_params"].values():
+        params.update(cmt_sg=et.catalog_cement_sg(params["base_cement"]), cmt_sg_source="catalog")
     s["fluids_config"]["active"].insert(0, "Spacer")
     s["fluid_data"]["Spacer"] = {"volume": 20., "density": "110", "min_rate": 4.}
     s["fluids_config"]["params"] = {name: {**row, "pump_rate": str(row["min_rate"])}
