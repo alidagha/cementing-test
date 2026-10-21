@@ -112,12 +112,16 @@ def _word_quantity_context(context):
     if context.get("has_spacer"):
         spacer = dict(context["standalone_spacer"], lab=dict(context["standalone_spacer"]["lab"]))
         spacer["lab"]["rheology"] = _word_rheology(spacer["lab"]["rheology"])
-        spacer["lab_rows"] = [dict(row, **{
-            "Concentration": "1.0" if row["Code"] == "Fresh Water" else f"{round_half_up(float(row['Concentration']), 3):.3f}",
-            "Design Unit": "1.0" if row["Code"] == "Fresh Water" else "FW " + row["Design Unit"].split()[0],
-            "Mass": f"{round_half_up(float(row['Mass']), 3):.3f}",
-        }) for row in spacer["lab_rows"]]
-        spacer["lab_mass_g"] = f"{round_half_up(spacer['lab_mass_g'], 3):.3f}"
+        spacer["lab_rows"] = []
+        for row in context["standalone_spacer"]["lab_rows"]:
+            concentration, mass = float(row["Concentration"]), float(row["Mass"])
+            water = row["Code"] == "Fresh Water"
+            spacer["lab_rows"].append(dict(row, **{
+                "Concentration": "1.0" if water else (f"{concentration:.3f}" if round(concentration, 2) != concentration else f"{concentration:.2f}"),
+                "Design Unit": "1.0" if water else "FW " + row["Design Unit"].split()[0],
+                "Mass": f"{mass:.1f}" if water or mass >= 10 else f"{mass:.2f}",
+            }))
+        spacer["lab_mass_g"] = f"{spacer['lab_mass_g']:.1f}"
         rendered["standalone_spacer"] = spacer
     return rendered
 

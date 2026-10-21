@@ -59,6 +59,14 @@ def word(ctx, state=None):
     return Document(BytesIO(data))
 
 
+def cement_lab_display(sample):
+    # The unchanged Phase-VII view follows Cement's concentration/mass rules.
+    from phase_7_lab import _spacer_lab_display
+    view = _spacer_lab_display(pd.DataFrame(sample["rows"]).astype({"Concentration": str, "Mass": str}))
+    view.loc[view["Material"] == "Fresh Water", "Concentration"] = "1.0"
+    return view
+
+
 @pytest.mark.parametrize("mode,density", [("Limestone", 95.), ("Barite", 110.),
     ("Ferro Bar", 140.), ("Limestone + Barite", 110.)])
 def test_lab_word_units_are_presentation_only_and_freshwater_is_exact(source, mode, density):
@@ -80,17 +88,58 @@ def test_lab_word_units_are_presentation_only_and_freshwater_is_exact(source, mo
     units = {"Salt": "FW lb/bbl", "O-Spacer": "FW lb/bbl", "Surfactant": "FW gal/bbl",
              "Defoamer": "FW gal/bbl", "Limestone": "FW lb/bbl", "Barite": "FW lb/bbl",
              "Ferro Bar": "FW lb/bbl"}
-    from engineering_tools import round_half_up
+    expected = cement_lab_display(sample)
     for row, ingredient in zip(rows[1:], sample["rows"][1:]):
         assert row.cells[1].text == ingredient["Material"]
-        assert row.cells[3].text == f"{round_half_up(ingredient['Concentration'], 3):.3f}"
         assert row.cells[4].text == units[ingredient["Material"]]
-    assert [row.cells[5].text for row in rows] == [
-        f"{round_half_up(ingredient['Mass'], 3):.3f}" for ingredient in sample["rows"]]
+    assert [row.cells[3].text for row in rows] == list(expected["Concentration"])
+    assert [row.cells[5].text for row in rows] == list(expected["Mass"])
     assert ctx == raw
     assert ps.fingerprint(state) == signature
     assert sp.lab_sample(sp.formulation_from_state(state)) == sample
     assert ctx["standalone_spacer"]["lab_rows"][0]["Concentration"] != 1.0
+
+
+@pytest.mark.parametrize("value,concentration,mass", [
+    (.005, "0.005", "0.01"), (.009, "0.009", "0.01"),
+    (1.2345, "1.234", "1.23"), (1.2355, "1.236", "1.24"),
+    (9.995, "9.995", "9.99"), (9.999, "9.999", "10.00"),
+    (9.9995, "9.999", "10.00"), (10., "10.00", "10.0"),
+    (10.005, "10.005", "10.0"), (126., "126.00", "126.0")])
+def test_spacer_word_matches_cement_lab_precision_boundaries(source, value, concentration, mass):
+    ctx = context(deepcopy(source))
+    for row in ctx["standalone_spacer"]["lab_rows"]:
+        row.update(Concentration=value, Mass=value)
+    # A deliberate display-boundary fixture: the provided unrounded total,
+    # not a sum of displayed ingredient masses, is the total's sole authority.
+    ctx["standalone_spacer"]["lab_mass_g"] = 10.051
+    raw = deepcopy(ctx)
+    doc = word(ctx)
+    lab = next(t for t in doc.tables if t.cell(0, 0).text == "Spacer Lab Results")
+    assert lab.rows[2].cells[3].text == "1.0"
+    assert lab.rows[2].cells[4].text == "1.0"
+    assert lab.rows[2].cells[5].text == f"{value:.1f}"
+    assert [r.cells[3].text for r in lab.rows[3:-1]] == [concentration] * 5
+    assert [r.cells[5].text for r in lab.rows[3:-1]] == [mass] * 5
+    assert lab.rows[-1].cells[5].text == "10.1"
+    assert ctx == raw
+
+
+def test_barite_lab_word_reference_uses_unrounded_total(source):
+    state = deepcopy(source)
+    recipe = sp.formulation_from_state(state)
+    sample = sp.lab_sample(recipe)
+    ctx = context(state)
+    signature = ps.fingerprint(state)
+    doc = word(ctx)
+    lab = next(t for t in doc.tables if t.cell(0, 0).text == "Spacer Lab Results")
+    assert [r.cells[3].text for r in lab.rows[2:-1]] == ["1.0", "126.00", "10.00", "2.00", "0.50", "413.461"]
+    assert [r.cells[5].text for r in lab.rows[2:-1]] == ["402.4", "144.9", "11.5", "18.0", "4.80", "475.5"]
+    assert lab.rows[-1].cells[5].text == "1057.2" == f"{sample['mass_g']:.1f}"
+    assert f"{sum(float(r.cells[5].text) for r in lab.rows[2:-1]):.1f}" == "1057.1"
+    assert ps.fingerprint(state) == signature
+    assert sp.formulation_from_state(state) == recipe
+    assert sp.lab_sample(recipe) == sample
 
 
 @pytest.mark.parametrize("mode,density", [("Limestone", 90.), ("Barite", 110.),
@@ -141,11 +190,15 @@ def test_canonical_field_table_and_reviewed_lab(source, mode, density, dead):
     assert [r.cells[4].text for r in lab.rows[2:-1]] == ["1.0"] + [
         "FW " + r["Unit"].split()[0] for r in sample["rows"][1:]]
     assert lab.rows[2].cells[3].text == "1.0"
-    assert [float(r.cells[3].text) for r in lab.rows[3:-1]] == pytest.approx([r["Concentration"] for r in sample["rows"][1:]], abs=.0005)
-    assert [float(r.cells[5].text) for r in lab.rows[2:-1]] == pytest.approx([r["Mass"] for r in sample["rows"]], abs=.0005)
-    assert sum(float(r.cells[5].text) for r in lab.rows[2:-1]) == pytest.approx(sample["mass_g"], abs=.005)
+    expected = cement_lab_display(sample)
+    assert [r.cells[3].text for r in lab.rows[2:-1]] == list(expected["Concentration"])
+    assert [r.cells[5].text for r in lab.rows[2:-1]] == list(expected["Mass"])
+    assert ctx["standalone_spacer"]["lab_rows"] == [dict(row, **{
+        "Material Type": "Water" if row["Material"] == "Fresh Water" else types[row["Material"]],
+        "Code": row["Material"], "Lot Number": row["Lot No"], "Design Unit": row["Unit"],
+    }) for row in state["lab_grid_dfs"]["Spacer"].to_dict("records")]
     assert lab.rows[-1].cells[0].text == "Total Mass"
-    assert float(lab.rows[-1].cells[5].text) == pytest.approx(sample["mass_g"], abs=.0005)
+    assert lab.rows[-1].cells[5].text == f"{sample['mass_g']:.1f}"
     assert ctx["standalone_spacer"]["lab_mass_g"] == sample["mass_g"]
     heading = lab._tbl.getprevious()
     assert "".join(heading.xpath(".//w:t/text()")) == "Spacer Results"
@@ -317,7 +370,7 @@ def test_unified_lab_retains_all_lots_rheology_and_unrounded_total(source, mode,
     grid = state["lab_grid_dfs"]["Spacer"]
     for index, material in enumerate(grid["Material"]):
         grid.loc[index, "Lot No"] = f"{material} & <lot> {index}"
-    from engineering_tools import lab_review_signature, round_half_up
+    from engineering_tools import lab_review_signature
     qc = state["lab_qc_params"]["Spacer"]
     qc["review_signature"] = lab_review_signature(qc, grid)
     ensure_current_centralizer(state)
@@ -328,7 +381,7 @@ def test_unified_lab_retains_all_lots_rheology_and_unrounded_total(source, mode,
     doc = word(ctx)
     lab = next(t for t in doc.tables if t.cell(0, 0).text == "Spacer Lab Results")
     assert [r.cells[2].text for r in lab.rows[2:-1]] == list(grid["Lot No"])
-    assert lab.rows[-1].cells[5].text == f"{round_half_up(raw['lab_mass_g'], 3):.3f}"
+    assert lab.rows[-1].cells[5].text == f"{raw['lab_mass_g']:.1f}"
     assert raw["lab_mass_g"] == sp.lab_sample(sp.formulation_from_state(state))["mass_g"]
     rheology = next(t for t in doc.tables if t.cell(0, 0).text == "Spacer Rheology")
     rows = {r.cells[0].text: r for r in rheology.rows}
