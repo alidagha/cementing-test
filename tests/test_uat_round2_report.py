@@ -149,7 +149,9 @@ class Round2ReportUAT(unittest.TestCase):
     def test_existing_preflush_spacer_payload_and_document_flow(self):
         context = self.context()
         self.assertTrue(context['has_preflush']); self.assertFalse(context['has_spacer'])
-        self.assertEqual([s['Name'] for s in context['spacers'] if s['Material Type'] == 'Spacer'],
+        self.assertEqual(context['spacers'], [])
+        self.assertEqual([f['name'] for f in context['fluids_train']
+                          if f['name'] in ('Spacer Ahead', 'Spacer Behind')],
                          ['Spacer Ahead', 'Spacer Behind'])
         self.assertEqual(context['spacer_volume_bbl'], 100.)
         self.assertEqual(context['spacer_density_note'], '80.0')
