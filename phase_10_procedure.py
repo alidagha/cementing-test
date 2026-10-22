@@ -702,7 +702,7 @@ def _ct_procedure(state):
         planned = "Planned " if name == "Displacement Fluid" else ""
         lines.append(sc.next(f"{planned}Pump {record['volume']:g} bbl {record['material_name']} as {name} "
             f"({record['density']} pcf) at {record['pump_rate']} bpm; "
-            f"calculated duration {record['duration_min']:g} min ({record['duration_str']} HH:MM)."))
+            f"calculated duration {record['duration_min']:.2f} min."))
     lines += [
         sc.next("Displacement Volume: Calculate at rig site. The Phase IV Displacement Fluid volume and time are planning values; confirm the final field displacement at the rig."),
         sc.next(f"POOH Coiled Tubing to at least 30 m above Main TOC ({interval['top_depth']:.1f} m MD); confirm the withdrawal position at rig site."),
@@ -1300,7 +1300,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     
     # 1. Hardware Table Serialization
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
-    hardware_list = hw_df.to_dict(orient="records") if not hw_df.empty else []
+    hardware_list = hw_df.map(lambda value: "-" if pd.isna(value) or
+        (isinstance(value, str) and not value.strip()) else value).to_dict(orient="records") if not hw_df.empty else []
     
     # 2. Fluids Train Sequence Serialization
     fluids_train = [fluid_data[f] for f in active_fluids if f in fluid_data]

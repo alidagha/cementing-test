@@ -654,7 +654,9 @@ def test_render_master_document_smoke():
     signature = document_signature(ctx, "master_template.docx")
     state["spacer_dfs"]["Spacer Behind"].loc[0, "User Input (% or gal)"] = 999.0
     changed = build_master_context(calculations_prepared=True)
-    assert changed == ctx, "historical chemical drafts must not enter active report sources"
+    assert {k: v for k, v in changed.items() if k != "generated_timestamp"} == {
+        k: v for k, v in ctx.items() if k != "generated_timestamp"
+    }, "historical chemical drafts must not enter active report sources"
     assert document_signature(changed, "master_template.docx") == signature
     state["spacer_dfs"]["Spacer Behind"] = draft.copy(deep=True)
     pd.testing.assert_frame_equal(state["spacer_dfs"]["Spacer Behind"], draft)

@@ -366,7 +366,8 @@ def test_template_package_is_unchanged_outside_exact_section_vi_insertion():
         for name in old.namelist():
             if name != "word/document.xml":
                 assert old.read(name) == parent.read(name) == new.read(name)
-        before, after = old.read("word/document.xml"), new.read("word/document.xml")
+        from test_round13b_post_b4_word_quality import approved_template_xml
+        before, after = old.read("word/document.xml"), approved_template_xml(new.read("word/document.xml"))
         baseline = parent.read("word/document.xml")
 
     def scavenger(xml):

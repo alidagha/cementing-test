@@ -22,7 +22,7 @@ from centralizer_fixtures import execute_centralizer
 
 
 JOBS = ('CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"', 'CMT PLUG', 'CMT SQUEEZE')
-TEMPLATE_SHA = 'c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670'
+TEMPLATE_SHA = 'd0f2c324cef018b87b486a3cc80ac5c2ab2274b84eb4b2514e56fb374e766487'
 DIESEL = {'volume': 20., 'density': '52.5', 'pump_rate': '4.0', 'material_name': 'Diesel'}
 CASE = audit.AuditRegressions()
 

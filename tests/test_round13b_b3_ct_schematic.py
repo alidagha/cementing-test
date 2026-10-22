@@ -333,8 +333,10 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
 
 
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
-    for name in ['well_schematic_engine.py','master_template.docx','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
+    for name in ['well_schematic_engine.py','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
         assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'184cc888552f54df6a1d02fd0bdca16b77e358a4:{name}'])
+    from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
+    test_template_changes_only_approved_sample_text_payloads()
 
 
 def test_conflicting_measured_open_hole_sections_cannot_hide_behind_missing_history():

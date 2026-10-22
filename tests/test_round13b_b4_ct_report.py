@@ -146,7 +146,11 @@ def test_all_job_operational_procedure_contract(valid_ct,job,selected):
         if name in ('Spacer Ahead','Spacer Behind'):
             record=s['fluid_data'][name]
             line=next(l for l in text.splitlines() if 'as '+name in l)
-            assert record['material_name'] in line and '0.7-1.2' in line and record['duration_str'] in line
+            assert record['material_name'] in line and '0.7-1.2' in line
+            if job == db.CT_JOB:
+                assert f"calculated duration {record['duration_min']:.2f} min." in line and 'HH:MM' not in line
+            else:
+                assert record['duration_str'] in line
             positions.append((cfg['active'].index(name),text.index(line)))
     pump_main=next(l for l in text.splitlines() if ('as Main' in l or 'Main cement slurry' in l))
     for index,position in positions:
@@ -194,8 +198,10 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
     for tree in (before,after):
         tree.body=[node for node in tree.body if not(isinstance(node,ast.FunctionDef) and node.name=='test_render_master_document_smoke')]
     assert ast.dump(before)==ast.dump(after)
-    for name in ('master_template.docx','well_schematic_engine.py','cement_charts_engine.py','centralizer_optimizer_engine.py','standalone_spacer.py','ct_stages.py','placement.py','phase_5_cement.py','phase_7_lab.py','rheology.py','project_io.py','requirements.txt'):
+    for name in ('well_schematic_engine.py','cement_charts_engine.py','centralizer_optimizer_engine.py','standalone_spacer.py','ct_stages.py','placement.py','phase_5_cement.py','phase_7_lab.py','rheology.py','project_io.py','requirements.txt'):
         assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6:{name}'])
+    from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
+    test_template_changes_only_approved_sample_text_payloads()
 
 
 @pytest.mark.parametrize('tank',[None,'','Unknown tank'])
