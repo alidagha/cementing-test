@@ -35,4 +35,4 @@ jobs:
         run: python -B -m pytest test_regression_guardrails.py -v
       - name: Certification gate
         if: github.event_name == 'pull_request'
-        run: python -B -m pytest
+        run: python -B -m pytest --durations=30
