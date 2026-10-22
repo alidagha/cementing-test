@@ -634,13 +634,30 @@ def test_editor_state_importable():
 
 def test_render_master_document_smoke():
     """Section 0: end-to-end Word engine smoke test mirroring production path."""
-    from phase_10_procedure import build_master_context
-    _seed_session()
+    from phase_10_procedure import build_master_context, document_signature
+    from main import serialize_item, deserialize_item
+    state = _seed_session()
+    draft = state["spacer_dfs"]["Spacer Behind"].copy(deep=True)
     ctx = build_master_context(calculations_prepared=True)
     assert ctx.get("has_spacer") is False, \
         "a generic Spacer Behind draft must not activate the exact-Spacer table"
-    assert any(r.get("Name") == "Hematite" for r in ctx.get("spacers", [])), \
-        "seeded spacer chemical missing from payload"
+    # Operational identity belongs to the canonical train, not a chemical table.
+    assert ctx["fluids_train"] == [state["fluid_data"][f]
+                                   for f in state["fluids_config"]["active"]]
+    behind = ctx["fluids_train"][state["fluids_config"]["active"].index("Spacer Behind")]
+    assert behind == state["fluid_data"]["Spacer Behind"]
+    assert behind["volume"] == 150.0
+    saved = serialize_item({"spacer_dfs": state["spacer_dfs"]})
+    restored = deserialize_item(json.loads(json.dumps(saved)))
+    pd.testing.assert_frame_equal(restored["spacer_dfs"]["Spacer Behind"], draft)
+    assert "Hematite" not in repr(ctx)
+    signature = document_signature(ctx, "master_template.docx")
+    state["spacer_dfs"]["Spacer Behind"].loc[0, "User Input (% or gal)"] = 999.0
+    changed = build_master_context(calculations_prepared=True)
+    assert changed == ctx, "historical chemical drafts must not enter active report sources"
+    assert document_signature(changed, "master_template.docx") == signature
+    state["spacer_dfs"]["Spacer Behind"] = draft.copy(deep=True)
+    pd.testing.assert_frame_equal(state["spacer_dfs"]["Spacer Behind"], draft)
     assert ctx["preflush"]["volume"] == 80.0, ctx["preflush"].get("volume")
     assert any(r.get("Name") == "Salt" and r.get("amount") == "10080.0 lb"
                for r in ctx["preflush"].get("rows", [])), ctx["preflush"].get("rows")
@@ -660,6 +677,8 @@ def test_render_master_document_smoke():
     assert "Spacer Formulation Data" not in rendered_xml
     assert "Spacer Additives Data" not in rendered_xml
     assert "Hematite" not in rendered_xml
+    assert "Spacer Ahead Formulation" not in rendered_xml
+    assert "Spacer Behind Formulation" not in rendered_xml
     assert "Spacer Behind" in rendered_xml, "sibling operational identity was lost"
     assert "Pre Flush Data" in rendered_xml, \
         "pre-flush table block did not render into the document (F11)"

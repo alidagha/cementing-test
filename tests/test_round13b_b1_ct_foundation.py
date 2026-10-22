@@ -64,7 +64,7 @@ def test_current_ct_json_round_trip():
 def test_report_boundary_blocks_pending_ct_and_retires_download(prepared):
     s = state();s["_compiled_doc_bytes"] = b"old"
     with patch.object(report.st, "session_state", s):
-        with pytest.raises(ValueError, match="CT.*pending"):
+        with pytest.raises(ValueError, match="Phase V CT stages"):
             report.build_master_context(calculations_prepared=prepared)
     assert "_compiled_doc_bytes" not in s
 
@@ -203,7 +203,7 @@ def test_noncement_eligibility_and_durations_are_unchanged():
 def test_direct_report_consumers_cannot_generate_ordinary_plug_text(consumer):
     s = state();s["_compiled_doc_bytes"] = b"old"
     with patch.object(report.st, "session_state", s):
-        with pytest.raises(ValueError, match="CT.*pending"):
+        with pytest.raises(ValueError, match="Phase V CT stages"):
             if consumer == "generate_official_procedure":
                 report.generate_official_procedure(JOB, {}, [], {}, {}, {})
             elif consumer == "generate_executive_summary":
@@ -232,7 +232,7 @@ def test_live_navigation_main_toc_and_save_restore():
     assert restored.session_state["cement_params"]["Main"]["top_depth"] == 3460.
     assert restored.session_state["job_type"] == JOB
     CASE.phase(restored, "phase10")
-    assert any("implementation pending" in w.value for w in restored.warning)
+    assert any("Phase V CT stages" in w.value for w in restored.warning)
     assert not any("Build" in w.label for w in restored.button)
     assert "_compiled_doc_bytes" not in restored.session_state
 
@@ -275,7 +275,7 @@ def test_source_changes_retire_documents_and_placement_is_live(change):
     assert "_compiled_doc_bytes" not in s
     assert source != s.get("_cement_chart_source")
     if change != "job":
-        assert any("implementation pending" in issue for issue in issues)
+        assert any("Phase V CT stages" in issue for issue in issues)
         assert not any("Unsupported chart job" in issue for issue in issues)
 
 

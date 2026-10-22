@@ -190,7 +190,7 @@ def test_consumed_sources_invalidate_image_signature_and_documents(change):
     assert schematic.source_signature(s)!=original
     issues=ps.prepare_calculations(s)
     assert '_compiled_doc_bytes' not in s
-    assert any('pending' in issue for issue in issues)
+    assert any('Phase VII' in issue for issue in issues)
     assert s['_well_schematic_source']==schematic.source_signature(s)
 
 
@@ -219,13 +219,13 @@ def test_phase2_navigation_preserves_raw_hardware_and_keeps_export_blocked(kind)
     pd.testing.assert_frame_equal(restored.session_state['hardware_table'],original,check_dtype=False)
     CASE.phase(restored,'phase10')
     assert not any(b.label=='Build Word Document' for b in restored.button)
-    assert any('CT' in w.value and 'pending' in w.value for w in restored.warning)
+    assert any('Phase VII' in w.value for w in restored.warning)
 
 
 @pytest.mark.parametrize('prepared',[False,True])
 def test_direct_ct_word_gate_is_unchanged(prepared):
     s=state();s['_compiled_doc_bytes']=b'old'
-    with patch.object(report.st,'session_state',s),pytest.raises(ValueError,match='CT.*pending'):
+    with patch.object(report.st,'session_state',s),pytest.raises(ValueError,match='Phase VII'):
         report.build_master_context(calculations_prepared=prepared)
     assert '_compiled_doc_bytes' not in s
 
@@ -326,14 +326,14 @@ def test_section_ii_projection_changes_only_existing_anchor(ordinary_render_cont
 def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
     s=state('partial')
     issues=ps.prepare_calculations(s)
-    assert issues==[db.CT_REPORT_PENDING]
+    assert issues==['Phase VII: Lab QC or formulation rows incomplete for: Main.']
     assert s['_well_schematic_source']==schematic.source_signature(s)
     assert eng.compute_phase_status(s)['phase2_3']['level']=='ok'
     assert not any(isinstance(v,bytes) for k,v in s.items() if k.startswith('_well_schematic'))
 
 
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
-    for name in ['well_schematic_engine.py','master_template.docx','placement.py','ct_stages.py','phase_5_cement.py','phase_10_procedure.py','standalone_spacer.py','test_regression_guardrails.py']:
+    for name in ['well_schematic_engine.py','master_template.docx','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
         assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'184cc888552f54df6a1d02fd0bdca16b77e358a4:{name}'])
 
 

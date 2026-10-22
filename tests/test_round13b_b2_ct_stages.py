@@ -225,7 +225,7 @@ def test_ui_capacity_and_single_stage_controls(volume,count):
 def test_b1_export_gate_remains_for_valid_stages(prepared):
     s = state(20,2); s['_compiled_doc_bytes'] = b'old'
     with patch.object(report.st,'session_state',s):
-        with pytest.raises(ValueError,match='CT.*pending'):
+        with pytest.raises(ValueError,match='Phase VII'):
             report.build_master_context(calculations_prepared=prepared)
     assert '_compiled_doc_bytes' not in s
 

@@ -180,7 +180,7 @@ def render():
     fluid_data = st.session_state.get("fluid_data", {})
     
     has_preflush = "Pre Flush" in active_pipeline
-    spacer_archetypes = ["Spacer", "Spacer Ahead", "Spacer Behind"]
+    spacer_archetypes = ["Spacer"]
     active_spacers = [f for f in active_pipeline if f in spacer_archetypes]
     
     # Invalidate stale Pre-flush state if deselected upstream
@@ -188,6 +188,9 @@ def render():
         st.session_state["preflush_calc"] = None
 
     if not has_preflush and not active_spacers:
+        st.info("Spacer Ahead/Behind are operational fluids configured in Phase IV; no chemical formulation is required.")
+        if any(name in active_pipeline for name in ("Spacer Ahead", "Spacer Behind")):
+            return
         st.warning("⚠ Neither Pre-flush nor Spacer was selected in Phase IV.")
         st.button("→ Go to Phase IV to select fluids", type="primary",
                   on_click=_go_to_fluid_configuration)
@@ -377,69 +380,3 @@ def render():
                 if spacer_name == "Spacer":
                     _render_standalone_spacer(load_sig)
                     continue
-                sp_info = fluid_data.get(spacer_name, {})
-                sp_vol = float(sp_info.get("volume", 0.0))
-                sp_density_str = str(sp_info.get("density", "80.0"))
-
-                st.info(
-                    f"**Total Volume (From Phase IV):** {sp_vol:.1f} bbl | "
-                    f"**Design Density (From Phase IV):** {sp_density_str} pcf"
-                )
-
-                # Keep saved formulations even if an old project lacks the
-                # initialized-names marker; empty tables also stay empty.
-                if spacer_name not in st.session_state["spacer_dfs"]:
-                    st.session_state["spacer_dfs"][spacer_name] = pd.DataFrame(columns=REQUIRED_SPACER_COLS)
-                if spacer_name not in st.session_state["spacer_initialized_names"]:
-                    st.session_state["spacer_initialized_names"].append(spacer_name)
-
-                current_sp_df = st.session_state["spacer_dfs"].get(spacer_name, pd.DataFrame(columns=REQUIRED_SPACER_COLS))
-                editor_key = f"_editor_spacer_{get_spacer_key(spacer_name, 'tbl')}_{load_sig}"
-                
-                edited_df = persistent_data_editor(
-                    current_sp_df,
-                    persist_to=("spacer_dfs", spacer_name),
-                    column_config={
-                        # Permit amount-first entry to persist a draft row.
-                        # The phase status still requires a selected chemical.
-                        "Chemical": st.column_config.SelectboxColumn(
-                            "Chemical",
-                            options=materials_db.SPACER_CHEMICALS
-                        ),
-                        "User Input (% or gal)": st.column_config.NumberColumn(
-                            "Input",
-                            help="Cannot be negative.",
-                            default=0.0,
-                            min_value=0.0,
-                            format="%.3f",
-                            step=0.001
-                        ),
-                        "Weighting Agent Type": st.column_config.SelectboxColumn(
-                            "Agent (if applicable)",
-                            options=["-"] + materials_db.WEIGHTING_AGENTS,
-                            default="-"
-                        )
-                    },
-                    num_rows="dynamic",
-                    key=editor_key,
-                    width='stretch'
-                )
-
-                # Defensive Column Verification
-                if edited_df is None:
-                    edited_df = pd.DataFrame(columns=REQUIRED_SPACER_COLS)
-                else:
-                    for c in REQUIRED_SPACER_COLS:
-                        if c not in edited_df.columns:
-                            edited_df[c] = 0.0 if c == "User Input (% or gal)" else "-"
-
-                # Keep an intentionally cleared dosage empty. Converting it
-                # to zero would silently change the formulation and mark an
-                # unfinished chemical row as complete after navigation.
-                edited_df["User Input (% or gal)"] = pd.to_numeric(
-                    edited_df["User Input (% or gal)"], errors="coerce"
-                ).astype(float)
-
-                st.session_state["spacer_dfs"][spacer_name] = edited_df
-                if edited_df["User Input (% or gal)"].isna().any():
-                    st.info(f"Complete the missing dosage in each {spacer_name} chemical row before using this formulation.")

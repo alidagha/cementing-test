@@ -10,7 +10,7 @@ import materials_db
 from well_profile import geometry_defaults, geothermal_defaults, resolve_well_profile
 from rheology import validate_rheology_results
 from engineering_tools import (require_positive_density, require_fluid_density, require_bhsp_density, require_positive_pump_rate,
-                               require_preflush_material_name,
+                               require_preflush_material_name, require_spacer_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, validate_thickening_test, parse_effective_numeric,
                                validate_lab_collection_results, THICKENING_TEST_FIELDS, validate_compressive_test,
@@ -471,10 +471,19 @@ def purge_inactive_slurries(state, active):
 
 
 def require_ct_report_implementation(state, job_type=None):
-    """B1 must never fall through to the ordinary Drill-Pipe Plug report."""
+    """Every direct CT report consumer rebuilds and validates canonical inputs.
+
+    Keep the B1 entry point, replacing its temporary block with B4 admission.
+    In particular, calculations_prepared=True is not a CT validation bypass.
+    """
     if (state.get("job_type") if job_type is None else job_type) == materials_db.CT_JOB:
-        invalidate_document(state)
-        raise ValueError(materials_db.CT_REPORT_PENDING)
+        if state.get("job_type") != materials_db.CT_JOB:
+            invalidate_document(state)
+            raise ValueError("CT report requires the current CMT PLUG WITH CT project.")
+        issues = prepare_calculations(state)
+        if issues:
+            invalidate_document(state)
+            raise ValueError(" | ".join(issues))
 
 
 def refresh_fluids(state):
@@ -543,6 +552,8 @@ def refresh_fluids(state):
             material_name = materials_db.DEFAULT_MATERIAL_NAMES[name]
         elif name == "Pre Flush":
             require_preflush_material_name(material_name)
+        if name in ("Spacer Ahead", "Spacer Behind"):
+            require_spacer_material_name(name, material_name)
         duration = volume / minimum
         cumulative += duration
         result[name] = {
@@ -849,7 +860,21 @@ def prepare_calculations(state):
                 state.pop("_well_schematic_source", None)
             issues.append(f"Phase II & III Well schematic: {exc}")
         if state.get("job_type") == materials_db.CT_JOB:
-            issues.append(materials_db.CT_REPORT_PENDING)
+            from ct_stages import ct_stage_projection
+            from engineering_tools import compute_phase_status
+            # One placement/depth authority (the B3 schematic admission above)
+            # and one report-only stage authority. Missing history is advisory.
+            projection = ct_stage_projection(state)
+            if projection is not None and projection["tank_name"] not in materials_db.get_available_tanks(materials_db.CT_JOB):
+                issues.append("Phase V CT Main: select a Mixing Tank from the existing job catalog.")
+            status = compute_phase_status(state)
+            for key, label in (("phase2_3", "II & III"), ("phase4", "IV"),
+                               ("phase5", "V"), ("phase7", "VII")):
+                if status[key]["level"] != "ok":
+                    issues.append(f"Phase {label}: {status[key]['message']}")
+            if any(name in state.get("fluids_config", {}).get("active", [])
+                   for name in ("Pre Flush", "Spacer")) and status["phase6"]["level"] != "ok":
+                issues.append(f"Phase VI: {status['phase6']['message']}")
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

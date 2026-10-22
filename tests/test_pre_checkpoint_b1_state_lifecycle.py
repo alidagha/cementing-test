@@ -192,20 +192,23 @@ def test_operational_fluid_deactivation_restore_and_policy_specific_formulation(
         expected_recipe = standalone.formulation_from_state(app.session_state)
         CASE.phase(app, "phase4")
     expected = deepcopy(app.session_state["fluids_config"]["params"][fluid])
+    historical_draft = deepcopy(app.session_state.get("spacer_dfs", {}).get(fluid))
     for _ in range(2):
         app.checkbox(key="chk_fluid_" + fluid).uncheck().run()
         for phase in ("phase6", "phase10", "phase1"):
             CASE.phase(app, phase)
         state = app.session_state.to_dict()
         assert fluid not in state["fluid_data"]
-        if fluid.startswith("Spacer"):
-            # Existing policy deliberately clears spacer formulation on deselection.
+        if fluid in ("Spacer Ahead", "Spacer Behind"):
+            pd.testing.assert_frame_equal(state["spacer_dfs"][fluid], historical_draft)
+        elif fluid == "Spacer":
             assert fluid not in state["spacer_dfs"]
-            if fluid == "Spacer":
-                assert standalone.CONFIG_KEY not in state
+            assert standalone.CONFIG_KEY not in state
         else:
             assert state["preflush_calc"] is None
         app = restore_project(saved(state))
+        if fluid in ("Spacer Ahead", "Spacer Behind"):
+            pd.testing.assert_frame_equal(app.session_state["spacer_dfs"][fluid], historical_draft)
         CASE.phase(app, "phase4")
         assert not app.checkbox(key="chk_fluid_" + fluid).value
         assert app.session_state["fluids_config"]["params"][fluid] == expected

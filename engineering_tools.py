@@ -368,6 +368,13 @@ def require_preflush_material_name(value) -> str:
     return value
 
 
+def require_spacer_material_name(fluid, value):
+    """Operational siblings need an actual Phase-IV material identity."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Phase IV: {fluid}: enter a material name before export")
+    return value
+
+
 def require_positive_density(value) -> float:
     """Reject a malformed or negative density rather than substituting 80 pcf."""
     numbers = _positive_density_values(value)
@@ -995,6 +1002,8 @@ def compute_phase_status(ss) -> dict:
             try:
                 if fluid == "Pre Flush":
                     require_preflush_material_name(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
+                if fluid in ("Spacer Ahead", "Spacer Behind"):
+                    require_spacer_material_name(fluid, source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
                 require_fluid_density(fluid, density)
                 require_positive_pump_rate(source.get("pump_rate"))
             except (TypeError, ValueError, OverflowError):
@@ -1099,39 +1108,19 @@ def compute_phase_status(ss) -> dict:
 
     # Phase VI: Pre-flush & Spacer
     has_preflush = "Pre Flush" in active
-    spacer_types = [f for f in active if f in ("Spacer", "Spacer Ahead", "Spacer Behind")]
+    spacer_types = [f for f in active if f == "Spacer"]
     if not has_preflush and not spacer_types:
         status["phase6"] = {"level": "empty", "message": "Not applicable (no Pre Flush/Spacer selected)."}
     else:
         problems = []
         if has_preflush and not ss.get("preflush_calc"):
             problems.append("Pre Flush not configured")
-        sdfs = ss.get("spacer_dfs", {})
         if "Spacer" in spacer_types:
             from standalone_spacer import formulation_from_state
             try:
                 formulation_from_state(ss)
             except ValueError as exc:
                 problems.append(str(exc))
-        generic_spacers = [s for s in spacer_types if s != "Spacer"]
-        empty_spacers = [s for s in generic_spacers if len(sdfs.get(s, [])) == 0]
-        if empty_spacers:
-            problems.append(f"no chemicals for: {', '.join(empty_spacers)}")
-        incomplete_spacers = []
-        for spacer in generic_spacers:
-            table = sdfs.get(spacer)
-            if table is None or not hasattr(table, "iterrows"):
-                continue
-            for _, row in table.iterrows():
-                try:
-                    amount = float(row.get("User Input (% or gal)"))
-                except (TypeError, ValueError, OverflowError):
-                    amount = float("nan")
-                if not filled(row.get("Chemical")) or not math.isfinite(amount) or amount < 0:
-                    incomplete_spacers.append(spacer)
-                    break
-        if incomplete_spacers:
-            problems.append(f"incomplete chemical rows for: {', '.join(incomplete_spacers)}")
         status["phase6"] = (
             {"level": "warning", "message": "; ".join(problems) + "."} if problems
             else {"level": "ok", "message": "Pre-flush/Spacer configured."}

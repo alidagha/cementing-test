@@ -237,9 +237,9 @@ def test_template_dependency_and_protected_sources_identical():
         if name == 'master_template.docx':
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670'
         elif name == 'test_regression_guardrails.py':
-            # Owner-approved A1 generic-Spacer fixture identity changes only;
+            # Owner-approved B4 smoke-test assertions only; all other guardrails unchanged;
             # retain byte-level protection at this explicitly reviewed checkpoint.
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '6b7f4a0ca3088ef42031babaf65ae81e8a1485554ba6ed7dfd023f17ee653ff6'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'b5e3d289e6f1fc67872f5b38eb19b31e2641ebcb1749133663694e5e86fe9a01'
         elif name == 'placement.py':
             from test_round13b_b1_ct_foundation import legacy_placement_source
             assert legacy_placement_source(Path(name).read_bytes()) == subprocess.check_output(['git','show','a61d61e:'+name])

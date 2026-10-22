@@ -299,18 +299,16 @@ def test_sibling_generic_editor_navigation_and_roundtrip_are_unchanged(fluid):
     CASE.phase(app, "phase4")
     CASE.phase(app, "phase6")
     assert not any(w.label == "Weighting Agent Mode" for w in app.selectbox)
-    editor = next(e for e in app.dataframe if e.key and e.key.startswith("_editor_spacer_"))
-    frame = app._tree.get_widget_states()
-    event = frame.widgets.add()
-    event.id = editor.proto.id
-    event.string_value = json.dumps({"edited_rows": {"0": {"User Input (% or gal)": .25}},
-                                    "added_rows": [], "deleted_rows": []})
-    app._run(frame)
+    assert not any(e.key and e.key.startswith("_editor_spacer_") for e in app.dataframe)
+    CASE.phase(app, "phase4")
+    app.text_input(key="matname_"+fluid).set_value("Operational & "+fluid)
     CASE.phase(app, "phase1")
     restored = CASE.app(audit.round_trip(app.session_state.to_dict()))
     CASE.phase(restored, "phase6")
-    assert restored.session_state["spacer_dfs"][fluid].iloc[0]["User Input (% or gal)"] == .25
-    assert et.compute_phase_status(restored.session_state)["phase6"]["level"] == "ok"
+    assert restored.session_state["spacer_dfs"][fluid].iloc[0]["User Input (% or gal)"] == .125
+    assert et.compute_phase_status(restored.session_state)["phase6"]["level"] == "empty"
+
+    assert restored.session_state["fluids_config"]["params"][fluid]["material_name"] == "Operational & "+fluid
 
 
 def widget(app, group, label):

@@ -735,7 +735,7 @@ def test_current_supported_job_fixtures_translate_without_new_inputs(job):
         from engineering_tools import compute_phase_status
         state = {"job_type": job, "_compiled_doc_bytes": b"old"}
         with patch.object(report.st, "session_state", state):
-            with pytest.raises(ValueError, match="CT.*pending"):
+            with pytest.raises(ValueError, match="Phase IV"):
                 report.build_master_context(calculations_prepared=True)
         assert "_compiled_doc_bytes" not in state
         assert compute_phase_status(state)["phase2_3"]["level"] != "ok"

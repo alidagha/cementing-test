@@ -166,9 +166,7 @@ class Round3FluidsUAT(unittest.TestCase):
         self.assertEqual(spacer.REQUIRED_SPACER_COLS, ["Chemical", "User Input (% or gal)", "Weighting Agent Type"])
         app = self.app(self.project(extra_spacers=True)); self.phase(app, "phase4"); self.phase(app, "phase6")
         editors = [e for e in app.dataframe if "_editor_spacer_tbl_" in e.proto.id]
-        self.assertEqual(len(editors), 2)
-        for editor in editors:
-            self.assertEqual(json.loads(editor.proto.columns)["Chemical"]["type_config"]["options"], CHEMICALS)
+        self.assertEqual(len(editors), 0)
         mode = next(w for w in app.selectbox if w.label == "Weighting Agent Mode")
         self.assertEqual(mode.options, ["Limestone", "Barite", "Ferro Bar", "Limestone + Barite"])
         self.assertIsNone(mode.value)
@@ -176,25 +174,21 @@ class Round3FluidsUAT(unittest.TestCase):
         self.assertNotIn("Spacer", app.session_state["spacer_dfs"])
 
     def test_spacer_first_rows_navigation_and_current_restore_preserve_exact_text(self):
-        app = self.app(self.project(extra_spacers=True)); self.phase(app, "phase4"); self.phase(app, "phase6")
-        for s in ("Spacer Ahead", "Spacer Behind"):
-            for chemical in CHEMICALS[-2:]:
-                with self.subTest(spacer=s, chemical=chemical):
-                    editor = next(e for e in app.dataframe if
-                                  "_editor_spacer_tbl_"+s.lower().replace(" ", "_")+"_" in e.proto.id)
-                    # Submit the actual editor event together with navigation,
-                    # so its on_change callback must commit before unmounting.
-                    app.radio(key="_app_mode_key").set_value("phase4")
-                    widgets = app._tree.get_widget_states()
-                    event = widgets.widgets.add()
-                    event.id = editor.proto.id
-                    event.string_value = json.dumps({"edited_rows": {}, "added_rows": [{"Chemical": chemical,
-                        "User Input (% or gal)": .125, "Weighting Agent Type": "-"}], "deleted_rows": []})
-                    app._run(widgets); self.healthy(app)
+        project = self.project(extra_spacers=True)
+        project["spacer_dfs"] = {name: pd.DataFrame([
+            {"Chemical": chemical, "User Input (% or gal)": .125, "Weighting Agent Type": "-"}
+            for chemical in CHEMICALS[-2:]]) for name in ("Spacer Ahead", "Spacer Behind")}
+        app = self.app(project); self.phase(app, "phase4")
+        for name in ("Spacer Ahead", "Spacer Behind"):
+            for material in ("Field & operational " + name, "Reviewed <operational> " + name):
+                with self.subTest(spacer=name, material=material):
+                    app.text_input(key="matname_"+name).set_value(material)
                     self.phase(app, "phase6")
-                    row = app.session_state["spacer_dfs"][s].iloc[-1]
-                    self.assertEqual(row["Chemical"], chemical)
-                    self.assertEqual(row["User Input (% or gal)"], .125)
+                    self.assertFalse(any("_editor_spacer_tbl_" in e.proto.id for e in app.dataframe))
+                    self.assertEqual(app.session_state["fluids_config"]["params"][name]["material_name"], material)
+                    pd.testing.assert_frame_equal(app.session_state["spacer_dfs"][name], project["spacer_dfs"][name])
+                    self.phase(app, "phase4")
+        self.phase(app, "phase6")
         audit.configure_standalone_spacer(app, mode="Barite")
         tank = next(w for w in app.selectbox if w.label == "Mixing Tank - Spacer")
         self.assertEqual(tank.options, materials_db.get_available_tanks(app.session_state["job_type"]))
@@ -255,9 +249,9 @@ class Round3FluidsUAT(unittest.TestCase):
                     pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer Behind"], expected_behind)
                     with patch.object(report.st, "session_state", deepcopy(app.session_state.to_dict())):
                         context = report.build_master_context(calculations_prepared=True)
-                    for chemical in CHEMICALS[-2:]:
-                        self.assertTrue(any(row["Name"] == chemical and row["amount"] == "1.25"
-                                            for row in context["spacers"]))
+                    self.assertEqual(context["spacers"], [])
+                    behind = next(row for row in context["fluids_train"] if row["name"] == "Spacer Behind")
+                    self.assertEqual(behind, app.session_state["fluid_data"]["Spacer Behind"])
                     self.assertNotIn("Magneser Thinner", all_text)
 
 

@@ -89,7 +89,7 @@ class ExecutiveSummaryReferences(unittest.TestCase):
                 if job == materials_db.CT_JOB:
                     state = {"job_type": job, "_compiled_doc_bytes": b"old"}
                     with patch.object(report.st, 'session_state', state):
-                        with self.assertRaisesRegex(ValueError, "CT.*pending"):
+                        with self.assertRaisesRegex(ValueError, "Phase IV"):
                             generate(job, ('Main',), excess=False)
                     self.assertNotIn("_compiled_doc_bytes", state)
                     continue
