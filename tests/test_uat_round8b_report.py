@@ -235,11 +235,14 @@ def test_template_dependency_and_protected_sources_identical():
     import subprocess
     for name in ['master_template.docx','requirements.txt','well_profile.py','placement.py','rheology.py','bhct_helper.py','test_regression_guardrails.py']:
         if name == 'master_template.docx':
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'd0f2c324cef018b87b486a3cc80ac5c2ab2274b84eb4b2514e56fb374e766487'
         elif name == 'test_regression_guardrails.py':
-            # Owner-approved A1 generic-Spacer fixture identity changes only;
+            # Owner-approved B4 smoke-test assertions only; all other guardrails unchanged;
             # retain byte-level protection at this explicitly reviewed checkpoint.
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '6b7f4a0ca3088ef42031babaf65ae81e8a1485554ba6ed7dfd023f17ee653ff6'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'c8c7d99beb4ad6ab49b75425885872aad4bd196a35cfc3307afb2ea856228360'
+        elif name == 'placement.py':
+            from test_round13b_b1_ct_foundation import legacy_placement_source
+            assert legacy_placement_source(Path(name).read_bytes()) == subprocess.check_output(['git','show','a61d61e:'+name])
         else:
             assert Path(name).read_bytes()==subprocess.check_output(['git','show','a61d61e:'+name])
 

@@ -268,6 +268,8 @@ def build_ordered_notes(
         tank = s.get("mixing_tank") or "Mud Reserve Tanks"
         total_water = s.get("total_water_bbl", 0.0)
         mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
+        if job_type == materials_db.CT_JOB and s.get("name") == "Main":
+            mix_note += " " + s["ct_stage_note"]
         s["note_mix"] = counter.next(mix_note)
 
     if spacer_payload is not None:
@@ -538,6 +540,16 @@ def generate_executive_summary(
     executive_summary_config: dict = None
 ) -> str:
     """Locked preamble/safety paragraphs and a deterministic report-only narrative."""
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state, job_type)
+    if job_type == materials_db.CT_JOB:
+        state = st.session_state
+        fluid_data = state["fluid_data"]
+        active_fluids = state["fluids_config"]["active"]
+        additives_dfs = state.get("cement_additives_dfs", {})
+        hw_df = state["hardware_table"]
+        cement_params = state["cement_params"]
+        placement_config = state.get("placement_config", {})
     p1 = ("Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention "
           "on the referenced well. The proposal includes well data, materials and resources requirements.")
 
@@ -573,6 +585,9 @@ def generate_executive_summary(
         verb = "set" if origin == "Target depth" else "done"
         opening = f'{size}" Tie Back cementing will be {verb} at {target_text}.'
         environment = "this tie back"
+    elif job_type == materials_db.CT_JOB:
+        opening = f"CMT PLUG WITH CT will set the Main cement plug with Coiled Tubing at {target_text}."
+        environment = "the configured Main plug interval"
     elif "PLUG" in job:
         opening = f"Cement plug will be set at {target_text}."
         environment = "inside " + (_summary_join(contexts) if contexts else "casing / open hole")
@@ -662,6 +677,42 @@ def build_additives_mixing_procedure(slurry_name: str, additives_df: pd.DataFram
             
     return "\n".join(lines)
 
+def _ct_procedure(state):
+    """Report projection only: canonical placement, stage allocation and fluids."""
+    from placement import ct_setting_depth
+    from ct_stages import ct_stage_projection, stage_note
+    bottom = ct_setting_depth(state["hardware_table"])
+    projection = ct_stage_projection(state)
+    p = state["cement_params"]["Main"]
+    interval = slurry_intervals(state["hardware_table"], materials_db.CT_JOB,
+        state.get("placement_config", {}), ["Main"], state["cement_params"])["Main"]
+    sc = StepCounter()
+    lines = ["IX. Cementing Procedure",
+        sc.next("Rig up Coiled Tubing and the cement line; record wellhead pressure."),
+        sc.next("Hold a pre-job safety meeting with involved personnel and coordinate drilling-fluid and cement loss/gain monitoring with the mud engineer."),
+        sc.next("Test cement line to 3000 psi."),
+        sc.next(f"RIH Coiled Tubing to {bottom:.1f} m MD, monitoring pressure and circulating fresh water."),
+        sc.next(f"Prepare {p['tank_name']} with {projection['display_water_bbl']:.1f} bbl Fresh Water (Main Mix Water plus Dead Volume). " + stage_note(projection)),
+        sc.next("With Company Man approval, mix the actual Main additives as listed in the Cement Program, using the following mixing procedure:"),
+        build_additives_mixing_procedure("Main", state.get("cement_calc_Main")),
+        sc.next(f"At the same CT Setting Depth ({bottom:.1f} m MD), circulate at least one CT internal capacity. Stop and calibrate DAQ against the Cement Unit."),
+    ]
+    for name in state["fluids_config"]["active"]:
+        record = state["fluid_data"][name]
+        planned = "Planned " if name == "Displacement Fluid" else ""
+        lines.append(sc.next(f"{planned}Pump {record['volume']:g} bbl {record['material_name']} as {name} "
+            f"({record['density']} pcf) at {record['pump_rate']} bpm; "
+            f"calculated duration {record['duration_min']:.2f} min."))
+    lines += [
+        sc.next("Displacement Volume: Calculate at rig site. The Phase IV Displacement Fluid volume and time are planning values; confirm the final field displacement at the rig."),
+        sc.next(f"POOH Coiled Tubing to at least 30 m above Main TOC ({interval['top_depth']:.1f} m MD); confirm the withdrawal position at rig site."),
+        sc.next("Circulate, recover Coiled Tubing to surface, close the well and WOC."),
+        "CT capacity: measure and confirm the actual CT internal capacity at rig site before circulation; no capacity is assumed from missing dimensions.",
+        "Monitor wellhead and circulating pressures throughout RIH, pumping, circulation and recovery."
+    ]
+    return sc.finalize("\n".join(line for line in lines if line.strip()))
+
+
 def generate_official_procedure(
     job_type: str, 
     fluid_data: dict, 
@@ -677,6 +728,10 @@ def generate_official_procedure(
     Constructs the 100% authentic, company-standard cementing procedure
     matching the exact template archetype for the selected job_type.
     """
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state, job_type)
+    if job_type == materials_db.CT_JOB:
+        return _ct_procedure(st.session_state)
     job_upper = str(job_type).upper()
     sc = StepCounter()
 
@@ -748,7 +803,12 @@ def generate_official_procedure(
         volume, density = get_slurry_display_values(fluid_data, name)
         if name == "Diesel":
             diesel_line = f"Pump {volume} Diesel as pre flush.({density})"
-        elif name in {"Spacer Ahead", "Spacer", "Spacer Behind"}:
+        elif name in {"Spacer Ahead", "Spacer Behind"}:
+            record = fluid_data.get(name, {})
+            spacer_lines[name] = (f"Pump {volume} {record.get('material_name', '')} as {name} ({density}) "
+                f"at {record.get('pump_rate', record.get('min_rate', '....'))} bpm; "
+                f"duration {record.get('duration_str', '....')} (HH:MM).")
+        elif name == "Spacer":
             spacer_lines[name] = f"Pump {volume} as {name} ({density})."
         elif name in slurry_archetypes:
             slurry_lines[name] = f"Mix and pump {volume} {name} cement slurry ({density})."
@@ -991,6 +1051,8 @@ def _escape_xml_special_chars(value):
 
 def synchronize_report_texts():
     state = st.session_state
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(state)
     job = state.get("job_type", 'CSG 20"')
     active = state.get("fluids_config", {}).get("active", [])
     fluids = state.get("fluid_data", {})
@@ -1019,6 +1081,12 @@ def synchronize_report_texts():
                       hardware, depth, placement, summary_config]
     procedure_source = [job, active, fluids, params, additives, preflush, depth, pump_time, placement,
                         {name: state.get(f"cement_calc_{name}") for name in active}]
+    if any(name in active for name in ("Spacer Ahead", "Spacer Behind")):
+        procedure_source.append({"operational_spacers_contract": 1})
+    if job == materials_db.CT_JOB:
+        from placement import ct_setting_depth
+        from ct_stages import ct_stage_projection
+        procedure_source += [ct_setting_depth(hardware), ct_stage_projection(state)]
     specs = {
         "exec_summary_text": {
             "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement, summary_config or None),
@@ -1143,6 +1211,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     """
     # The export screen has already refreshed calculations this rerun; direct
     # callers still get a fresh validation by default.
+    from project_state import require_ct_report_implementation
+    require_ct_report_implementation(st.session_state)
     issues = [] if calculations_prepared else prepare_calculations(st.session_state)
     if issues:
         raise ValueError(" | ".join(issues))
@@ -1220,6 +1290,9 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Complete the marked operational inputs before Word export: "
                          + ", ".join(missing))
     doc_ctrl = st.session_state.get("doc_control", {})
+    if st.session_state.get("job_type") == materials_db.CT_JOB:
+        doc_ctrl = dict(doc_ctrl, job_type=materials_db.CT_JOB,
+                        cementing_method=materials_db.get_cementing_method(materials_db.CT_JOB))
     well_data = st.session_state.get("well_data", {})
     # fluid_data / active_fluids / active_slurries were already read above the
     # F3 unreadable-volume gate.
@@ -1227,7 +1300,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     
     # 1. Hardware Table Serialization
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
-    hardware_list = hw_df.to_dict(orient="records") if not hw_df.empty else []
+    hardware_list = hw_df.map(lambda value: "-" if pd.isna(value) or
+        (isinstance(value, str) and not value.strip()) else value).to_dict(orient="records") if not hw_df.empty else []
     
     # 2. Fluids Train Sequence Serialization
     fluids_train = [fluid_data[f] for f in active_fluids if f in fluid_data]
@@ -1310,6 +1384,9 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                 "crush_pressure": crush_pressure
             }
         })
+        if job_type == materials_db.CT_JOB:
+            from ct_stages import ct_stage_projection, stage_note
+            slurries_payload[-1]["ct_stage_note"] = stage_note(ct_stage_projection(st.session_state))
         # BUG-04: populate the four placement keys the template's per-slurry
         # placement block consumes (top/bottom/excess_oh/excess_csg).
         _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,
@@ -1406,34 +1483,13 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     preflush_data["volume"] = preflush_data.get("volume_bbl", 0.0)
     preflush_data["weight"] = preflush_data.get("density_pcf", "")
 
-    # Legacy sibling summaries remain available to operational context consumers.
-    # Only canonical exact Spacer owns the additives/laboratory Word tables.
-    spacers_payload = []
-    for sp_name in ["Spacer Ahead", "Spacer Behind"]:
-        if sp_name in active_fluids and sp_name in st.session_state.get("spacer_dfs", {}):
-            sp_df = st.session_state["spacer_dfs"][sp_name]
-            spacers_payload.append({
-                "name": sp_name,
-                "volume_bbl": fluid_data.get(sp_name, {}).get("volume", 0.0),
-                "density_pcf": fluid_data.get(sp_name, {}).get("density", ""),
-                "chemicals": sp_df.to_dict(orient="records") if not sp_df.empty else []
-            })
+    # Operational siblings have no active chemical source. Retain the existing
+    # density/volume summary from Phase IV, independent of historical drafts.
+    spacers_payload = [dict(name=name,
+        volume_bbl=fluid_data.get(name, {}).get("volume", 0.0),
+        density_pcf=fluid_data.get(name, {}).get("density", ""))
+        for name in ("Spacer Ahead", "Spacer Behind") if name in active_fluids]
     spacer_rows = []
-    for sp in spacers_payload:
-        spacer_rows.append({
-            "Name": str(sp.get("name", "") or ""),
-            "Material Type": "Spacer",
-            "amount": f"{safe_float(sp.get('volume_bbl', 0.0)):.1f} bbl @ {sp.get('density_pcf', '')} pcf",
-            "ratio": "-"
-        })
-        for c in (sp.get("chemicals") or []):
-            amount = c.get("User Input (% or gal)")
-            spacer_rows.append({
-                "Name": str(c.get("Chemical", "") or ""),
-                "Material Type": str(c.get("Weighting Agent Type", "") or ""),
-                "amount": str(amount) if amount is not None else "",
-                "ratio": "-"
-            })
     spacer_volume_bbl = round_half_up(
         sum(safe_float(sp.get("volume_bbl", 0.0)) for sp in spacers_payload), 1)
     # F4 (P2-01, owner-approved 2026-09-29): densities are free-text ('115-118'
@@ -1670,6 +1726,13 @@ def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
 
 def render():
     st.header("Phase X: Procedure & Export")
+    if st.session_state.get("job_type") == materials_db.CT_JOB:
+        from project_state import require_ct_report_implementation
+        try:
+            require_ct_report_implementation(st.session_state)
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
     st.markdown("Review official executive summary and execution instructions, then export the complete engineering dossier to Word.")
 
     # FIX (requested): before this, the first sign of an incomplete project
@@ -1690,7 +1753,7 @@ def render():
     }
     _selected_fluids = st.session_state.get("fluids_config", {}).get("active", [])
     _phase6_optional = not any(name in _selected_fluids
-                               for name in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind"))
+                               for name in ("Pre Flush", "Spacer"))
     _not_ok = [(k, v) for k, v in _status.items()
                if v["level"] != "ok" and not (k == "phase6" and _phase6_optional)]
     _icon = "✅" if not (_not_ok or issues) else ("⚠️" if issues or any(v["level"] == "warning" for _, v in _not_ok) else "⚪")

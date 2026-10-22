@@ -5,6 +5,9 @@ Contains all hardcoded lists, chemical databases, and dynamic mappings.
 Formatted in Title Case (Capitalizing the first letter of each word) per engineering standard.
 """
 
+CT_JOB = "CMT PLUG WITH CT"
+CT_REPORT_PENDING = "CT Procedure and final Word export are implementation pending (Round 13B)."
+
 JOB_TYPES = [
     'CSG 30"',
     'CSG 24"',
@@ -16,7 +19,8 @@ JOB_TYPES = [
     'LNR 7"', 
     'LNR 5"', 
     'LNR 4 1/2"',
-    "CMT PLUG", 
+    "CMT PLUG",
+    CT_JOB,
     "CMT SQUEEZE", 
     'TIE BACK LNR 7"', 
     'TIE BACK LNR 5"'
@@ -46,6 +50,7 @@ DEFAULT_HOLE_SIZES = {
     'LNR 7"': '8 1/2"',
     'LNR 5"': '6"',
     'LNR 4 1/2"': '6"',
+    CT_JOB: "Inside Casing / OH",
     "CMT PLUG": "Inside Casing / OH",
     "CMT SQUEEZE": "Perforations / Squeeze Zone",
     'TIE BACK LNR 7"': '8 1/2"',
@@ -277,6 +282,7 @@ TANK_OPTIONS_BY_JOB = {
     'LNR 7"':          ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'LNR 5"':          ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'LNR 4 1/2"':      ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
+    CT_JOB:             ["Mud Reserve Tanks", "Cement Unit Tanks"],
     "CMT PLUG":         ["Mud Reserve Tanks", "Cement Unit Tanks"],
     "CMT SQUEEZE":      ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'TIE BACK LNR 7"': ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],

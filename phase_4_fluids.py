@@ -14,7 +14,7 @@ HYDRAULIC_EXECUTION_ORDER = materials_db.HYDRAULIC_EXECUTION_ORDER
 def _commit_fluid_selection(fluid, key):
     cfg = st.session_state["fluids_config"]
     selected = set(cfg["active"])
-    if st.session_state[key]:
+    if st.session_state[key] and fluid in available_fluid_types(st.session_state):
         selected.add(fluid)
     else:
         selected.discard(fluid)
@@ -67,6 +67,8 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     if config.get("params", {}).get(fluid, {}).get(field) != value:
         invalidate_document(st.session_state)
     config.setdefault("params", {}).setdefault(fluid, {})[field] = value
+    if st.session_state.get("job_type") == materials_db.CT_JOB and fluid == "Main":
+        st.session_state.pop("cement_note_Main", None)
 
     # This is the already-rendered record used by the following phase. Phase
     # IV recalculates durations and cumulative time when it renders again.
@@ -214,7 +216,7 @@ def render():
         # its entry in spacer_initialized_names (both owned by
         # phase_6_spacer.py) were never cleared when a spacer type was
         # deselected here, unlike the slurry keys above.
-        all_spacers = ["Spacer", "Spacer Ahead", "Spacer Behind"]
+        all_spacers = ["Spacer"]  # Operational sibling drafts are retained, never consumed.
         for sp in all_spacers:
             st.session_state.get("spacer_dfs", {}).pop(sp, None)
             if sp in st.session_state.get("spacer_initialized_names", []):
@@ -268,7 +270,8 @@ def render():
         else:
             p["material_name"] = st.text_input(
                 f"Material Name - {fluid}",
-                value=str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))),
+                value=("" if fluid in ("Spacer Ahead", "Spacer Behind") and "material_name" in p and p["material_name"] is None
+                       else str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, "")))),
                 help="Descriptive fluid name shown in the 'Name' column (e.g. 'Cement Slurry', 'Salt Saturated Water', 'Mud').",
                 key=f"matname_{fluid}",
                 on_change=_commit_fluid_widget,
@@ -403,7 +406,7 @@ def render():
     # a deselected spacer's formulation forever, so re-checking the same
     # spacer type later would silently show the old leftover table instead
     # of starting fresh (unlike slurries, which now reset correctly above).
-    all_spacer_keys = ["Spacer", "Spacer Ahead", "Spacer Behind"]
+    all_spacer_keys = ["Spacer"]
     for sp in all_spacer_keys:
         if sp not in active_fluids_list:
             st.session_state.get("spacer_dfs", {}).pop(sp, None)

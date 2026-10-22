@@ -145,9 +145,25 @@ def _validate_project(data):
                 or not isinstance(cfg.get("params", {}), dict)
                 or any(not isinstance(v, dict) for v in cfg.get("params", {}).values())):
         raise ValueError("fluids_config needs a fluid list and parameter records.")
+    if data.get("job_type") == materials_db.CT_JOB:
+        forbidden = [name for name in cfg.get("active", [])
+                     if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
+        if forbidden:
+            raise ValueError("CMT PLUG WITH CT permits only Main cement slurry; invalid active selection: " + ", ".join(forbidden))
+        hardware = data.get("hardware_table")
+        if isinstance(hardware, pd.DataFrame) and "Description" in hardware:
+            rows = hardware[hardware["Description"].eq("CT")]
+            # Missing inputs remain savable drafts; supplied invalid/ambiguous data is not admitted.
+            if len(rows) > 1 or (len(rows) == 1 and not _is_missing_cell(rows.iloc[0].get("MD (m)"))
+                                and rows.iloc[0].get("MD (m)") != ""):
+                from placement import ct_setting_depth
+                ct_setting_depth(hardware)
     for key in ("cement_params", "lab_qc_params", "report_text_state", "fluid_data"):
         if any(not isinstance(item, dict) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains an invalid record.")
+    if "ct_stage_config" in data:
+        from ct_stages import validate_stage_config
+        validate_stage_config(data)
     for key in ("cement_additives_dfs", "lab_grid_dfs", "spacer_dfs"):
         if any(not isinstance(item, pd.DataFrame) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains a table that could not be restored.")

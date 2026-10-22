@@ -358,6 +358,23 @@ class AuditRegressions(unittest.TestCase):
     def test_neat_cement_export_for_every_job_type(self):
         for job in materials_db.JOB_TYPES:
             with self.subTest(job=job):
+                if job == materials_db.CT_JOB:
+                    import phase_10_procedure as report
+                    app = self.app({"job_type": job, "_compiled_doc_bytes": b"old"})
+                    self.phase(app, "phase10")
+                    self.assertTrue(any("Phase IV" in w.value
+                                        for w in app.warning))
+                    self.assertFalse(any(b.label == "Build Word Document" for b in app.button))
+                    self.assertFalse(app.get("download_button"))
+                    self.assertNotIn("_compiled_doc_bytes", app.session_state)
+                    for prepared in (False, True):
+                        state = app.session_state.to_dict()
+                        state["_compiled_doc_bytes"] = b"old"
+                        with patch.object(report.st, 'session_state', state):
+                            with self.assertRaisesRegex(ValueError, "Phase IV"):
+                                report.build_master_context(calculations_prepared=prepared)
+                        self.assertNotIn("_compiled_doc_bytes", state)
+                    continue
                 app = self.configured_app(job)
                 self.assertTrue(app.session_state["cement_additives_dfs"]["Main"].empty)
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
@@ -1187,10 +1204,8 @@ class AuditRegressions(unittest.TestCase):
                     amount = app.session_state["spacer_dfs"]["Spacer Behind"].iloc[0]["User Input (% or gal)"]
                     if dosage is None:
                         self.assertTrue(pd.isna(amount))
-                        self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "warning")
-                        self.assert_export_blocked(app)
-                        continue
-                    self.assertEqual(amount, dosage)
+                    else:
+                        self.assertEqual(amount, dosage)
                     self.assertEqual(compute_phase_status(app.session_state)["phase6"]["level"], "ok")
                     before = app.session_state["spacer_dfs"]["Spacer Behind"].copy(deep=True)
                     self.export(app, build_timeout=120)
@@ -1199,9 +1214,9 @@ class AuditRegressions(unittest.TestCase):
                     import phase_10_procedure as report
                     with patch.object(report.st, "session_state", app.session_state.to_dict()):
                         ctx = report.build_master_context()
-                    rows = ctx["spacers"]
-                    heading = next(i for i, row in enumerate(rows) if row["Name"] == "Spacer Behind")
-                    self.assertEqual(rows[heading + 1], {"Name": "Spacer", "Material Type": "-", "amount": str(dosage), "ratio": "-"})
+                    self.assertEqual(ctx["spacers"], [])
+                    behind = next(row for row in ctx["fluids_train"] if row["name"] == "Spacer Behind")
+                    self.assertEqual(behind["volume"], project["fluids_config"]["params"]["Spacer Behind"]["volume"])
                     self.assertIn("Spacer Behind", " ".join(c.text for t in doc.tables for r in t.rows for c in r.cells))
                     pd.testing.assert_frame_equal(app.session_state["spacer_dfs"]["Spacer Behind"], before)
 

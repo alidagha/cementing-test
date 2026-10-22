@@ -234,7 +234,7 @@ def _optional_id(row: Mapping[str, Any], size: float, ctx: str) -> Optional[floa
 def _job_kind(job_type: str) -> str:
     from cement_chart_model import chart_job_kind
     kind = chart_job_kind(job_type)
-    return {"CMT PLUG": "cmt_plug", "CMT SQUEEZE": "cmt_squeeze"}.get(job_type, kind)
+    return {"CMT PLUG": "cmt_plug", "CMT PLUG WITH CT": "cmt_plug", "CMT SQUEEZE": "cmt_squeeze"}.get(job_type, kind)
 
 
 def _job_size(job_type: str) -> Optional[float]:
@@ -841,7 +841,216 @@ def _payload_string(s: WellString, index_by_id: Mapping[str, int]) -> Dict[str, 
     return row
 
 
+CT_SCHEMATIC_UNAVAILABLE = "Well Schematic Not Available – Incomplete Well Geometry"
+
+
+def _ct_missing(value):
+    # Numeric DataFrame nulls use NaN; literal JSON NaN is rejected by project_io.
+    return value is None or value is pd.NA or isinstance(value, float) and math.isnan(value) or value == ""
+
+
+def _ct_history_facts(rows, well_md, placement):
+    """Validate every supplied fact before classifying absent historical geometry."""
+    missing, facts = [], []
+    for index, row in enumerate(rows):
+        desc = str(row.get("Description") or "").strip()
+        ctx = f"Hardware row {index + 1} ({desc or 'Description missing'})"
+        if not desc:
+            missing.append(f"{ctx}: Description is missing")
+            continue
+        if desc not in SUPPORTED_DESCRIPTIONS:
+            raise ValueError(f"{ctx}: unsupported Description")
+        if desc in ("Drill Pipes", "Tubing"):
+            continue  # No operational tubing graphics or depth authority.
+        size = inside = start = end = None
+        raw = row.get("Size (in)")
+        if not _ct_missing(raw):
+            size = parse_size(raw, f"{ctx}.Size (in)")
+        elif desc in STRUCTURAL_DESCRIPTIONS or desc == "Open Hole Size" or "Hanger" in desc:
+            missing.append(f"{ctx}: Size (in) is missing")
+        raw = row.get("ID (in)")
+        if not _ct_missing(raw):
+            inside = _finite(raw, f"{ctx}.ID (in)", nonnegative=True)
+            if inside == 0:
+                inside = None  # An existing editor default is not a measured bore.
+        if inside is None and (desc in STRUCTURAL_DESCRIPTIONS or desc == "Open Hole Size"):
+            missing.append(f"{ctx}: ID (in) is missing")
+        if size is not None and inside is not None:
+            if desc == "Open Hole Size":
+                if abs(size - inside) > SIZE_TOL:
+                    raise ValueError(f"{ctx}: Open Hole Size and ID/Bit Size must match")
+            elif inside >= size - SIZE_TOL:
+                raise ValueError(f"{ctx}: ID must be smaller than OD/Size")
+        raw = row.get("MD (m)")
+        if _ct_missing(raw):
+            missing.append(f"{ctx}: MD (m) is missing")
+        else:
+            start, end = _parse_md(raw, f"{ctx}.MD (m)")
+            if end > well_md + DEPTH_TOL:
+                raise ValueError(f"{ctx}: MD exceeds the measured well MD")
+            if "Hanger" in desc and start is not None:
+                raise ValueError(f"{ctx}: Hanger MD must be one endpoint")
+        for field in ("Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"):
+            if not _ct_missing(row.get(field)):
+                _finite(row[field], f"{ctx}.{field}", nonnegative=True)
+        facts.append({"description": desc, "size": size, "id": inside,
+                      "start": start, "end": end, "context": ctx})
+
+    holes = [f for f in facts if f["description"] == "Open Hole Size"]
+    if len({f["size"] for f in holes if f["size"] is not None}) > 1:
+        raise ValueError("Open Hole sections have conflicting supplied Size/diameter")
+    previous = None
+    for fact in holes:
+        if fact["start"] is not None and previous is not None and abs(fact["start"] - previous) > DEPTH_TOL:
+            raise ValueError(f"{fact['context']}: Open Hole interval Top contradicts the previous boundary")
+        if fact["end"] is not None and previous is not None and fact["end"] <= previous + DEPTH_TOL:
+            raise ValueError(f"{fact['context']}: Open Hole endpoints must increase")
+        previous = fact["end"]
+
+    groups = {}
+    for fact in facts:
+        if fact["description"] in STRUCTURAL_DESCRIPTIONS and fact["size"] is not None:
+            groups.setdefault((fact["description"], fact["size"]), []).append(fact)
+    for (desc, size), sections in groups.items():
+        first = sections[0]
+        top = 0.0 if "Casing" in desc else first["start"]
+        if desc in ("Previous Liner", "Liner"):
+            hanger = "Previous Liner Hanger" if desc == "Previous Liner" else "Liner Hanger"
+            hangers = [f for f in facts if f["description"] == hanger and f["size"] == size]
+            if len(hangers) > 1:
+                raise ValueError(f"{first['context']}: ambiguous Hanger authority")
+            if hangers and hangers[0]["end"] is not None:
+                measured_top = hangers[0]["end"]
+                if top is not None and abs(top - measured_top) > DEPTH_TOL:
+                    raise ValueError(f"{first['context']}: interval Top contradicts measured Hanger")
+                top = measured_top
+            if top is None:
+                missing.append(f"{first['context']}: Liner Lap/Top is missing")
+        elif desc == "Tie Back":
+            explicit = placement.get("tie_back_liner_lap_m")
+            if explicit is not None:
+                measured_top = _finite(explicit, "Historical Tie Back Top", nonnegative=True)
+                if top is not None and abs(top - measured_top) > DEPTH_TOL:
+                    raise ValueError(f"{first['context']}: interval Top contradicts explicit Tie Back Top")
+                top = measured_top
+            if top is None:
+                missing.append(f"{first['context']}: historical Tie Back Top is missing")
+        previous = top
+        for fact in sections:
+            if fact["start"] is not None and previous is not None and abs(fact["start"] - previous) > DEPTH_TOL:
+                raise ValueError(f"{fact['context']}: interval Top contradicts the previous boundary")
+            if fact["end"] is not None and previous is not None and fact["end"] <= previous + DEPTH_TOL:
+                raise ValueError(f"{fact['context']}: section endpoints must increase")
+            fact["known_start"] = previous if previous is not None else fact["start"]
+            previous = fact["end"]
+        # These bounds are known only; they are never filled with a stand-in.
+        first["known_top"] = top
+        first["known_bottom"] = sections[-1]["end"]
+
+    casings = [sections[0] for (desc, _), sections in groups.items() if "Casing" in desc]
+    casings.sort(key=lambda f: -f["size"])
+    for outer, inner in zip(casings, casings[1:]):
+        if inner["size"] >= outer["size"] - SIZE_TOL or (outer["id"] is not None and inner["size"] >= outer["id"] - SIZE_TOL):
+            raise ValueError(f"{inner['context']}: casing cannot pass the supplied outer OD/ID")
+    for (desc, size), sections in groups.items():
+        if desc not in ("Previous Liner", "Liner", "Tie Back"):
+            continue
+        child = sections[0]
+        top = child.get("known_top")
+        bottom = child.get("known_bottom")
+        if top is None or bottom is None:
+            continue
+        for (outer_desc, outer_size), outer_sections in groups.items():
+            if (outer_desc, outer_size) == (desc, size) or outer_size < size:
+                continue
+            for outer in outer_sections:
+                outer_top = outer["known_start"]
+                if outer_top is None or outer["end"] is None:
+                    continue
+                if min(bottom, outer["end"]) <= max(top, outer_top) + DEPTH_TOL:
+                    continue
+                if outer["id"] is not None and size >= outer["id"] - SIZE_TOL:
+                    raise ValueError(f"{child['context']}: OD cannot fit the supplied overlapping string ID")
+    if not any(row.get("Description") in STRUCTURAL_DESCRIPTIONS for row in rows):
+        missing.append("Casing/Liner construction history is missing")
+    return missing
+
+
+def ct_schematic_projection(state):
+    """Two truthful presentation outcomes; invalid measured facts never fall back."""
+    import materials_db
+    import well_schematic_engine as engine
+    from placement import ct_setting_depth, slurry_intervals
+    from well_profile import resolve_well_profile
+    if hasattr(state, "to_dict"):
+        state = state.to_dict()
+    rows = _rows_from_table(state.get("hardware_table"))
+    table = pd.DataFrame(rows)
+    bottom = ct_setting_depth(table)
+    config = state.get("fluids_config", {})
+    active = config.get("active", [])
+    if "Main" not in active or any(name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main" for name in active):
+        raise ValueError("CT Well Schematic requires Main as the sole active cement slurry")
+    interval = slurry_intervals(table, materials_db.CT_JOB, state.get("placement_config", {}),
+                               ["Main"], state.get("cement_params", {}))["Main"]
+    top = interval["top_depth"]
+    if top is None or not 0 <= top < bottom:
+        raise ValueError("CT Main Plug requires an explicit current Phase V TOC above CT Bottom")
+    profile, _, _ = resolve_well_profile(state.get("well_geometry", {}), state.get("geothermal_config", {}))
+    well_md = _finite(profile.get("geo_md"), "CT schematic measured well MD", positive=True)
+    if bottom > well_md + DEPTH_TOL:
+        raise ValueError("CT Setting Depth exceeds the measured well MD")
+    history = [row for row in rows if row.get("Description") != "CT"]
+    missing = _ct_history_facts(history, well_md, state.get("placement_config") or {})
+    view = {**state, "hardware_table": pd.DataFrame(history), "schematic_config": {}}
+
+    def unavailable(reasons):
+        return {"job_type": materials_db.CT_JOB, "available": False, "payload": None,
+                "message": CT_SCHEMATIC_UNAVAILABLE, "missing_geometry": reasons}
+    if missing:
+        return unavailable(missing)
+    # Reuse the existing physical-string resolver; no temporary drawing coordinates.
+    strings, _, _ = _build_strings(view, history)
+    _validate_casing_nesting(strings)
+    missing_hosts = []
+    for child in strings:
+        if child.renderer_type not in ("liner", "tieback"):
+            continue
+        candidates = [host for host in strings if host.renderer_type in ("casing", "liner")
+                      and host.size_in > child.size_in + SIZE_TOL
+                      and host.top_md - DEPTH_TOL <= child.top_md <= host.shoe_md + DEPTH_TOL]
+        if not candidates:
+            missing_hosts.append(f"{child.label}: measured host geometry at Lap/Top is missing")
+        else:
+            host = min(candidates, key=lambda s: s.size_in)
+            _validate_fit(child, host, child.top_md, min(child.shoe_md, host.shoe_md))
+    if missing_hosts:
+        return unavailable(missing_hosts)
+    _resolve_hosts(strings)
+    for tb in (s for s in strings if s.renderer_type == "tieback"):
+        if not any(ln.renderer_type == "liner" and ln.top_md <= tb.shoe_md <= ln.shoe_md for ln in strings):
+            return unavailable([f"{tb.label}: receiving historical Liner geometry is missing"])
+    try:
+        payload = _build_known_schematic_payload(view, _plugs=[{"top_md": top, "bottom_md": bottom}])
+    except DrawingInputRequired as exc:
+        return unavailable([str(exc)])
+    checked = deepcopy(payload)
+    engine.validate_schematic_data(checked)
+    findings = engine.check_well_design(checked)
+    if findings:
+        raise ValueError("renderer rejected CT geometry:\n  - " + "\n  - ".join(findings))
+    return {"job_type": materials_db.CT_JOB, "available": True, "payload": payload,
+            "message": None, "missing_geometry": []}
+
+
 def build_schematic_payload(state: Mapping[str, Any], *, _drawing_inputs=None) -> Dict[str, Any]:
+    from materials_db import CT_JOB
+    if isinstance(state, Mapping) and state.get("job_type") == CT_JOB:
+        return ct_schematic_projection(state)
+    return _build_known_schematic_payload(state, _drawing_inputs=_drawing_inputs)
+
+
+def _build_known_schematic_payload(state: Mapping[str, Any], *, _drawing_inputs=None, _plugs=None) -> Dict[str, Any]:
     """Build a renderer payload from canonical app-like state without mutating it."""
     if not isinstance(state, Mapping):
         raise ValueError("state must be a mapping")
@@ -888,7 +1097,7 @@ def build_schematic_payload(state: Mapping[str, Any], *, _drawing_inputs=None) -
         assert current_structural is not None
         payload["current_job"] = {"type": kind, "target_index": index_by_id[current_structural.string_id]}
     elif kind == "cmt_plug":
-        payload["cement_plugs"] = _resolve_plugs(state)
+        payload["cement_plugs"] = _resolve_plugs(state) if _plugs is None else _plugs
         extra_bores = _plug_bore_inputs(state, payload["cement_plugs"], strings, open_hole, inputs)
         if extra_bores:
             payload["plug_bores"] = extra_bores
@@ -935,6 +1144,8 @@ def build_schematic_payload(state: Mapping[str, Any], *, _drawing_inputs=None) -
 def validate_with_renderer(state: Mapping[str, Any], engine_module: Any) -> Dict[str, Any]:
     """Convenience hook for local certification without introducing an engine import dependency."""
     payload = build_schematic_payload(state)
+    if payload.get("job_type") == "CMT PLUG WITH CT":
+        return payload  # The CT projection already validated its available payload.
     checked = deepcopy(payload)
     engine_module.validate_schematic_data(checked)
     findings = engine_module.check_well_design(checked)
@@ -972,6 +1183,14 @@ def source_signature(state):
     """Fingerprint drawing sources only; no geometry validation or rendering."""
     if hasattr(state, "to_dict"):
         state = state.to_dict()
+    if state.get("job_type") == "CMT PLUG WITH CT":
+        params = state.get("cement_params", {}).get("Main", {})
+        return fingerprint({"job": state.get("job_type"), "hardware": state.get("hardware_table"),
+            "main_active": "Main" in state.get("fluids_config", {}).get("active", []),
+            "main_top": {key: params.get(key) for key in ("top_mode", "top_depth", "top_job_type")},
+            "well_geometry": state.get("well_geometry"),
+            "tie_back_top": (state.get("placement_config") or {}).get("tie_back_liner_lap_m"),
+            "well_name": state.get("well_name") or state.get("doc_control", {}).get("well_name")})
     table = state.get("hardware_table")
     columns = ["Description", "MD (m)", "Size (in)", "ID (in)"]
     hardware = table.reindex(columns=columns) if isinstance(table, pd.DataFrame) else table

@@ -43,7 +43,9 @@ class Round2Phase1UAT(unittest.TestCase):
             'CSG 13 3/8"': '13 3/8" CSG Cementing', 'CSG 9 5/8"': '9 5/8" CSG Cementing',
             'CSG 7"': '7" CSG Cementing', 'LNR 7"': '7" LNR Cementing',
             'LNR 5"': '5" LNR Cementing', 'LNR 4 1/2"': '4 1/2" LNR Cementing',
-            'CMT PLUG': 'CMT PLUG Cementing', 'CMT SQUEEZE': 'CMT SQUEEZE Cementing',
+            'CMT PLUG': 'CMT PLUG Cementing',
+            'CMT PLUG WITH CT': 'CMT PLUG WITH CT Cementing',
+            'CMT SQUEEZE': 'CMT SQUEEZE Cementing',
             'TIE BACK LNR 7"': '7" TIE BACK LNR Cementing',
             'TIE BACK LNR 5"': '5" TIE BACK LNR Cementing',
         }

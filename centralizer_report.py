@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
 
+import materials_db
 import centralizer_adapter as adapter
 from phase_9_centralizer import result_is_current
 
@@ -28,7 +29,7 @@ def _companion():
 def prepare_report(state):
     """Pure projection of a current executed result into the Companion's accepted contract."""
     job = state.get("job_type")
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         return {"applicable": False, "analysis": None, "view": None, "source": None, "warning": False}
     if not adapter.centralizer_applicable(job) or not result_is_current(state):
         raise ValueError("Phase IX: Execute a current successful Centralizer calculation before Word export.")

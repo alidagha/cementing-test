@@ -22,7 +22,7 @@ from centralizer_fixtures import execute_centralizer
 
 
 JOBS = ('CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"', 'CMT PLUG', 'CMT SQUEEZE')
-TEMPLATE_SHA = 'c213115a30353fdcdae1986f8cb08caaea0a7f2342880fc99872d131738b6670'
+TEMPLATE_SHA = 'd0f2c324cef018b87b486a3cc80ac5c2ab2274b84eb4b2514e56fb374e766487'
 DIESEL = {'volume': 20., 'density': '52.5', 'pump_rate': '4.0', 'material_name': 'Diesel'}
 CASE = audit.AuditRegressions()
 
@@ -358,17 +358,19 @@ def test_real_inactive_wbm_restore_obm_selection_and_export_do_not_reactivate_di
 
 # Captured by loading phase_10_procedure.py from exact A-4-2 and comparing
 # generated text, sources, complete context and actual rendered body XML.
+# B4 retains those Summary pins; procedure pins include the operational-sibling
+# contract revision so old generated/manual text receives currentness review.
 NO_DIESEL_A42 = {
     'CSG 9 5/8"': ('a5134954af6038660d25feb27bd7b19ecce4844658d9ec1d5c268353ec7e79ba',
-                   '2040622d6a65ed778dd147ae7552d014b016711a095604c0a643764ed3d243ce'),
+                   'f819749f83a9b610eb9e609c5e0c3086ca37a7d916621af78e8f759aff7e97a7'),
     'LNR 7"': ('8db5ea1d997b98f9b151226485dcea9bed2cf2849bce58557db81d5a00e3ec66',
-               'bc60c6ee2adf46ba38333934ccdb25d4107ed52fd24c01329955a5ec8288baff'),
+               '4267804c582208ebd88e4dfbd6a8d6971b07470ec31873e44d628a4ac371001f'),
     'TIE BACK LNR 7"': ('7b28fa5f211df4f078be57bc8ec9e6bcf3a3c709b70c87c7dd0132c7365ff289',
-                        '1fa15bb27a81295be7729a963b087e4e47defdc25e545e7d0d61fbf50833b1da'),
+                        'c5ae8ccbfa6fb60503c597e1d6cd3570b971836b4fc257c49bcdee17e578bfda'),
     'CMT PLUG': ('2d3b3558e5bdb118ea7e4d0dc97d8e09f37c122509d47506ea174c6718c7a805',
-                 '3b17a454c16d9fdd07c1f1b4fc4a35b94900730b9cb4b65e528cf53d06175d34'),
+                 '60a9af129c2a0053bfa3e0c8acf9dee417d1be787e402cf7b9fdb145dab98ecb'),
     'CMT SQUEEZE': ('1b728a841796aed381a0b3f488924dedc6e8f4f65d7fe51b287711ea489ddaf4',
-                    '7148fb2eb84ba260748c3eeb83948e939deac7b18858aadf2eeafdef62ab6556'),
+                    'b28097c0f9a6cebacd01fdd7b7b2c40848cb9cba17080057504074915e62bbb4'),
 }
 
 

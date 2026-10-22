@@ -368,6 +368,13 @@ def require_preflush_material_name(value) -> str:
     return value
 
 
+def require_spacer_material_name(fluid, value):
+    """Operational siblings need an actual Phase-IV material identity."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Phase IV: {fluid}: enter a material name before export")
+    return value
+
+
 def require_positive_density(value) -> float:
     """Reject a malformed or negative density rather than substituting 80 pcf."""
     numbers = _positive_density_values(value)
@@ -934,6 +941,16 @@ def compute_phase_status(ss) -> dict:
         status["phase2_3"] = {"level": "warning", "message": "Enter positive MD and TVD in Phase II & III."}
     elif geo_tvd > geo_md:
         status["phase2_3"] = {"level": "warning", "message": f"TVD ({geo_tvd:.1f} m) exceeds MD ({geo_md:.1f} m) — physically inconsistent."}
+    elif ss.get("job_type") == materials_db.CT_JOB:
+        from well_schematic_adapter import prepare_schematic
+        try:
+            presentation = prepare_schematic(ss)
+            status["phase2_3"] = {"level": "ok", "message": "CT depth and Main placement validated; Well Schematic available."
+                                  if presentation["available"] else presentation["message"]}
+            if not presentation["available"]:
+                status["phase2_3"]["warnings"] = presentation["missing_geometry"]
+        except ValueError as exc:
+            status["phase2_3"] = {"level": "warning", "message": str(exc)}
     elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
              or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
              for _, row in hw.iterrows()):
@@ -985,6 +1002,8 @@ def compute_phase_status(ss) -> dict:
             try:
                 if fluid == "Pre Flush":
                     require_preflush_material_name(source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
+                if fluid in ("Spacer Ahead", "Spacer Behind"):
+                    require_spacer_material_name(fluid, source.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[fluid]))
                 require_fluid_density(fluid, density)
                 require_positive_pump_rate(source.get("pump_rate"))
             except (TypeError, ValueError, OverflowError):
@@ -1076,41 +1095,32 @@ def compute_phase_status(ss) -> dict:
         else:
             status["phase5"] = {"level": "ok", "message": f"{len(active_slurries)} slurry(ies) formulated and placed."}
 
+    if ss.get("job_type") == materials_db.CT_JOB and "Main" in active:
+        from ct_stages import allocate_stages, main_volume, validate_stage_config
+        try:
+            allocate_stages(main_volume(ss), validate_stage_config(ss))
+        except ValueError as exc:
+            status["phase5"] = {"level": "warning", "message": str(exc)}
+
+    if ss.get("job_type") == materials_db.CT_JOB and any(
+            name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main" for name in active):
+        status["phase5"] = {"level": "warning", "message": "CMT PLUG WITH CT permits only Main cement slurry."}
+
     # Phase VI: Pre-flush & Spacer
     has_preflush = "Pre Flush" in active
-    spacer_types = [f for f in active if f in ("Spacer", "Spacer Ahead", "Spacer Behind")]
+    spacer_types = [f for f in active if f == "Spacer"]
     if not has_preflush and not spacer_types:
         status["phase6"] = {"level": "empty", "message": "Not applicable (no Pre Flush/Spacer selected)."}
     else:
         problems = []
         if has_preflush and not ss.get("preflush_calc"):
             problems.append("Pre Flush not configured")
-        sdfs = ss.get("spacer_dfs", {})
         if "Spacer" in spacer_types:
             from standalone_spacer import formulation_from_state
             try:
                 formulation_from_state(ss)
             except ValueError as exc:
                 problems.append(str(exc))
-        generic_spacers = [s for s in spacer_types if s != "Spacer"]
-        empty_spacers = [s for s in generic_spacers if len(sdfs.get(s, [])) == 0]
-        if empty_spacers:
-            problems.append(f"no chemicals for: {', '.join(empty_spacers)}")
-        incomplete_spacers = []
-        for spacer in generic_spacers:
-            table = sdfs.get(spacer)
-            if table is None or not hasattr(table, "iterrows"):
-                continue
-            for _, row in table.iterrows():
-                try:
-                    amount = float(row.get("User Input (% or gal)"))
-                except (TypeError, ValueError, OverflowError):
-                    amount = float("nan")
-                if not filled(row.get("Chemical")) or not math.isfinite(amount) or amount < 0:
-                    incomplete_spacers.append(spacer)
-                    break
-        if incomplete_spacers:
-            problems.append(f"incomplete chemical rows for: {', '.join(incomplete_spacers)}")
         status["phase6"] = (
             {"level": "warning", "message": "; ".join(problems) + "."} if problems
             else {"level": "ok", "message": "Pre-flush/Spacer configured."}
@@ -1189,7 +1199,7 @@ def compute_phase_status(ss) -> dict:
     from centralizer_adapter import centralizer_applicable
     from phase_9_centralizer import result_is_current
     job = ss.get("job_type")
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         status["phase9"] = {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
     elif not centralizer_applicable(job):
         status["phase9"] = {"level": "empty", "message": "Select a supported Centralizer job in Phase I."}

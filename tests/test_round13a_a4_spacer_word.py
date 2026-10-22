@@ -397,8 +397,9 @@ def test_unified_lab_retains_all_lots_rheology_and_unrounded_total(source, mode,
 
 
 def test_template_change_is_confined_to_authorized_spacer_regions():
+    from test_round13b_post_b4_word_quality import approved_template_xml
     with ZipFile(report.TEMPLATE_PATH) as archive:
-        root = etree.fromstring(archive.read("word/document.xml"))
+        root = etree.fromstring(approved_template_xml(archive.read("word/document.xml")))
         ns = {"w": root.nsmap["w"]}
         body = root.find("w:body", ns)
         text = lambda node: "".join(node.xpath(".//w:t/text()", namespaces=ns))

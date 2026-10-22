@@ -19,7 +19,7 @@ CHART_JOBS = {
     'CSG 7"': "casing", 'LNR 7"': "liner", 'LNR 5"': "liner",
     'LNR 4 1/2"': "liner",
     'TIE BACK LNR 7"': "tieback", 'TIE BACK LNR 5"': "tieback",
-    "CMT PLUG": None, "CMT SQUEEZE": None,
+    "CMT PLUG": None, "CMT SQUEEZE": None, materials_db.CT_JOB: None,
 }
 FLOAT_COLLAR_OFFSET_M = 12.2
 LANDING_COLLAR_OFFSET_M = 24.4

@@ -366,7 +366,8 @@ def test_template_package_is_unchanged_outside_exact_section_vi_insertion():
         for name in old.namelist():
             if name != "word/document.xml":
                 assert old.read(name) == parent.read(name) == new.read(name)
-        before, after = old.read("word/document.xml"), new.read("word/document.xml")
+        from test_round13b_post_b4_word_quality import approved_template_xml
+        before, after = old.read("word/document.xml"), approved_template_xml(new.read("word/document.xml"))
         baseline = parent.read("word/document.xml")
 
     def scavenger(xml):
@@ -449,9 +450,11 @@ def test_template_integrity_rejects_scavenger_or_unrelated_mutation(tmp_path, mo
 def test_protected_algorithms_and_properties_are_byte_or_ast_identical():
     for filename in ("rheology.py", "bhct_helper.py"):
         assert Path(filename).read_bytes() == subprocess.check_output(["git", "show", "80353e4:" + filename])
+    # B1 adds CT-only routing; every original placement source byte stays pinned.
+    from test_round13b_b1_ct_foundation import legacy_placement_source
     # Round 8A supersedes only the Top-driven slurry_intervals authority.
     for source in (subprocess.check_output(["git", "show", "80353e4:placement.py"]), Path("placement.py").read_bytes()):
-        tree = ast.parse(source)
+        tree = ast.parse(legacy_placement_source(source))
         tree.body = [node for node in tree.body if not (isinstance(node, ast.FunctionDef) and node.name == "slurry_intervals")]
         if source == Path("placement.py").read_bytes():
             assert ast.dump(tree) == placement_ast
@@ -580,7 +583,7 @@ def test_all_five_normal_lab_sections_share_well_conditions_and_exclude_scavenge
     for name in materials_db.CEMENT_FORMULATION_FLUIDS:
         project["lab_source_signatures"][name] = lab_source_signature(project, name)
     restored = case.app(audit.round_trip(project))
-    case.export(restored, build_timeout=60)
+    case.export(restored)
     doc = Document(BytesIO(restored.session_state["_compiled_doc_bytes"]))
     assert sum(t.rows[0].cells[0].text == "Test Basic Data" for t in doc.tables) == 5
     assert sum(t.rows[0].cells[0].text == "Rheology Test" for t in doc.tables) == 5

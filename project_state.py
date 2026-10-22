@@ -10,7 +10,7 @@ import materials_db
 from well_profile import geometry_defaults, geothermal_defaults, resolve_well_profile
 from rheology import validate_rheology_results
 from engineering_tools import (require_positive_density, require_fluid_density, require_bhsp_density, require_positive_pump_rate,
-                               require_preflush_material_name,
+                               require_preflush_material_name, require_spacer_material_name,
                                format_to_hr_mm, round_half_up, safe_float,
                                validate_lab_masses, validate_thickening_test, parse_effective_numeric,
                                validate_lab_collection_results, THICKENING_TEST_FIELDS, validate_compressive_test,
@@ -157,12 +157,42 @@ def restore_canonical_fields(state):
             or any(key in well for key in ("geo_md", "geo_tvd", "bhst", "geo_gradient"))):
         refresh_well_derived(state)
     reconcile_fluid_applicability(state)
+    reconcile_ct_stage_selection(state)
+
+
+def reconcile_ct_stage_selection(state):
+    """Retire a CT choice on a real source transition; never choose another count."""
+    from ct_stages import CONFIG_KEY, main_volume
+    if CONFIG_KEY not in state:
+        return
+    record = state[CONFIG_KEY]
+    inactive = (state.get("job_type") != materials_db.CT_JOB
+                or "Main" not in state.get("fluids_config", {}).get("active", []))
+    changed = False
+    if isinstance(record, dict) and isinstance(record.get("main_volume"), str):
+        try:
+            volume = main_volume(state)
+        except ValueError:
+            changed = True  # An invalid source edit cannot preserve a prior choice.
+        else:
+            try:
+                from decimal import Decimal
+                changed = volume <= 12 or volume != Decimal(record["main_volume"])
+            except ArithmeticError:
+                pass  # Malformed records remain blocked by validation.
+    if inactive or changed:
+        state.pop(CONFIG_KEY, None)
+        state.pop("cement_note_Main", None)
+        invalidate_document(state)
 
 
 def available_fluid_types(state):
     """Project Mud Type governs eligibility; ordering stays in materials_db."""
     mud_type = state.get("mud_type", state.get("well_data", {}).get("mud_type", "WBM"))
-    return [name for name in materials_db.FLUID_TYPES if name != "Diesel" or mud_type == "OBM"]
+    return [name for name in materials_db.FLUID_TYPES
+            if (name != "Diesel" or mud_type == "OBM")
+            and (state.get("job_type") != materials_db.CT_JOB
+                 or name not in materials_db.CEMENT_FORMULATION_FLUIDS or name == "Main")]
 
 
 def reconcile_fluid_applicability(state):
@@ -173,6 +203,17 @@ def reconcile_fluid_applicability(state):
     """
     cfg = state.get("fluids_config", {})
     active = cfg.get("active", [])
+    if state.get("job_type") == materials_db.CT_JOB:
+        forbidden = [name for name in active if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
+        if forbidden:
+            cfg["active"] = [name for name in active if name not in forbidden]
+            purge_inactive_slurries(state, cfg["active"])
+            for name in forbidden:
+                state.pop("chk_fluid_" + name, None)
+                state.get("fluid_data", {}).pop(name, None)
+                state.get("active_fluids", {}).pop(name, None)
+            invalidate_document(state)
+            active = cfg["active"]
     unique = list(dict.fromkeys(active))
     if unique != active:
         cfg["active"] = unique
@@ -429,6 +470,22 @@ def purge_inactive_slurries(state, active):
                     break
 
 
+def require_ct_report_implementation(state, job_type=None):
+    """Every direct CT report consumer rebuilds and validates canonical inputs.
+
+    Keep the B1 entry point, replacing its temporary block with B4 admission.
+    In particular, calculations_prepared=True is not a CT validation bypass.
+    """
+    if (state.get("job_type") if job_type is None else job_type) == materials_db.CT_JOB:
+        if state.get("job_type") != materials_db.CT_JOB:
+            invalidate_document(state)
+            raise ValueError("CT report requires the current CMT PLUG WITH CT project.")
+        issues = prepare_calculations(state)
+        if issues:
+            invalidate_document(state)
+            raise ValueError(" | ".join(issues))
+
+
 def refresh_fluids(state):
     """Same phase-IV calculation, fed by its canonical inputs rather than caches.
 
@@ -439,6 +496,13 @@ def refresh_fluids(state):
     '{name}: active fluid volume must be positive ...' surfaced as
     'Review the current calculation inputs before export (...)': the operator
     was told WHAT was wrong but never WHERE to go (audit L8-03)."""
+    reconcile_ct_stage_selection(state)
+    if state.get("job_type") == materials_db.CT_JOB:
+        forbidden = [name for name in state.get("fluids_config", {}).get("active", [])
+                     if name in materials_db.CEMENT_FORMULATION_FLUIDS and name != "Main"]
+        if forbidden:
+            invalidate_document(state)
+            raise ValueError("Phase IV: CMT PLUG WITH CT permits only Main cement slurry; deselect " + ", ".join(forbidden))
     reconcile_fluid_applicability(state)
     cfg = state.get("fluids_config", {})
     active = sorted(cfg.get("active", []), key=materials_db.HYDRAULIC_EXECUTION_ORDER.index)
@@ -488,6 +552,8 @@ def refresh_fluids(state):
             material_name = materials_db.DEFAULT_MATERIAL_NAMES[name]
         elif name == "Pre Flush":
             require_preflush_material_name(material_name)
+        if name in ("Spacer Ahead", "Spacer Behind"):
+            require_spacer_material_name(name, material_name)
         duration = volume / minimum
         cumulative += duration
         result[name] = {
@@ -497,6 +563,9 @@ def refresh_fluids(state):
             "duration_str": format_to_hr_mm(duration), "cumul_time_min": cumulative,
             "cumul_time_str": format_to_hr_mm(cumulative),
         }
+    if state.get("job_type") == materials_db.CT_JOB and old.get("Main") != result.get("Main"):
+        state.pop("cement_note_Main", None)
+        invalidate_document(state)
     state["fluid_data"] = result
     state["total_pump_time_min"] = cumulative
     state["total_pump_time_hhmm"] = format_to_hr_mm(cumulative)
@@ -787,7 +856,25 @@ def prepare_calculations(state):
                 invalidate_document(state)
             state["_well_schematic_source"] = schematic_source
         except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            if state.get("job_type") == materials_db.CT_JOB:
+                state.pop("_well_schematic_source", None)
             issues.append(f"Phase II & III Well schematic: {exc}")
+        if state.get("job_type") == materials_db.CT_JOB:
+            from ct_stages import ct_stage_projection
+            from engineering_tools import compute_phase_status
+            # One placement/depth authority (the B3 schematic admission above)
+            # and one report-only stage authority. Missing history is advisory.
+            projection = ct_stage_projection(state)
+            if projection is not None and projection["tank_name"] not in materials_db.get_available_tanks(materials_db.CT_JOB):
+                issues.append("Phase V CT Main: select a Mixing Tank from the existing job catalog.")
+            status = compute_phase_status(state)
+            for key, label in (("phase2_3", "II & III"), ("phase4", "IV"),
+                               ("phase5", "V"), ("phase7", "VII")):
+                if status[key]["level"] != "ok":
+                    issues.append(f"Phase {label}: {status[key]['message']}")
+            if any(name in state.get("fluids_config", {}).get("active", [])
+                   for name in ("Pre Flush", "Spacer")) and status["phase6"]["level"] != "ok":
+                issues.append(f"Phase VI: {status['phase6']['message']}")
         md, tvd = safe_float(state.get("geo_md"), None), safe_float(state.get("geo_tvd"), None)
         if md is None or tvd is None or not math.isfinite(md) or not math.isfinite(tvd):
             issues.append("Phase II & III: MD and TVD must be valid depths before Word export.")

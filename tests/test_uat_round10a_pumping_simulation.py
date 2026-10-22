@@ -119,7 +119,7 @@ def test_exact_supported_applicability(job, monkeypatch):
     app = adapter()
     def forbidden(*args, **kwargs):
         raise AssertionError("N/A job executed or parsed simulation inputs")
-    if job in ("CMT PLUG", "CMT SQUEEZE"):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         monkeypatch.setattr(app.fcm, "build_three_charts", forbidden)
         result = app.run_pumping_simulation({"job_type": job})
         assert result["applicable"] is False
