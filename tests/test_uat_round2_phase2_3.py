@@ -284,11 +284,16 @@ class Round2Phase23UAT(unittest.TestCase):
 
     def test_missing_gradient_retains_missing_context_and_actual_word(self):
         app = self.configured_app('CSG 9 5/8"')
+        context = self.context(app, prepared=True)
         self.phase(app, 'phase2_3')
         app.number_input(key='_w_geothermal_bhst').set_value(None).run()
         self.assertIsNone(app.session_state['geo_gradient'])
-        # Inspect the presentation boundary independently of the normal required-input gate.
-        context = self.context(app, prepared=True)
+        for prepared in (False, True):
+            with self.subTest(prepared=prepared), self.assertRaisesRegex(ValueError, 'Phase VII'):
+                self.context(app, prepared=prepared)
+        # Isolate this one presentation cell in a valid reviewed control context.
+        # This template-only projection never becomes an admitted/compiled report.
+        context['well_data']['geo_gradient'] = app.session_state['geo_gradient']
         self.assertIsNone(context['well_data']['geo_gradient'])
         template = DocxTemplate(str(audit.ROOT / 'master_template.docx'))
         template.render(context)

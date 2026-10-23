@@ -48,14 +48,54 @@ def context(state):
         return report.build_master_context()
 
 
-def source_context(state):
-    # Pure source/signature checks may inspect a newly changed, unreviewed
-    # condition; actual export tests retain the normal prepare/review gate.
+def source_context(state, reviewed_source):
+    # Only finite geothermal/geometry changes to this explicitly reviewed
+    # synthetic baseline may be re-reviewed on a copy for Word/source checks.
+    from engineering_tools import lab_review_signature
+    from project_state import lab_source_signature, refresh_lab_payloads
+    expected = deepcopy(reviewed_source)
+    assert refresh_lab_payloads(expected) == []
     prepared = deepcopy(state)
     refresh_well_derived(prepared)
+    assert not prepared.get("_well_profile_issues")
+    assert prepared["fluids_config"] == reviewed_source["fluids_config"]
+    assert prepared["cement_params"] == reviewed_source["cement_params"]
+    assert prepared["lab_qc_params"] == reviewed_source["lab_qc_params"]
+    assert prepared["lab_source_signatures"] == reviewed_source["lab_source_signatures"]
+    pd.testing.assert_frame_equal(prepared["lab_grid_dfs"]["Main"], reviewed_source["lab_grid_dfs"]["Main"])
+    for key in ("well_geometry", "geothermal_config", "well_auto_fields"):
+        expected[key] = deepcopy(prepared[key])
+    refresh_well_derived(expected)
+    assert lab_source_signature(prepared, "Main") == lab_source_signature(expected, "Main")
+    qc = prepared["lab_qc_params"]["Main"]
+    qc["reviewed"] = True
+    qc["review_signature"] = lab_review_signature(qc, prepared["lab_grid_dfs"]["Main"])
+    prepared["lab_source_signatures"]["Main"] = lab_source_signature(prepared, "Main")
+    assert refresh_lab_payloads(prepared) == []
     ensure_current_centralizer(prepared)
     with patch.object(report.st, "session_state", prepared):
         return report.build_master_context(calculations_prepared=True)
+
+
+@pytest.mark.parametrize("change", ["qc", "grid", "fluid", "cement", "source", "temperature"])
+def test_source_context_refuses_unreviewed_or_non_geothermal_changes(project, change):
+    state = deepcopy(project)
+    if change == "qc":
+        state["lab_qc_params"]["Main"]["rheology"]["surface_down"]["readings"]["300"] = "169"
+    elif change == "grid":
+        state["lab_grid_dfs"]["Main"].loc[0, "Mass"] = "999.0"
+    elif change == "fluid":
+        state["fluids_config"]["params"]["Main"]["volume"] += 1
+    elif change == "cement":
+        state["cement_params"]["Main"]["dead_vol"] += 1
+    elif change == "source":
+        state["lab_source_signatures"]["Main"] = "stale"
+    else:
+        state["geothermal_config"]["value"] = None
+    before = json.dumps({k:audit.namespace["serialize_item"](v) for k,v in state.items()}, sort_keys=True)
+    with pytest.raises(AssertionError):
+        source_context(state, project)
+    assert json.dumps({k:audit.namespace["serialize_item"](v) for k,v in state.items()}, sort_keys=True) == before
 
 
 def actual_word(state):
@@ -79,13 +119,18 @@ def compiled(ctx):
 
 @pytest.mark.parametrize("source", ["BHST", "Temperature Gradient"])
 def test_incomplete_temperature_context_preserves_missing_projections(project, source):
+    ctx = context(project)
     state = deepcopy(project)
     state["geothermal_config"].update(source=source, value=None)
     refresh_well_derived(state)
     assert state["_well_profile_issues"]
     with patch.object(output, "render_chart_png", side_effect=AssertionError("Incomplete chart rendered")) as renderer:
-        with patch.object(report.st, "session_state", state):
-            ctx = report.build_master_context(calculations_prepared=True)
+        for prepared in (False, True):
+            with patch.object(report.st, "session_state", deepcopy(state)), pytest.raises(ValueError, match="Phase VII"):
+                report.build_master_context(calculations_prepared=prepared)
+        # Pure presentation projection; the invalid state cannot enter a report.
+        ctx["well_data"] = deepcopy(state["well_data"])
+        ctx["well_profile_report"] = output.prepared_well_report(state)
         assert ctx["well_data"]["geo_gradient"] is None
         assert ctx["well_data"]["bhst"] is None
         assert ctx["well_profile_report"] is None
@@ -111,8 +156,12 @@ def test_incomplete_geometry_context_does_not_fabricate_report_data(project, geo
         assert state["well_data"]["geo_tvd"] is None
         assert state["well_data"]["geo_gradient"] is None
         assert state["well_data"]["bhst"] == state["geothermal_config"]["value"]
-        with patch.object(report.st, "session_state", state), pytest.raises(ValueError, match="Phase IX"):
-            report.build_master_context(calculations_prepared=True)
+        for prepared in (False, True):
+            with patch.object(report.st, "session_state", deepcopy(state)), pytest.raises(ValueError, match="Phase VII"):
+                report.build_master_context(calculations_prepared=prepared)
+        from centralizer_report import prepare_report
+        with pytest.raises(ValueError, match="Phase IX"):
+            prepare_report(state)
         renderer.assert_not_called()
 
 
@@ -274,9 +323,9 @@ def test_chart_uses_prepared_source_and_no_png_persists(project, kind, source):
     state = deepcopy(project) if kind == "Vertical" else directional(project)
     if source == "Temperature Gradient":
         state["geothermal_config"].update(source=source, value=1.3)
-    ctx = source_context(state)
-    payload = ctx["well_profile_report"]
     before = json.dumps({k:audit.namespace["serialize_item"](v) for k,v in state.items()}, sort_keys=True)
+    ctx = source_context(state, project)
+    payload = ctx["well_profile_report"]
     spec = output.build_chart_spec(payload)
     assert spec["temp_data"][0][0] == state["geothermal_config"]["surface_temp"]
     assert spec["temp_data"][0][-1] == payload["bhst"]
@@ -346,7 +395,7 @@ def test_each_canonical_geothermal_source_stales_document(project, change):
     before = report.document_signature(context(project), report.TEMPLATE_PATH)
     state = deepcopy(project)
     state["geothermal_config"].update(change)
-    assert report.document_signature(source_context(state), report.TEMPLATE_PATH) != before
+    assert report.document_signature(source_context(state, project), report.TEMPLATE_PATH) != before
     if "value" in change:
         with pytest.raises(ValueError, match="review Phase VII"):
             context(state)

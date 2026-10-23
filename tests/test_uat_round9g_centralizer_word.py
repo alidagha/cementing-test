@@ -229,6 +229,10 @@ def test_all_four_modes_actual_word_without_execution_during_export(word_state,p
     if physics=='dynamic':
         from test_uat_round9e_dynamic_solver import readings
         state['lab_qc_params']['Main']['rheology']['bhct_down'].update(selected=True,readings=readings())
+        qc=state['lab_qc_params']['Main']
+        engineering_tools.validate_lab_rheology(qc,'Main')
+        qc['reviewed']=True
+        qc['review_signature']=engineering_tools.lab_review_signature(qc,state['lab_grid_dfs']['Main'])
     execute_centralizer(state,physics=physics,mode=mode,custom=physics=='dynamic')
     with patch.object(adapter,'solve_static',side_effect=AssertionError('export executed Static')), \
          patch.object(adapter,'solve_dynamic',side_effect=AssertionError('export executed Dynamic')), \

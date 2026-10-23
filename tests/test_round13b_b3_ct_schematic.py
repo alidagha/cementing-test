@@ -326,7 +326,8 @@ def test_section_ii_projection_changes_only_existing_anchor(ordinary_render_cont
 def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
     s=state('partial')
     issues=ps.prepare_calculations(s)
-    assert issues==['Phase VII: Lab QC or formulation rows incomplete for: Main.']
+    assert issues==['Main: open Phase VII to enter and review the internal Lab/Rheology data.',
+                    'Phase VII: Lab QC or formulation rows incomplete for: Main.']
     assert s['_well_schematic_source']==schematic.source_signature(s)
     assert eng.compute_phase_status(s)['phase2_3']['level']=='ok'
     assert not any(isinstance(v,bytes) for k,v in s.items() if k.startswith('_well_schematic'))
@@ -334,7 +335,8 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
 
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
     for name in ['well_schematic_engine.py','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
-        assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'184cc888552f54df6a1d02fd0bdca16b77e358a4:{name}'])
+        reference='fdcfeb14a6246e59261c89775635ca9574674d42' if name=='phase_5_cement.py' else '184cc888552f54df6a1d02fd0bdca16b77e358a4'
+        assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'{reference}:{name}'])
     from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
     test_template_changes_only_approved_sample_text_payloads()
 

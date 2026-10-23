@@ -195,11 +195,20 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
     import ast,subprocess
     before=ast.parse(subprocess.check_output(['git','show','f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6:test_regression_guardrails.py']))
     after=ast.parse(Path('test_regression_guardrails.py').read_text())
+    approved=ast.parse(subprocess.check_output(['git','show','e4db7795135fc3039fe9ce281586ec80f42b75c5:test_regression_guardrails.py']))
+    fixture_names={'test_master_context_contains_placement_keys','test_blank_volume_basis_exports_as_na',
+                   'test_preflush_payload_recomputed_at_export_time','test_spacer_densities_sort_numerically'}
+    fixture_nodes={node.name:node for node in approved.body
+                   if isinstance(node,ast.FunctionDef) and node.name in fixture_names}
+    assert set(fixture_nodes)==fixture_names
+    before.body=[fixture_nodes.get(node.name,node) if isinstance(node,ast.FunctionDef) else node
+                 for node in before.body]
     for tree in (before,after):
         tree.body=[node for node in tree.body if not(isinstance(node,ast.FunctionDef) and node.name=='test_render_master_document_smoke')]
     assert ast.dump(before)==ast.dump(after)
     for name in ('well_schematic_engine.py','cement_charts_engine.py','centralizer_optimizer_engine.py','standalone_spacer.py','ct_stages.py','placement.py','phase_5_cement.py','phase_7_lab.py','rheology.py','project_io.py','requirements.txt'):
-        assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6:{name}'])
+        reference='fdcfeb14a6246e59261c89775635ca9574674d42' if name=='phase_5_cement.py' else 'f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
+        assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'{reference}:{name}'])
     from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
     test_template_changes_only_approved_sample_text_payloads()
 

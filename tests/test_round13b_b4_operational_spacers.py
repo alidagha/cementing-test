@@ -57,6 +57,34 @@ def existing_guard_context():
     import test_regression_guardrails as guard
     with patch.object(report.st,'session_state',{}):
         state=guard._seed_session()
+        # This valid-report fixture supplies current measured Lead/Tail labs.
+        from phase_7_lab import build_lab_df_from_phase5
+        from centralizer_fixtures import ensure_current_centralizer
+        state['bhct']=state['well_data']['bhct']=150.
+        if not eng.lab_temperature_valid(state['well_data']['bhct'],state['well_data']['bhst']):
+            raise ValueError('Synthetic lab fixture requires valid BHCT/BHST')
+        for slurry in ('Lead','Tail'):
+            params=state['cement_params'][slurry]
+            grid=build_lab_df_from_phase5(
+                state.get('cement_additives_dfs',{}).get(slurry,pd.DataFrame()),
+                base_cement=params['base_cement'],
+                slurry_weight_pcf=state['fluid_data'][slurry]['density'],
+                cmt_sg=eng.resolve_cement_sg(params),recalculate_mass=True)
+            qc={'rheology':audit.valid_export_rheology_fixture(),
+                **audit.thickening_fixture(),**audit.compressive_fixture(),
+                'thickening_time':'03:30',
+                'api_fl':0.,'free_water':0.,'free_water_45':0.,'surface_hardened_hours':8.}
+            eng.validate_lab_masses(grid)
+            eng.validate_lab_rheology(qc,slurry)
+            eng.validate_lab_collection_results(qc)
+            eng.validate_thickening_test(qc)
+            eng.validate_compressive_test(qc)
+            state.setdefault('lab_grid_dfs',{})[slurry]=grid
+            state.setdefault('lab_qc_params',{})[slurry]=qc
+            state.setdefault('lab_source_signatures',{})[slurry]=ps.lab_source_signature(state,slurry)
+            qc['reviewed']=True
+            qc['review_signature']=eng.lab_review_signature(qc,grid)
+        ensure_current_centralizer(state)
         ctx=report.build_master_context(calculations_prepared=True)
         return deepcopy(state),ctx
 
