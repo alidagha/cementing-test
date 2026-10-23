@@ -1,4 +1,5 @@
 """Retained Phase IV drafts must participate in project replacement safety."""
+import ast
 from copy import deepcopy
 import hashlib
 from io import BytesIO
@@ -9,6 +10,8 @@ import pytest
 
 import test_audit_regressions as audit
 from test_uat_round10c_integration import save_project
+from placement import EXCESS_FIELDS
+from project_state import WELL_DATA_DEFAULTS
 
 
 CASE = audit.AuditRegressions()
@@ -135,3 +138,98 @@ def test_loaded_draft_baseline_new_edit_and_explicit_same_file_reload():
         CASE.healthy(app)
         assert app.session_state["fluids_config"]["params"][fluid] == expected
         assert not dirty(app)
+
+
+@pytest.fixture(params=["historical", "current"])
+def phase_one_checkpoint(request):
+    if request.param == "historical":
+        return b'{"well_name":"UI02 Loaded Checkpoint","client":"Synthetic Client"}'
+    source = CASE.app()
+    source.text_input(key="_w_well_name").set_value("UI02 Loaded Checkpoint").run()
+    source.text_input(key="_w_client").set_value("Synthetic Client").run()
+    return save_project(source)
+
+
+def test_loaded_checkpoint_default_navigation_stays_clean(phase_one_checkpoint):
+    app = CASE.app()
+    with upload(app, phase_one_checkpoint):
+        app.run()
+        CASE.healthy(app)
+        assert not dirty(app)
+        original = json.loads(save_project(app))
+        receipt = app.session_state["_saved_sig"]
+        for phase in ("phase2_3", "phase1", "phase4", "phase5", "phase6", "phase7", "phase1"):
+            CASE.phase(app, phase)
+            current = json.loads(save_project(app))
+            # No source that existed at load may change during empty navigation.
+            assert {key: current[key] for key in original} == original
+            assert app.session_state["_saved_sig"] == receipt
+            assert not dirty(app), phase
+        assert app.session_state["hardware_table"].empty
+        assert app.session_state["well_geometry"]["type"] is None
+        assert app.session_state["geothermal_config"]["source"] is None
+        assert app.session_state["fluids_config"]["params"]["Spacer Ahead"] == {
+            "volume": 0., "density": "", "pump_rate": ""}
+    with upload(app, b'{"well_name":"Next clean checkpoint"}'):
+        app.run()
+        CASE.healthy(app)
+        assert not any(b.key == "_confirm_upload_replacement" for b in app.button)
+        assert app.session_state["well_name"] == "Next clean checkpoint"
+
+
+@pytest.mark.parametrize("edit", ["mud_density", "mud_type", "explicit_zero_excess"])
+def test_first_well_visit_edit_then_navigation_stays_dirty(phase_one_checkpoint, edit):
+    app = CASE.app()
+    with upload(app, phase_one_checkpoint):
+        app.run()
+        CASE.healthy(app)
+        receipt = app.session_state["_saved_sig"]
+        CASE.phase(app, "phase2_3")
+        if edit == "mud_density":
+            app.text_input(key="_w_mud_density").set_value("91.25")
+        elif edit == "mud_type":
+            app.selectbox(key="_w_mud_type").set_value("OBM")
+        else:
+            next(w for w in app.number_input if "Excess" in w.label and "CSG-OH" in w.label).set_value(0.)
+        # Deliver the actual pending widget event and navigation together.
+        CASE.phase(app, "phase1")
+        assert dirty(app)
+        assert app.session_state["_saved_sig"] == receipt
+        saved = save_project(app)
+        decoded = audit.decode_project(saved, audit.namespace["deserialize_item"])
+        if edit == "explicit_zero_excess":
+            assert decoded["placement_config"]["excess_csg_oh_pct"] == 0.
+        else:
+            assert decoded[edit] == ("91.25" if edit == "mud_density" else "OBM")
+        assert decoded["well_name"] == "UI02 Loaded Checkpoint"
+    with upload(app, b'{"well_name":"Must require confirmation"}'):
+        app.run()
+        CASE.healthy(app)
+        assert any(b.key == "_confirm_upload_replacement" for b in app.button)
+        assert save_project(app) == saved
+
+
+@pytest.mark.parametrize("change", [
+    {"mud_density": "91.25"}, {"well_data": {"mud_density": "91.25"}},
+    {"placement_config": {"excess_csg_oh_pct": 0.}},
+    {"well_geometry": {"td_m": 3527.}},
+    {"hardware_table": {"__type__": "DataFrame", "columns": ["MD (m)"], "data": [{"MD (m)": "3527"}]}},
+    {"fluids_config": {"params": {"Spacer Behind": VALUES}}},
+    {"new_project_field": None}, {"well_data": {"new_well_field": None}},
+    {"well_auto_fields": {"bhsp": False}}, {"preflush_calc": {}},
+    {"total_pump_time_min": 0.5}, {"geothermal_config": {"surface_temp": 0.}},
+])
+def test_comparison_never_ignores_nondefault_or_unrecognized_sources(change):
+    # Execute the production comparison without running its top-level UI.
+    namespace = {**audit.namespace, "json": json, "hashlib": hashlib,
+                 "materials_db": audit.materials_db, "WELL_DATA_DEFAULTS": WELL_DATA_DEFAULTS,
+                 "EXCESS_FIELDS": EXCESS_FIELDS}
+    function = next(node for node in audit.tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "_project_comparison_signature")
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(audit.ROOT / "main.py"), "exec"), namespace)
+    signature = namespace["_project_comparison_signature"]
+    baseline = {"job_type": 'CSG 20"', "well_name": "Untouched checkpoint"}
+    current = {**baseline, **deepcopy(change)}
+    before = deepcopy(current)
+    assert signature(json.dumps(current)) != signature(json.dumps(baseline))
+    assert current == before
