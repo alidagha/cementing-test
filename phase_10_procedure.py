@@ -1247,6 +1247,11 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
+    if calculations_prepared:
+        from project_state import refresh_lab_payloads
+        issues = refresh_lab_payloads(st.session_state)
+        if issues:
+            raise ValueError(" | ".join(issues))
     standalone_spacer = None
     if "Spacer" in active_fluids:
         from standalone_spacer import formulation_from_state, field_rows, lab_sample, FIELD_COLUMNS

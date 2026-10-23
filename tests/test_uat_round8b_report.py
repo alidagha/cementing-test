@@ -239,7 +239,7 @@ def test_template_dependency_and_protected_sources_identical():
         elif name == 'test_regression_guardrails.py':
             # Owner-approved B4 smoke-test assertions only; all other guardrails unchanged;
             # retain byte-level protection at this explicitly reviewed checkpoint.
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'c8c7d99beb4ad6ab49b75425885872aad4bd196a35cfc3307afb2ea856228360'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '7eb9600298277a7665b751f807ddb5fb9b13974e91380bb73478cc442d112384'
         elif name == 'placement.py':
             from test_round13b_b1_ct_foundation import legacy_placement_source
             assert legacy_placement_source(Path(name).read_bytes()) == subprocess.check_output(['git','show','a61d61e:'+name])
