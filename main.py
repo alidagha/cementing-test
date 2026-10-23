@@ -335,6 +335,13 @@ _has_meaningful_data = (
     or any(value for key, value in st.session_state.get("placement_config", {}).items() if key != "job_type")
     or any(st.session_state.get("placement_config", {}).get(field) is not None
            for field, _, _ in EXCESS_FIELDS)
+    # Phase IV initializes blank records for every fluid. Only actual inputs
+    # count, including retained drafts absent from the active fluid_data view.
+    or any(params.get("volume", 0.0) != 0.0
+           or str(params.get("density", "")).strip()
+           or str(params.get("pump_rate", "")).strip()
+           or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
+           for name, params in st.session_state.get("fluids_config", {}).get("params", {}).items())
     or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
            or str(params.get("pump_rate", "")).strip() != ""
            or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
