@@ -1248,6 +1248,20 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
     if calculations_prepared:
+        if "Pre Flush" in active_fluids:
+            from engineering_tools import require_preflush_material_name
+            record = fluid_data.get("Pre Flush", {})
+            source = st.session_state.get("fluids_config", {}).get("params", {}).get("Pre Flush", record)
+            default_name = materials_db.DEFAULT_MATERIAL_NAMES["Pre Flush"]
+            try:
+                name = require_preflush_material_name(
+                    source.get("material_name", default_name) if isinstance(source, dict) else None)
+                if not isinstance(record, dict) or name != record.get("material_name", default_name):
+                    raise ValueError("Phase IV: Pre Flush material identity changed; "
+                                     "refresh calculations before Word export.")
+            except ValueError:
+                invalidate_document(st.session_state)
+                raise
         from project_state import refresh_lab_payloads
         issues = refresh_lab_payloads(st.session_state)
         if issues:
