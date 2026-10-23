@@ -720,10 +720,9 @@ def refresh_lab_payloads(state):
         qc = state.get("lab_qc_params", {}).get(slurry)
         has_old_data = grid is not None or f"lab_payload_{slurry}" in state
         if not has_old_data:
-            if not full_lab:
-                issues.append(f"{slurry}: open Phase VII to enter and review the internal Lab/Rheology data.")
+            issues.append(f"{slurry}: open Phase VII to enter and review the internal Lab/Rheology data.")
             continue
-        if (not isinstance(grid, pd.DataFrame) or not isinstance(qc, dict)
+        if (not isinstance(grid, pd.DataFrame) or (full_lab and grid.empty) or not isinstance(qc, dict)
                 or state.get("lab_source_signatures", {}).get(slurry) != lab_source_signature(state, slurry)):
             state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: review Phase VII; the lab data has not been checked against the current formulation and well conditions.")
@@ -770,13 +769,14 @@ def refresh_lab_payloads(state):
                 continue
             api_fl = qc.get("api_fl", 0.0)
             if isinstance(api_fl, bool) or not isinstance(api_fl, (int, float)) or not math.isfinite(api_fl):
+                state.pop(f"lab_payload_{slurry}", None)
                 issues.append(f"{slurry}: Phase VII api_fl must be a finite numeric value; review the lab QC input.")
                 continue
             extra = {"api_fl": api_fl * 2.0, "api_fl_collected": api_fl,
                      "free_water": qc.get("free_water", "-"), "compressive": compressive,
                      "free_water_45": qc["free_water_45"], "surface_hardened_hours": qc["surface_hardened_hours"],
                      **thickening}
-        elif (not qc.get("reviewed", False)
+        if (not qc.get("reviewed", False)
               or qc.get("review_signature") != lab_review_signature(qc, grid)):
             state.pop(f"lab_payload_{slurry}", None)
             issues.append(f"{slurry}: Phase VII internal lab results must be confirmed before Word export.")
@@ -795,6 +795,8 @@ def refresh_lab_payloads(state):
             "mix_water": p.get("mix_water_gal_sk", ""), "mix_fluid": p.get("mix_fluid_gal_sk", ""),
             "solution_density": materials_db.SOLUTION_DENSITY_PCF, **extra,
         }
+    if issues:
+        invalidate_document(state)
     return issues
 
 

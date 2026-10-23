@@ -86,9 +86,12 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
 
 def _commit_preflush_name(widget_key: str, selector: bool = False) -> None:
     value = st.session_state[widget_key]
-    st.session_state["fluids_config"]["params"]["Pre Flush"]["material_name"] = (
-        "" if selector and value == "Custom" else value
-    )
+    name = "" if selector and value == "Custom" else value
+    config = st.session_state["fluids_config"]
+    params = config["params"]["Pre Flush"]
+    if params.get("material_name") != name and "Pre Flush" in config.get("active", []):
+        invalidate_document(st.session_state)
+    params["material_name"] = name
 
 
 def render_preflush_material_name() -> None:

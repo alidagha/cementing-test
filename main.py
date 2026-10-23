@@ -240,8 +240,59 @@ except (ValueError, TypeError) as exc:
 # The reminder now only fires when something has genuinely changed since
 # the last download, rather than always being present regardless of state —
 # and confirms the opposite ("saved at HH:MM") once it's actually current.
+def _project_comparison_signature(project_json):
+    """Compare checkpoints without exact, known lazy initialization defaults.
+
+    This projection never changes saved JSON or canonical state. Unknown keys
+    and nondefault values remain significant, including explicit zero excess.
+    """
+    from phase_2_3_well_data import HARDWARE_COLUMNS
+    from well_profile import geometry_defaults, geothermal_defaults
+
+    project = json.loads(project_json)
+    effective = {key: None for key in ("effective_mud_density", "effective_pv", "effective_yp")}
+    defaults = {
+        **WELL_DATA_DEFAULTS, **effective,
+        "well_data": {**WELL_DATA_DEFAULTS, **effective},
+        "well_auto_fields": {"bhsp": True},
+        "well_geometry": geometry_defaults(), "geothermal_config": geothermal_defaults(),
+        "hardware_table": pd.DataFrame(columns=HARDWARE_COLUMNS),
+        "placement_config": {"job_type": project.get("job_type"), "target_row": "", "host_row": "",
+                             **{field: None for field, _, _ in EXCESS_FIELDS}},
+        "fluids_config": {"active": ["Displacement Fluid"], "params": {
+            name: {"volume": 0., "density": "", "pump_rate": "",
+                   "material_name": materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")}
+            for name in materials_db.FLUID_TYPES}},
+        "active_fluids": {name: name == "Displacement Fluid" for name in materials_db.FLUID_TYPES},
+        "fluid_data": {"Displacement Fluid": {
+            "name": "Displacement Fluid", "material_name": materials_db.DEFAULT_MATERIAL_NAMES["Displacement Fluid"],
+            "volume": 0., "density": "", "effective_density": 0., "pump_rate": "", "min_rate": 0.,
+            "duration_min": 0., "duration_str": "INVALID RATE", "cumul_time_min": 0.,
+            "cumul_time_str": "INVALID RATE"}},
+        "total_pump_time_min": 0., "total_pump_time_hhmm": "INVALID RATE",
+        "inactive_slurry_drafts": {}, "preflush_calc": None,
+    }
+
+    def without_defaults(record, expected):
+        result = {}
+        for key, value in record.items():
+            if key in expected:
+                if isinstance(value, dict) and isinstance(expected[key], dict):
+                    value = without_defaults(value, expected[key])
+                    if not value:
+                        continue
+                elif value == expected[key]:
+                    continue
+            result[key] = value
+        return result
+
+    comparison = without_defaults(project, serialize_item(defaults))
+    return hashlib.md5(json.dumps(comparison, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
 def _mark_project_saved(project_json):
     st.session_state["_saved_sig"] = hashlib.md5(project_json.encode()).hexdigest()
+    st.session_state["_saved_comparison_sig"] = _project_comparison_signature(project_json)
     st.session_state["_saved_at"] = datetime.now().strftime("%H:%M")
     st.session_state.pop("_saved_from_upload", None)
 
@@ -250,6 +301,7 @@ def _mark_project_saved(project_json):
 # defaults do not immediately show a false unsaved-changes warning.
 if st.session_state.pop("_baseline_loaded_project", False) and current_project_json:
     st.session_state["_saved_sig"] = hashlib.md5(current_project_json.encode()).hexdigest()
+    st.session_state["_saved_comparison_sig"] = _project_comparison_signature(current_project_json)
     st.session_state["_saved_from_upload"] = True
 
 # JSON is a work-in-progress checkpoint; keep incomplete additive rows, but
@@ -335,6 +387,13 @@ _has_meaningful_data = (
     or any(value for key, value in st.session_state.get("placement_config", {}).items() if key != "job_type")
     or any(st.session_state.get("placement_config", {}).get(field) is not None
            for field, _, _ in EXCESS_FIELDS)
+    # Phase IV initializes blank records for every fluid. Only actual inputs
+    # count, including retained drafts absent from the active fluid_data view.
+    or any(params.get("volume", 0.0) != 0.0
+           or str(params.get("density", "")).strip()
+           or str(params.get("pump_rate", "")).strip()
+           or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
+           for name, params in st.session_state.get("fluids_config", {}).get("params", {}).items())
     or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
            or str(params.get("pump_rate", "")).strip() != ""
            or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
@@ -347,7 +406,12 @@ _has_meaningful_data = (
     or bool(st.session_state.get("centralizer_config"))
 )
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
-if _has_meaningful_data and st.session_state.get("_saved_sig") != _current_sig:
+_has_unsaved_changes = _has_meaningful_data and (
+    st.session_state["_saved_comparison_sig"] != _project_comparison_signature(current_project_json)
+    if current_project_json and "_saved_comparison_sig" in st.session_state
+    else st.session_state.get("_saved_sig") != _current_sig
+)
+if _has_unsaved_changes:
     _project_manager_slot.warning("⚠️ You have unsaved changes.")
     _project_manager_slot.caption("Prepare a download above, then save the file to keep them safe.")
 elif st.session_state.get("_saved_from_upload"):
@@ -385,7 +449,7 @@ if uploaded_project is not None:
         "Reload uploaded project and discard current changes", key="_reload_uploaded_project",
         help="Replace current edits with the data in the attached JSON file."
     )
-    pending_changes = (_has_meaningful_data and st.session_state.get("_saved_sig") != _current_sig)
+    pending_changes = _has_unsaved_changes
     if not already_loaded or reload_requested:
         try:
             # Parse and validate the entire project before touching the open well.

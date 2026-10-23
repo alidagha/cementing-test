@@ -120,6 +120,22 @@ def _ct_main_note(state, slurry, note):
     return note
 
 
+def _commit_calculation_mode(slurry: str, widget_key: str) -> None:
+    """Commit the toggle and its draft reconciliation before phase navigation."""
+    entry = st.session_state.get("cement_params", {}).get(slurry)
+    if isinstance(entry, dict):
+        manual_override = st.session_state[widget_key]
+        was_auto = entry.get("auto_calc", True)
+        entry["auto_calc"] = not manual_override
+        if (was_auto and manual_override
+                and entry.get("manual_job_type") == st.session_state.get("job_type", 'CSG 20"')
+                and "manual_yield" in entry and "manual_mix_water" in entry):
+            entry["yield"] = entry["manual_yield"]
+            entry["mix_water"] = entry["manual_mix_water"]
+        if was_auto != entry["auto_calc"]:
+            invalidate_document(st.session_state)
+
+
 def _commit_manual_override(slurry: str, field: str, widget_key: str) -> None:
     """BUG-01 companion for the manual Yield/Mix Water inputs: commits both the
     live value and its manual_* mirror so the auto→manual reconciliation on the
@@ -856,19 +872,16 @@ def render():
             with col_m1:
                 st.markdown("#### Slurry Yield & Hydraulic Results")
             with col_m2:
-                manual_override = st.checkbox(
+                override_key = f"_{get_slurry_key(slurry, 'override')}_{load_sig}"
+                st.checkbox(
                     "Manual Override (Custom Yield/Water)",
                     value=not p.get("auto_calc", True),
-                    key=f"_{get_slurry_key(slurry, 'override')}_{load_sig}",
+                    key=override_key,
+                    on_change=_commit_calculation_mode,
+                    args=(slurry, override_key),
                     help="Check to manually type custom Yield and Fresh Water (bbl) instead of the CMT Calculator engine."
                 )
-                was_auto = p.get("auto_calc", True)
-                p["auto_calc"] = not manual_override
-                if (was_auto and manual_override
-                        and p.get("manual_job_type") == job_type
-                        and "manual_yield" in p and "manual_mix_water" in p):
-                    p["yield"] = p["manual_yield"]
-                    p["mix_water"] = p["manual_mix_water"]
+                _commit_calculation_mode(slurry, override_key)
 
             # The engineer can switch to manual immediately after an auto
             # calculation produced a negative Yield/Water. Guard this same

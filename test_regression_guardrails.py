@@ -303,6 +303,51 @@ def test_master_context_contains_placement_keys():
     """BUG-04: every slurry payload must carry top/bottom/excess_oh/excess_csg."""
     from phase_10_procedure import build_master_context
     _seed_session()
+    # Current synthetic Lead/Tail measurements for this valid-report fixture.
+    from streamlit import session_state as lab_state
+    lab_state["bhct"] = lab_state["well_data"]["bhct"] = 150.0
+    if not lab_temperature_valid(lab_state["well_data"]["bhct"], lab_state["well_data"]["bhst"]):
+        raise ValueError("Synthetic lab fixture requires valid BHCT/BHST")
+    from phase_7_lab import build_lab_df_from_phase5
+    from project_state import lab_source_signature
+    from engineering_tools import (lab_review_signature, resolve_cement_sg,
+                                   validate_lab_masses, validate_lab_rheology,
+                                   validate_lab_collection_results,
+                                   validate_thickening_test, validate_compressive_test)
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    lab_state["lab_grid_dfs"] = {}
+    lab_state["lab_qc_params"] = {}
+    lab_state["lab_source_signatures"] = {}
+    for slurry in ("Lead", "Tail"):
+        params = lab_state["cement_params"][slurry]
+        grid = build_lab_df_from_phase5(
+            lab_state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame()),
+            base_cement=params["base_cement"],
+            slurry_weight_pcf=lab_state["fluid_data"][slurry]["density"],
+            cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+        qc = {"rheology": {dataset: {
+                  "selected": True,
+                  "readings": dict(zip(("300", "200", "100", "60", "30", "6", "3"),
+                                       ("168", "116", "64", "41", "24", "8", "6"))),
+                  "gel_10_sec": "8", "gel_10_min": "12"}
+                  for dataset in ("surface_down", "bhct_down")},
+              "api_fl": 0.0, "free_water": 0.0, "free_water_45": 0.0,
+              "surface_hardened_hours": 8.0, "thickening_time": "03:30",
+              "thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+              "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00",
+              "compressive": {"crush": {"selected": True, "force_1": 400.0,
+                                       "force_2": 401.0, "force_3": 402.0, "force_4": 403.0}}}
+        validate_lab_masses(grid)
+        validate_lab_rheology(qc, slurry)
+        validate_lab_collection_results(qc)
+        validate_thickening_test(qc)
+        validate_compressive_test(qc)
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, grid)
+        lab_state["lab_grid_dfs"][slurry] = grid
+        lab_state["lab_qc_params"][slurry] = qc
+        lab_state["lab_source_signatures"][slurry] = lab_source_signature(lab_state, slurry)
+    ensure_current_centralizer(lab_state)
     ctx = build_master_context(calculations_prepared=True)
     assert ctx["slurries"], "no slurry payload built"
     for s in ctx["slurries"]:
@@ -336,6 +381,51 @@ def test_blank_volume_basis_exports_as_na():
     """Optional placement percentages remain N/A when neither is supplied."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
+    # Current synthetic Lead/Tail measurements for this valid-report fixture.
+    from streamlit import session_state as lab_state
+    lab_state["bhct"] = lab_state["well_data"]["bhct"] = 150.0
+    if not lab_temperature_valid(lab_state["well_data"]["bhct"], lab_state["well_data"]["bhst"]):
+        raise ValueError("Synthetic lab fixture requires valid BHCT/BHST")
+    from phase_7_lab import build_lab_df_from_phase5
+    from project_state import lab_source_signature
+    from engineering_tools import (lab_review_signature, resolve_cement_sg,
+                                   validate_lab_masses, validate_lab_rheology,
+                                   validate_lab_collection_results,
+                                   validate_thickening_test, validate_compressive_test)
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    lab_state["lab_grid_dfs"] = {}
+    lab_state["lab_qc_params"] = {}
+    lab_state["lab_source_signatures"] = {}
+    for slurry in ("Lead", "Tail"):
+        params = lab_state["cement_params"][slurry]
+        grid = build_lab_df_from_phase5(
+            lab_state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame()),
+            base_cement=params["base_cement"],
+            slurry_weight_pcf=lab_state["fluid_data"][slurry]["density"],
+            cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+        qc = {"rheology": {dataset: {
+                  "selected": True,
+                  "readings": dict(zip(("300", "200", "100", "60", "30", "6", "3"),
+                                       ("168", "116", "64", "41", "24", "8", "6"))),
+                  "gel_10_sec": "8", "gel_10_min": "12"}
+                  for dataset in ("surface_down", "bhct_down")},
+              "api_fl": 0.0, "free_water": 0.0, "free_water_45": 0.0,
+              "surface_hardened_hours": 8.0, "thickening_time": "03:30",
+              "thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+              "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00",
+              "compressive": {"crush": {"selected": True, "force_1": 400.0,
+                                       "force_2": 401.0, "force_3": 402.0, "force_4": 403.0}}}
+        validate_lab_masses(grid)
+        validate_lab_rheology(qc, slurry)
+        validate_lab_collection_results(qc)
+        validate_thickening_test(qc)
+        validate_compressive_test(qc)
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, grid)
+        lab_state["lab_grid_dfs"][slurry] = grid
+        lab_state["lab_qc_params"][slurry] = qc
+        lab_state["lab_source_signatures"][slurry] = lab_source_signature(lab_state, slurry)
+    ensure_current_centralizer(lab_state)
     cfg = dict(state["placement_config"])
     cfg["excess_csg_oh_pct"] = None
     cfg["excess_csg_csg_pct"] = None
@@ -374,6 +464,51 @@ def test_preflush_payload_recomputed_at_export_time():
     """F1 / P0-01: Word payload must be recomputed from preflush_config + fluid_data."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
+    # Current synthetic Lead/Tail measurements for this valid-report fixture.
+    from streamlit import session_state as lab_state
+    lab_state["bhct"] = lab_state["well_data"]["bhct"] = 150.0
+    if not lab_temperature_valid(lab_state["well_data"]["bhct"], lab_state["well_data"]["bhst"]):
+        raise ValueError("Synthetic lab fixture requires valid BHCT/BHST")
+    from phase_7_lab import build_lab_df_from_phase5
+    from project_state import lab_source_signature
+    from engineering_tools import (lab_review_signature, resolve_cement_sg,
+                                   validate_lab_masses, validate_lab_rheology,
+                                   validate_lab_collection_results,
+                                   validate_thickening_test, validate_compressive_test)
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    lab_state["lab_grid_dfs"] = {}
+    lab_state["lab_qc_params"] = {}
+    lab_state["lab_source_signatures"] = {}
+    for slurry in ("Lead", "Tail"):
+        params = lab_state["cement_params"][slurry]
+        grid = build_lab_df_from_phase5(
+            lab_state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame()),
+            base_cement=params["base_cement"],
+            slurry_weight_pcf=lab_state["fluid_data"][slurry]["density"],
+            cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+        qc = {"rheology": {dataset: {
+                  "selected": True,
+                  "readings": dict(zip(("300", "200", "100", "60", "30", "6", "3"),
+                                       ("168", "116", "64", "41", "24", "8", "6"))),
+                  "gel_10_sec": "8", "gel_10_min": "12"}
+                  for dataset in ("surface_down", "bhct_down")},
+              "api_fl": 0.0, "free_water": 0.0, "free_water_45": 0.0,
+              "surface_hardened_hours": 8.0, "thickening_time": "03:30",
+              "thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+              "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00",
+              "compressive": {"crush": {"selected": True, "force_1": 400.0,
+                                       "force_2": 401.0, "force_3": 402.0, "force_4": 403.0}}}
+        validate_lab_masses(grid)
+        validate_lab_rheology(qc, slurry)
+        validate_lab_collection_results(qc)
+        validate_thickening_test(qc)
+        validate_compressive_test(qc)
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, grid)
+        lab_state["lab_grid_dfs"][slurry] = grid
+        lab_state["lab_qc_params"][slurry] = qc
+        lab_state["lab_source_signatures"][slurry] = lab_source_signature(lab_state, slurry)
+    ensure_current_centralizer(lab_state)
     ctx = build_master_context(calculations_prepared=True)
     assert ctx["preflush"]["volume"] == 80.0, ctx["preflush"].get("volume")
     assert any(r["Name"] == "Salt" and r["amount"] == "10080.0 lb"
@@ -437,6 +572,51 @@ def test_spacer_densities_sort_numerically():
     """F4 / P2-01: order spacer densities numerically, handling ranges safely."""
     from phase_10_procedure import build_master_context
     state = _seed_session()
+    # Current synthetic Lead/Tail measurements for this valid-report fixture.
+    from streamlit import session_state as lab_state
+    lab_state["bhct"] = lab_state["well_data"]["bhct"] = 150.0
+    if not lab_temperature_valid(lab_state["well_data"]["bhct"], lab_state["well_data"]["bhst"]):
+        raise ValueError("Synthetic lab fixture requires valid BHCT/BHST")
+    from phase_7_lab import build_lab_df_from_phase5
+    from project_state import lab_source_signature
+    from engineering_tools import (lab_review_signature, resolve_cement_sg,
+                                   validate_lab_masses, validate_lab_rheology,
+                                   validate_lab_collection_results,
+                                   validate_thickening_test, validate_compressive_test)
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    lab_state["lab_grid_dfs"] = {}
+    lab_state["lab_qc_params"] = {}
+    lab_state["lab_source_signatures"] = {}
+    for slurry in ("Lead", "Tail"):
+        params = lab_state["cement_params"][slurry]
+        grid = build_lab_df_from_phase5(
+            lab_state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame()),
+            base_cement=params["base_cement"],
+            slurry_weight_pcf=lab_state["fluid_data"][slurry]["density"],
+            cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+        qc = {"rheology": {dataset: {
+                  "selected": True,
+                  "readings": dict(zip(("300", "200", "100", "60", "30", "6", "3"),
+                                       ("168", "116", "64", "41", "24", "8", "6"))),
+                  "gel_10_sec": "8", "gel_10_min": "12"}
+                  for dataset in ("surface_down", "bhct_down")},
+              "api_fl": 0.0, "free_water": 0.0, "free_water_45": 0.0,
+              "surface_hardened_hours": 8.0, "thickening_time": "03:30",
+              "thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+              "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00",
+              "compressive": {"crush": {"selected": True, "force_1": 400.0,
+                                       "force_2": 401.0, "force_3": 402.0, "force_4": 403.0}}}
+        validate_lab_masses(grid)
+        validate_lab_rheology(qc, slurry)
+        validate_lab_collection_results(qc)
+        validate_thickening_test(qc)
+        validate_compressive_test(qc)
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, grid)
+        lab_state["lab_grid_dfs"][slurry] = grid
+        lab_state["lab_qc_params"][slurry] = qc
+        lab_state["lab_source_signatures"][slurry] = lab_source_signature(lab_state, slurry)
+    ensure_current_centralizer(lab_state)
     state["fluids_config"]["active"] = ["Pre Flush", "Spacer Behind", "Spacer Ahead",
                                         "Lead", "Tail", "Displacement Fluid"]
     state["fluid_data"]["Spacer Behind"]["density"] = "100.0"
@@ -637,6 +817,51 @@ def test_render_master_document_smoke():
     from phase_10_procedure import build_master_context, document_signature
     from main import serialize_item, deserialize_item
     state = _seed_session()
+    # Current synthetic Lead/Tail measurements for this valid-report fixture.
+    from streamlit import session_state as lab_state
+    lab_state["bhct"] = lab_state["well_data"]["bhct"] = 150.0
+    if not lab_temperature_valid(lab_state["well_data"]["bhct"], lab_state["well_data"]["bhst"]):
+        raise ValueError("Synthetic lab fixture requires valid BHCT/BHST")
+    from phase_7_lab import build_lab_df_from_phase5
+    from project_state import lab_source_signature
+    from engineering_tools import (lab_review_signature, resolve_cement_sg,
+                                   validate_lab_masses, validate_lab_rheology,
+                                   validate_lab_collection_results,
+                                   validate_thickening_test, validate_compressive_test)
+    from tests.centralizer_fixtures import ensure_current_centralizer
+    lab_state["lab_grid_dfs"] = {}
+    lab_state["lab_qc_params"] = {}
+    lab_state["lab_source_signatures"] = {}
+    for slurry in ("Lead", "Tail"):
+        params = lab_state["cement_params"][slurry]
+        grid = build_lab_df_from_phase5(
+            lab_state.get("cement_additives_dfs", {}).get(slurry, pd.DataFrame()),
+            base_cement=params["base_cement"],
+            slurry_weight_pcf=lab_state["fluid_data"][slurry]["density"],
+            cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+        qc = {"rheology": {dataset: {
+                  "selected": True,
+                  "readings": dict(zip(("300", "200", "100", "60", "30", "6", "3"),
+                                       ("168", "116", "64", "41", "24", "8", "6"))),
+                  "gel_10_sec": "8", "gel_10_min": "12"}
+                  for dataset in ("surface_down", "bhct_down")},
+              "api_fl": 0.0, "free_water": 0.0, "free_water_45": 0.0,
+              "surface_hardened_hours": 8.0, "thickening_time": "03:30",
+              "thickening_test_start": "08:00", "thickening_enter_time": "00:00",
+              "thickening_cell": 1.0, "thickening_30_bc": "01:00", "thickening_50_bc": "02:00",
+              "compressive": {"crush": {"selected": True, "force_1": 400.0,
+                                       "force_2": 401.0, "force_3": 402.0, "force_4": 403.0}}}
+        validate_lab_masses(grid)
+        validate_lab_rheology(qc, slurry)
+        validate_lab_collection_results(qc)
+        validate_thickening_test(qc)
+        validate_compressive_test(qc)
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, grid)
+        lab_state["lab_grid_dfs"][slurry] = grid
+        lab_state["lab_qc_params"][slurry] = qc
+        lab_state["lab_source_signatures"][slurry] = lab_source_signature(lab_state, slurry)
+    ensure_current_centralizer(lab_state)
     draft = state["spacer_dfs"]["Spacer Behind"].copy(deep=True)
     ctx = build_master_context(calculations_prepared=True)
     assert ctx.get("has_spacer") is False, \
