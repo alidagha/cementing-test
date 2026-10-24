@@ -209,7 +209,6 @@ def clean_number(val) -> float:
         s = s.replace(",", "")
     else:
         s = s.replace(",", ".")
-    s = s.replace("/", ".")
     try:
         result = float(s)
         if not math.isfinite(result):
@@ -800,7 +799,7 @@ def calculate_slurry_from_components(
     if not math.isfinite(denominator) or abs(denominator) < 1e-6:
         raise ValueError("Slurry mass balance is undefined near mix-water density; review slurry density and formulation")
     water_vol_per_sack = numerator / denominator
-    if not math.isfinite(water_vol_per_sack):
+    if not math.isfinite(water_vol_per_sack) or water_vol_per_sack < 0:
         raise ValueError("Slurry mass balance produced invalid mix water; review slurry density and formulation")
     if water_vol_per_sack > 20.0:
         raise ValueError("Slurry mass balance requires more than 20 ft3/sk of mix water; review slurry density and formulation")
@@ -808,7 +807,7 @@ def calculate_slurry_from_components(
     salt_mass = water_mass * salt_pct / 100.0
     salt_volume = salt_mass * salt_av_gal_lb / GAL_PER_CUFT
     yield_ft3_per_sk = cement_volume + va_additives + water_vol_per_sack + salt_volume
-    if not math.isfinite(yield_ft3_per_sk):
+    if not math.isfinite(yield_ft3_per_sk) or yield_ft3_per_sk <= 0:
         raise ValueError("Slurry mass balance produced an invalid yield; review slurry density and formulation")
     field_sacks = slurry_volume_bbl * BBL_TO_CUFT / yield_ft3_per_sk if yield_ft3_per_sk > 0 else 0.0
     field_water_bbl = water_vol_per_sack * field_sacks / BBL_TO_CUFT

@@ -248,6 +248,19 @@ def _render_well_profile():
         st.warning(issue)
 
 
+def hardware_number(raw):
+    """Keep blank defaults separate from malformed, repairable numeric cells."""
+    if raw is None or (pd.api.types.is_scalar(raw) and pd.isna(raw)) or str(raw).strip() in ("", "nan", "None"):
+        return 0.0
+    if isinstance(raw, bool):
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def render():
     st.header("Phase II & III: Well Data")
     st.markdown("Configure tubular hardware, drilling fluid properties, and geothermal temperature profile.")
@@ -302,12 +315,16 @@ def render():
     normalize_hardware_text_columns(st.session_state["hardware_table"])
     normalize_hardware_text_columns(st.session_state.get("hardware_editor_draft"))
 
-    # Ensure float typing for numeric columns
-    for col in ([] if st.session_state.get("job_type") == materials_db.CT_JOB else ["ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)"]):
-        numeric = pd.to_numeric(st.session_state["hardware_table"][col], errors="coerce")
-        st.session_state["hardware_table"][col] = numeric.where(
-            st.session_state["hardware_table"]["Description"].eq("CT"), numeric.fillna(0.0)
-        ).astype(float)
+    numeric_columns = ("ID (in)", "Joint (m)", "Weight (ppf)", "Collapse (psi)", "Burst (psi)")
+    if st.session_state.get("job_type") != materials_db.CT_JOB:
+        for table in (st.session_state["hardware_table"], st.session_state.get("hardware_editor_draft")):
+            if not isinstance(table, pd.DataFrame):
+                continue
+            for field in numeric_columns:
+                table[field] = pd.Series([
+                    raw if desc == "CT" or hardware_number(raw) is None else hardware_number(raw)
+                    for raw, desc in zip(table[field], table["Description"])
+                ], index=table.index, dtype=object)
 
     # --- SECTION 1: TUBULAR AND CASING HARDWARE ---
     st.subheader("1. Tubular and Casing Hardware")
@@ -319,6 +336,17 @@ def render():
     editor_data = (hardware_draft if isinstance(hardware_draft, pd.DataFrame)
                    else st.session_state["hardware_table"])
     hardware_revision_key = "_editor_hardware_revision"
+    editor_key = f"_editor_hardware_{st.session_state.get(hardware_revision_key, 0)}"
+    # A malformed restored cell needs a text editor until explicitly repaired.
+    # Keep that column type stable while this widget/source remains mounted.
+    source = (st.session_state.get(f"_editor_source_{editor_key}", editor_data)
+              if editor_key in st.session_state else editor_data)
+    text_columns = [field for field in numeric_columns
+                    if any(hardware_number(raw) is None for raw in source[field])]
+    if text_columns:
+        editor_data = editor_data.copy(deep=True)
+        for field in text_columns:
+            editor_data[field] = editor_data[field].map(lambda raw: None if pd.isna(raw) else str(raw))
     edited_df = persistent_data_editor(
         editor_data,
         persist_to=("hardware_editor_draft", None),
@@ -387,10 +415,12 @@ def render():
                 step=10.0,
                 default=0.0,
                 required=False
-            )
+            ),
+            **{field: st.column_config.TextColumn(field, help="Correct the unreadable numeric cell.")
+                 for field in text_columns}
         },
         num_rows="dynamic",
-        key=f"_editor_hardware_{st.session_state.get(hardware_revision_key, 0)}",
+        key=editor_key,
         width='stretch'
     )
 
@@ -413,23 +443,16 @@ def render():
             cleaned_rows.append(row.to_dict())
             continue
 
-        def hardware_number(field):
-            raw = row.get(field)
-            if desc == "CT" and (raw is None or pd.isna(raw) or raw == ""):
-                return None
-            numeric = pd.to_numeric(raw, errors="coerce")
-            if pd.isna(numeric) or not math.isfinite(float(numeric)):
-                if raw is not None and str(raw).strip() not in ("", "nan", "None"):
-                    dimension_warnings.append(f"Row {idx+1} ({desc}): {field} is not a finite number; correct the cell.")
-                return 0.0
-            return float(numeric)
-
-        id_val = hardware_number("ID (in)")
-        joint_val = hardware_number("Joint (m)")
-        wt_val = hardware_number("Weight (ppf)")
+        numbers = {field: hardware_number(row.get(field)) for field in numeric_columns}
+        invalid = [field for field, number in numbers.items() if number is None]
+        if invalid:
+            for field in invalid:
+                dimension_warnings.append(f"Row {idx+1} ({desc}): {field} is not a finite number; correct the cell.")
+            incomplete_hardware = True
+            invalidate_document(st.session_state)
+            continue
+        id_val, joint_val, wt_val, collapse_val, burst_val = (numbers[field] for field in numeric_columns)
         grade_clean = str(row.get("Grade") or "-").strip()
-        collapse_val = hardware_number("Collapse (psi)")
-        burst_val = hardware_number("Burst (psi)")
         size_str = str(row.get("Size (in)") or "").strip()
         
         # Guardrail: Check ID vs OD

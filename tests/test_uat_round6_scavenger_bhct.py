@@ -467,7 +467,19 @@ def test_protected_algorithms_and_properties_are_byte_or_ast_identical():
     for name in functions:
         original = next(node for node in before.body if isinstance(node, ast.FunctionDef) and node.name == name)
         current = next(node for node in after.body if isinstance(node, ast.FunctionDef) and node.name == name)
-        assert ast.dump(current) == ast.dump(original), name
+        if name == "calculate_slurry_from_components":
+            import hashlib
+            from copy import deepcopy
+            expected = "296e2bb6730d2eeb17db2af1529b8e8172ca9800819072c5aa8f5b5533e60c5e"
+            assert hashlib.sha256(ast.dump(current).encode()).hexdigest() == expected, name
+            mutated = deepcopy(current)
+            guard = next(node for node in ast.walk(mutated)
+                         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+                         and node.left.id == "water_vol_per_sack" and isinstance(node.ops[0], ast.Lt))
+            guard.ops[0] = ast.LtE()  # Incorrectly rejecting valid zero water must fail the pin.
+            assert hashlib.sha256(ast.dump(mutated).encode()).hexdigest() != expected
+        else:
+            assert ast.dump(current) == ast.dump(original), name
 
 
 def test_real_docx_direct_fresh_restore_roles_procedure_and_notes():

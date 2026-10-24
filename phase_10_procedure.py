@@ -1285,15 +1285,19 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # silent 0.0 bbl row (fabricated report). Reachable only via a malformed
     # project JSON (Phase IV's own widgets always emit floats); same
     # philosophy as the placement '....' gate further below.
-    _volume_sources = list(active_slurries) + [
-        n for n in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind", "Scavenger")
-        if n in active_fluids]
-    unreadable_volumes = sorted(
-        f"{name} → volume ({fluid_data[name].get('volume')!r})"
-        for name in dict.fromkeys(_volume_sources)
-        if isinstance(fluid_data.get(name), dict)
-        and fluid_data[name].get("volume") is not None
-        and safe_float(fluid_data[name].get("volume"), None) is None)
+    unreadable_volumes = []
+    params = st.session_state.get("fluids_config", {}).get("params", {})
+    for name in dict.fromkeys(active_fluids):
+        record = fluid_data.get(name)
+        # A canonical entry owns its inputs; only its absence permits legacy
+        # fluid_data fallback. Prepared records must also have a readable volume.
+        source = params.get(name, record)
+        for candidate in (source, record):
+            raw = candidate.get("volume") if isinstance(candidate, dict) else None
+            if safe_float(raw, None) is None:
+                unreadable_volumes.append(f"{name} → volume ({raw!r})")
+                break
+    unreadable_volumes.sort()
     if unreadable_volumes:
         invalidate_document(st.session_state)
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
@@ -1914,7 +1918,8 @@ def render():
     unreadable_card_volumes = []
     for s in active_slurries:
         p = cement_params.get(s, {})
-        vol_raw = fluid_data.get(s, {}).get("volume", 0.0)
+        record = fluid_data.get(s)
+        vol_raw = record.get("volume") if isinstance(record, dict) else None
         vol = safe_float(vol_raw, None)
         if vol is None:
             unreadable_card_volumes.append(f"{s} → volume ({vol_raw!r})")
