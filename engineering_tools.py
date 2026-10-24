@@ -1136,6 +1136,15 @@ def compute_phase_status(ss) -> dict:
                 except ValueError:
                     missing.append(slurry)
                 continue
+            if slurry == "Pre Flush":
+                from cement_chart_model import chart_job_kind
+                if chart_job_kind(ss.get("job_type")) is not None:
+                    from centralizer_adapter import preflush_readings, _dynamic_fann
+                    try:
+                        _dynamic_fann(preflush_readings(ss), slurry)
+                    except ValueError:
+                        missing.append(slurry)
+                continue
             if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS:
                 try:
                     if not isinstance(qc.get(slurry), dict):

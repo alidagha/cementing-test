@@ -534,10 +534,25 @@ def _dynamic_fann(readings, fluid):
             raise ValueError("Invalid Bingham PV/Ty.")
         return result
     except ValueError as exc:
-        guidance = (f"Complete {fluid} rheology in Phase VII BHCT — Ramp-Down. " if fluid in ("Diesel", "Spacer") else
+        guidance = (f"Complete {fluid} rheology in Phase VII BHCT — Ramp-Down. " if fluid in ("Diesel", "Spacer", "Pre Flush") else
                     "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. ")
         raise ValueError(f"[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid '{fluid}'. "
                          f"{guidance}{exc}") from None
+
+
+def preflush_readings(state):
+    """Current Lab owns Pre Flush once present; auxiliary data is legacy-only.
+
+    No mutation, fit, gels or review metadata are manufactured here. An empty
+    or unselected current record deliberately prevents historical fallback.
+    """
+    lab = state.get("lab_qc_params", {})
+    if "Pre Flush" in lab:
+        qc = lab["Pre Flush"]
+        data = qc.get("rheology", {}) if isinstance(qc, dict) else {}
+        row = data.get("bhct_down", {}) if isinstance(data, dict) else {}
+        return row.get("readings") if isinstance(row, dict) and row.get("selected") is True else None
+    return state.get("centralizer_config", {}).get("aux_rheology", {}).get("Pre Flush")
 
 
 def spacer_bhct_down(state):
@@ -600,6 +615,13 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
             per_active[fluid] = dict(mud)
         elif fluid == "Spacer":
             per_active[fluid] = {"source": "lab_bhct_down", **spacer_bhct_down(state)["fit"]}
+        elif fluid == "Pre Flush":
+            readings = preflush_readings(state)
+            # The explicit auxiliary argument remains a supported legacy API.
+            if "Pre Flush" not in state.get("lab_qc_params", {}):
+                readings = aux_rheology.get(fluid) if isinstance(aux_rheology, dict) else readings
+            source = "lab_bhct_down" if "Pre Flush" in state.get("lab_qc_params", {}) else "aux_rheology"
+            per_active[fluid] = {"source": source, **_dynamic_fann(readings, fluid)}
         elif fluid in materials_db.PHASE7_LAB_FLUIDS:
             lab = state.get("lab_qc_params", {})
             qc = lab.get(fluid, {}) if isinstance(lab, dict) else {}

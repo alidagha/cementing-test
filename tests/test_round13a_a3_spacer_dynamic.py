@@ -79,7 +79,19 @@ def test_phase9_has_no_spacer_editor_but_keeps_preflush():
     audit.AuditRegressions().phase(app, "phase9")
     keys = [w.key for w in app.number_input]
     assert not any((key or "").startswith("_centralizer_aux_Spacer_") for key in keys)
-    assert all(f"_centralizer_aux_Pre Flush_{rpm}" in keys for rpm in (300,200,100,60,30,6,3))
+    assert not any((key or "").startswith("_centralizer_aux_Pre Flush_") for key in keys)
+    before = ca._dynamic_fann(ca.preflush_readings(app.session_state), "Pre Flush")
+    historical = deepcopy(app.session_state["centralizer_config"]["aux_rheology"]["Pre Flush"])
+    audit.AuditRegressions().phase(app, "phase7")
+    assert "Pre Flush" in [tab.label for tab in app.tabs]
+    row = app.session_state["lab_qc_params"]["Pre Flush"]["rheology"]["bhct_down"]
+    assert row["selected"] and row["readings"] == historical
+    assert len([w for w in app.text_input if "RPM - BHCT — Ramp-Down - Pre Flush" in w.label]) == 7
+    assert ca._dynamic_fann(ca.preflush_readings(app.session_state), "Pre Flush") == before
+    restored = restore_project(save_project(app))
+    assert restored.session_state["lab_qc_params"]["Pre Flush"]["rheology"]["bhct_down"] == row
+    assert restored.session_state["centralizer_config"]["aux_rheology"]["Pre Flush"] == historical
+    assert ca._dynamic_fann(ca.preflush_readings(restored.session_state), "Pre Flush") == before
 
 
 @pytest.mark.parametrize("kind", ["casing", "liner", "tieback"])

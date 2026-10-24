@@ -105,7 +105,12 @@ def _render_compressive(slurry, qc, load_sig, bhst, bhsp):
 
 
 def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
-    row = st.session_state["lab_qc_params"][slurry]["rheology"][dataset]
+    qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
+    data = qc.setdefault("rheology", {})
+    initial = new_rheology_dataset()
+    if slurry == "Pre Flush":
+        initial.update(gel_10_sec="-", gel_10_min="-")
+    row = data.setdefault(dataset, initial)
     if rpm is None:
         row[field] = st.session_state[widget_key]
     else:
@@ -126,7 +131,10 @@ def _render_rheology(slurry, qc, load_sig):
     data = qc.setdefault("rheology", {})
     token = get_slurry_key(slurry, "").strip("_")
     for dataset, label in RHEOLOGY_DATASETS:
-        row = data.setdefault(dataset, new_rheology_dataset())
+        initial = new_rheology_dataset()
+        if slurry == "Pre Flush":
+            initial.update(gel_10_sec="-", gel_10_min="-")
+        row = data.setdefault(dataset, initial)
         prefix = f"_rheo_{token}_{dataset}_"
         key = prefix + "selected_" + load_sig
         if key not in st.session_state:
@@ -491,7 +499,23 @@ def render():
             st.subheader(f"{slurry} Rheology" if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS else f"{slurry} Lab Data")
             
             full_lab = slurry in materials_db.PLACEMENT_SLURRIES
-            qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
+            if slurry == "Pre Flush" and slurry not in st.session_state["lab_qc_params"]:
+                from centralizer_adapter import preflush_readings, _dynamic_fann
+                readings = preflush_readings(st.session_state)
+                try:
+                    _dynamic_fann(readings, slurry)
+                except ValueError:
+                    pass  # No valid historical measurement to import; show an unfinished draft.
+                else:
+                    from copy import deepcopy
+                    st.session_state["lab_qc_params"][slurry] = {"rheology": {"bhct_down": {
+                        "selected": True, "readings": deepcopy(readings),
+                        "gel_10_sec": "-", "gel_10_min": "-"}}}
+            # An untouched empty editor is not a current measured record. The
+            # callback owns its first canonical write; valid legacy data can
+            # still be imported before that first operator event.
+            qc = (st.session_state["lab_qc_params"].get(slurry, {}) if slurry == "Pre Flush"
+                  else st.session_state["lab_qc_params"].setdefault(slurry, {}))
             if slurry == "Spacer":
                 _render_spacer_lab(load_sig, bhct, bhst)
                 continue

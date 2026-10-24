@@ -165,8 +165,11 @@ def source_signature(state, products=None):
             "lab": {name: (adapter.spacer_bhct_down(state)["source"] if name == "Spacer" else
                            {key: state.get("lab_qc_params", {}).get(name, {}).get("rheology", {}).get("bhct_down", {}).get(key)
                             for key in ("selected", "readings")})
-                    for name in active if name == "Spacer" or name in materials_db.PHASE7_LAB_FLUIDS},
-            "aux": {name: config["aux_rheology"].get(name) for name in active if name in AUX_FLUIDS and name != "Spacer"},
+                    for name in active if name == "Spacer" or (name in materials_db.PHASE7_LAB_FLUIDS and name != "Pre Flush")},
+            "aux": {name: ({key: rheology._numeric(value) for key, value in adapter.preflush_readings(state).items()}
+                           if isinstance(adapter.preflush_readings(state), dict) else adapter.preflush_readings(state))
+                    if name == "Pre Flush" else config["aux_rheology"].get(name)
+                    for name in active if name in AUX_FLUIDS and name != "Spacer"},
         }
     return fingerprint(body)
 
@@ -369,9 +372,9 @@ def render():
         st.warning(f"Complete current geometry in Phase II/III: {exc}")
     _render_zones(config, candidates)
     if config["physics_mode"] == "dynamic":
-        st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
+        st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
         for fluid in AUX_FLUIDS:
-            if fluid == "Spacer" or fluid not in st.session_state.get("fluids_config", {}).get("active", []):
+            if fluid in ("Spacer", "Pre Flush") or fluid not in st.session_state.get("fluids_config", {}).get("active", []):
                 continue
             st.markdown(f"**{fluid} Bingham rheology**")
             readings = config["aux_rheology"].get(fluid, {})
