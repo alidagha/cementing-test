@@ -333,20 +333,13 @@ def safe_float(value, default: float = 0.0):
     bools are rejected as junk rather than coerced to 1.0/0.0."""
     if value is None or isinstance(value, bool):
         return default
-    if isinstance(value, (int, float)):
-        return float(value)
     if isinstance(value, str):
-        s = normalize_digits(value).strip()
-        if not s:
-            return default
-        try:
-            return float(s)
-        except ValueError:
-            return default
+        value = normalize_digits(value).strip()
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return result if math.isfinite(result) else default
 
 
 def _positive_density_values(value):
