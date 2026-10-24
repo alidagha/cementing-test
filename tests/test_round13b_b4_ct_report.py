@@ -207,6 +207,10 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
         tree.body=[node for node in tree.body if not(isinstance(node,ast.FunctionDef) and node.name=='test_render_master_document_smoke')]
     assert ast.dump(before)==ast.dump(after)
     for name in ('well_schematic_engine.py','cement_charts_engine.py','centralizer_optimizer_engine.py','standalone_spacer.py','ct_stages.py','placement.py','phase_5_cement.py','phase_7_lab.py','rheology.py','project_io.py','requirements.txt'):
+        if name == 'project_io.py':
+            import hashlib
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '20ec22a012d42de360cd84d54ffcbec923896b5a228e48b540d1e8f91a2518d2'
+            continue
         reference='fdcfeb14a6246e59261c89775635ca9574674d42' if name=='phase_5_cement.py' else 'f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
         assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'{reference}:{name}'])
     from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads

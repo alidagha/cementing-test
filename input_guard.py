@@ -5,6 +5,8 @@ import streamlit as st
 
 
 def _parse(raw, minimum=None, maximum=None, integer=False):
+    if isinstance(raw, bool):
+        return None
     try:
         number = float(raw)
     except (TypeError, ValueError, OverflowError):

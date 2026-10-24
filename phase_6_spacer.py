@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import materials_db
 from input_guard import repair_invalid_inputs
-from engineering_tools import round_half_up, clean_number, safe_float
+from engineering_tools import round_half_up, clean_number, safe_float, require_fluid_density
 from editor_state import persistent_data_editor
 from phase_4_fluids import render_preflush_material_name
 from standalone_spacer import CONFIG_KEY, MODES, formulation_from_state, field_rows, FIELD_COLUMNS
@@ -223,11 +223,21 @@ def render():
     # -------------------------------------------------------------
     if has_preflush:
         st.subheader("Pre-flush Formulation")
-        render_preflush_material_name()
         pf_info = fluid_data.get("Pre Flush", {})
-        pf_vol = float(pf_info.get("volume", 0.0))
-        pf_density_str = str(pf_info.get("density", "80.0"))
-        pf_eff_density = float(pf_info.get("effective_density", 80.0))
+        pf_vol = safe_float(pf_info.get("volume"), None) if isinstance(pf_info, dict) else None
+        try:
+            if pf_vol is None or pf_vol < 0:
+                raise ValueError("Pre Flush volume must be a finite nonnegative number.")
+            pf_eff_density = require_fluid_density("Pre Flush", pf_info.get("density"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            invalidate_document(st.session_state)
+            st.error(f"Phase IV: {exc} Review the Pre Flush source before formulation.")
+            st.button("→ Go to Phase IV to repair Pre Flush", on_click=_go_to_fluid_configuration)
+            return
+        # Effective density is a projection, never a second measured source.
+        pf_info["effective_density"] = pf_eff_density
+        pf_density_str = str(pf_info["density"])
+        render_preflush_material_name()
 
         st.info(
             f"**Pre-flush Total Volume (From Phase IV):** {pf_vol:.1f} bbl | "
