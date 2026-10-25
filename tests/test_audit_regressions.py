@@ -254,8 +254,11 @@ class AuditRegressions(unittest.TestCase):
     def configured_app(self, job, additives=False, optional_fluids=False, include_standalone_spacer=True):
         # Valid export fixtures explicitly supply the former well defaults.
         app = self.app({**well_profile_fixture(), "mud_density": "80.0", "plastic_viscosity": "45", "yield_point": "15",
-                        "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150, "geo_gradient": 1.25})
-        app.selectbox(key="_w_job_type").set_value(job).run()
+                        "geo_md": 3000.0, "geo_tvd": 3000.0, "bhst": 200, "bhct": 150, "geo_gradient": 1.25,
+                        **({"job_type": job, "hole_size": materials_db.DEFAULT_HOLE_SIZES[job]}
+                           if job == 'CSG 7"' else {})})
+        if job != 'CSG 7"':
+            app.selectbox(key="_w_job_type").set_value(job).run()
         app.text_input(key="_w_well_name").set_value("Regression Well").run()
         app.text_input(key="_w_client").set_value("Regression Client").run()
         for key, value in valid_export_chart_fixture(job).items():

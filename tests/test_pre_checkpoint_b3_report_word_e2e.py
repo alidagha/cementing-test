@@ -469,7 +469,12 @@ def test_checkpoint_after_edit_before_any_rebuild_exports_new_canonical_truth(pr
     data = rebuild(app)
     doc, ctx = assert_document(data, app.session_state.to_dict())
     if change == "hardware":
-        assert any(r["Description"] == "Casing" and r["MD (m)"] == "2900" for r in ctx["hardware"])
+        assert any(r["Description"] == "Casing" and r["MD (m)"] == "2900.0" for r in ctx["hardware"])
+        frame = app.session_state["hardware_table"]
+        assert frame.loc[frame.Description == "Casing", "MD (m)"].tolist() == ["2900"]
+        hardware_table = next(t for t in doc.tables if t.rows[0].cells[0].text.strip() == "Tubular and Casing Hardware")
+        assert any("Casing" in [c.text.strip() for c in row.cells] and
+                   "2900.0" in [c.text.strip() for c in row.cells] for row in hardware_table.rows)
     elif change == "placement":
         assert ctx["slurries"][0]["top"] == "2100.0 m"
         assert ctx["slurries"][0]["bottom"] == "2900.0 m MD"

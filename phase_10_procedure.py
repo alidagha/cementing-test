@@ -1398,6 +1398,17 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     hw_df = st.session_state.get("hardware_table", pd.DataFrame())
     hardware_list = hw_df.map(lambda value: "-" if pd.isna(value) or
         (isinstance(value, str) and not value.strip()) else value).to_dict(orient="records") if not hw_df.empty else []
+    for row in hardware_list:
+        try:
+            scalar_md = float(row.get("MD (m)"))
+        except (TypeError, ValueError, OverflowError):
+            pass  # Valid intervals and unfinished text retain their existing representation.
+        else:
+            if math.isfinite(scalar_md):
+                row["MD (m)"] = f"{scalar_md:.1f}"
+        if row.get("Description") == "Open Hole Size":
+            for field in ("Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"):
+                row[field] = "-"
     
     # 2. Fluids Train Sequence Serialization
     fluids_train = [fluid_data[f] for f in active_fluids if f in fluid_data]
