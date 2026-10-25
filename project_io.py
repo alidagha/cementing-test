@@ -2,13 +2,16 @@
 import hashlib
 import json
 import math
+from datetime import date, datetime
 import pandas as pd
 import materials_db
 from well_profile import validate_well_inputs
 from rheology import validate_rheology_inputs
-from engineering_tools import THICKENING_TEST_FIELDS, compressive_inputs
+from engineering_tools import (THICKENING_TEST_FIELDS, compressive_inputs,
+                               safe_float, require_fluid_density)
 from project_state import (SLURRIES, is_project_key, restore_canonical_fields,
-                           migrate_material_properties, validate_material_properties)
+                           migrate_material_properties, validate_material_properties,
+                           DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS)
 from placement import EXCESS_FIELDS, excess_percentage, validate_executive_summary_config
 from cement_chart_model import validate_chart_inputs
 
@@ -32,9 +35,11 @@ def _unique_keys(pairs):
 
 def _check_finite(value, path="project"):
     """Reject overflowed JSON exponents and invalid numbers in table cells."""
-    if isinstance(value, float) and not math.isfinite(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and safe_float(value, None) is None:
         raise ValueError(f"{path} must contain a finite number")
     if isinstance(value, pd.DataFrame):
+        if not value.columns.is_unique:
+            raise ValueError(f"{path}: duplicate DataFrame column labels are not supported.")
         for index, row in enumerate(value.to_dict("records")):
             for column, cell in row.items():
                 # JSON null becomes NaN in a numeric DataFrame column.
@@ -59,7 +64,7 @@ def _check_numeric_fields(container, fields, path, nullable=(), nonnegative=()):
         value = container[field]
         if value is None and field in nullable:
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or safe_float(value, None) is None:
             raise ValueError(f"{path}.{field} must be a finite number (got {value!r}).")
         if field in nonnegative and value < 0:
             raise ValueError(f"{path}.{field} must be nonnegative.")
@@ -113,6 +118,26 @@ def _validate_project(data):
     for key, expected in schemas.items():
         if key in data and not isinstance(data[key], expected):
             raise ValueError(f"{key} must be a {expected.__name__}, not {type(data[key]).__name__}.")
+    from phase_1_doc_control import DOCUMENT_DATE_FIELDS
+    for name, defaults in (("doc_control", DOC_CONTROL_DEFAULTS), ("well_data", WELL_DATA_DEFAULTS)):
+        for container, path in ((data, "project"), (data.get(name, {}), name)):
+            for field, default in defaults.items():
+                types = (str, date) if name == "doc_control" and field in DOCUMENT_DATE_FIELDS else (str,)
+                if (isinstance(default, str) and field in container
+                        and container[field] is not None and not isinstance(container[field], types)):
+                    raise ValueError(f"{path}.{field} has an invalid text/calendar value.")
+    doc_date = data.get("doc_control", {}).get("date")
+    if doc_date is not None and not isinstance(doc_date, (str, date)):
+        raise ValueError("doc_control.date must be a date, ISO date text or an unfinished blank.")
+    if "report_date" in data:
+        value = data["report_date"]
+        if isinstance(value, str):
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                raise ValueError("report_date must be a valid ISO date.") from None
+        elif value is not None and not isinstance(value, (date, datetime)):
+            raise ValueError("report_date must be a date or an unfinished blank.")
     if "standalone_spacer_config" in data:
         from standalone_spacer import validate_config
         validate_config(data["standalone_spacer_config"], data.get("job_type", 'CSG 20"'))
@@ -161,6 +186,22 @@ def _validate_project(data):
     for key in ("cement_params", "lab_qc_params", "report_text_state", "fluid_data"):
         if any(not isinstance(item, dict) for item in data.get(key, {}).values()):
             raise ValueError(f"{key} contains an invalid record.")
+    for name, record in data.get("fluid_data", {}).items():
+        for field in ("volume", "density", "effective_density", "pump_rate", "min_rate", "duration_min", "cumul_time_min"):
+            if field not in record:
+                continue
+            value = record[field]
+            if isinstance(value, (bool, list, dict)):
+                raise ValueError(f"fluid_data.{name}.{field} must not be boolean or a container.")
+            if value is None or value == "":
+                continue  # Missing inputs remain reopenable unfinished drafts.
+            if field == "density":
+                try:
+                    require_fluid_density(name, value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f"fluid_data.{name}.density: {exc}") from None
+            elif field != "pump_rate" and safe_float(value, None) is None:
+                raise ValueError(f"fluid_data.{name}.{field} must be a finite number.")
     if "ct_stage_config" in data:
         from ct_stages import validate_stage_config
         validate_stage_config(data)
@@ -194,6 +235,8 @@ def _validate_project(data):
                                   f"inactive_slurry_drafts.{slurry}.cement_params",
                                   nullable=("dead_vol", "report_bottom_depth"), nonnegative=("report_bottom_depth",))
         if "lab_qc_params" in draft:
+            if "reviewed" in draft["lab_qc_params"] and not isinstance(draft["lab_qc_params"]["reviewed"], bool):
+                raise ValueError(f"inactive_slurry_drafts.{slurry}.lab_qc_params.reviewed must be boolean.")
             if "bhct" in draft["lab_qc_params"]:
                 raise ValueError(f"inactive_slurry_drafts.{slurry}.lab_qc_params.bhct is not allowed; BHCT belongs to Well Data.")
             if "compressive" in draft["lab_qc_params"] or "comp_test" in draft["lab_qc_params"]:
@@ -221,9 +264,9 @@ def _validate_project(data):
                               f"cement_params.{name}", nullable=("dead_vol", "report_bottom_depth"),
                               nonnegative=("report_bottom_depth",))
     for name, params in data.get("lab_qc_params", {}).items():
+        if "reviewed" in params and not isinstance(params["reviewed"], bool):
+            raise ValueError(f"lab_qc_params.{name}.reviewed must be boolean.")
         if name == "Spacer":
-            if "reviewed" in params and not isinstance(params["reviewed"], bool):
-                raise ValueError("lab_qc_params.Spacer.reviewed must be boolean.")
             if "review_signature" in params and not isinstance(params["review_signature"], str):
                 raise ValueError("lab_qc_params.Spacer.review_signature must be text.")
         if "bhct" in params:

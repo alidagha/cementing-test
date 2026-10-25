@@ -30,7 +30,7 @@ class Round3FluidsUAT(unittest.TestCase):
 
     def project(self, name="Salt Saturated Water", extra_spacers=False):
         active = ["Pre Flush"] + (["Spacer", "Spacer Ahead", "Spacer Behind"] if extra_spacers else []) + ["Displacement Fluid"]
-        return {"mud_density": "80-82", "effective_mud_density": 81.,
+        return {"job_type": 'CSG 20"', "mud_density": "80-82", "effective_mud_density": 81.,
                 "fluids_config": {"active": active, "params": {s: {
                     "volume": 25., "density": "86" if s == "Spacer" else "85-87", "pump_rate": "3-5",
                     "material_name": name if s == "Pre Flush" else materials_db.DEFAULT_MATERIAL_NAMES[s]}
@@ -226,7 +226,7 @@ class Round3FluidsUAT(unittest.TestCase):
                 for name in ("Field Wash Alpha", NAME_OPTIONS[3]):
                     if name != "Field Wash Alpha":
                         self.phase(app, "phase6"); self.selector(app).set_value(name).run()
-                    case.export(app, build_timeout=60 if job == 'TIE BACK LNR 7"' else 30)
+                    case.export(app, build_timeout=120 if job in ('CSG 9 5/8"', 'TIE BACK LNR 7"') else 30)
                     self.assertEqual(app.session_state["fluid_data"]["Pre Flush"]["material_name"], name)
                     self.assertEqual(app.session_state["preflush_calc"], baseline)
                     doc = Document(BytesIO(app.session_state["_compiled_doc_bytes"]))

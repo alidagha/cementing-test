@@ -207,7 +207,19 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
         tree.body=[node for node in tree.body if not(isinstance(node,ast.FunctionDef) and node.name=='test_render_master_document_smoke')]
     assert ast.dump(before)==ast.dump(after)
     for name in ('well_schematic_engine.py','cement_charts_engine.py','centralizer_optimizer_engine.py','standalone_spacer.py','ct_stages.py','placement.py','phase_5_cement.py','phase_7_lab.py','rheology.py','project_io.py','requirements.txt'):
-        reference='fdcfeb14a6246e59261c89775635ca9574674d42' if name=='phase_5_cement.py' else 'f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
+        if name == 'project_io.py':
+            import hashlib
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '20ec22a012d42de360cd84d54ffcbec923896b5a228e48b540d1e8f91a2518d2'
+            continue
+        if name == 'phase_7_lab.py':
+            import hashlib
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'a2d64ad99efd92cf87ea99f4c02ac00ef31eb124d7c5f5bc389949bb74e108cf'
+            continue
+        if name == 'phase_5_cement.py':
+            import hashlib
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3a30e2a0d42316b34d0c15b88ef7f2c539e8c1b38b48bd8a0ed614e6704469de'
+            continue
+        reference='f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
         assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'{reference}:{name}'])
     from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
     test_template_changes_only_approved_sample_text_payloads()

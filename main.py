@@ -248,11 +248,54 @@ def _project_comparison_signature(project_json):
     """
     from phase_2_3_well_data import HARDWARE_COLUMNS
     from well_profile import geometry_defaults, geothermal_defaults
+    from project_state import DOC_CONTROL_DEFAULTS, lab_source_signature, request_description_for_job
+    from phase_9_centralizer import new_config
+    from phase_5_cement import REQUIRED_ADDITIVE_COLUMNS
+    from engineering_tools import (catalog_cement_sg, THICKENING_TEST_FIELDS, MATERIAL_PROPERTY_SCHEMA,
+                                   compressive_inputs, require_positive_density, clean_number, resolve_cement_sg)
+    from rheology import new_rheology_dataset, RHEOLOGY_DATASETS, build_rheology
+    from phase_7_lab import build_lab_df_from_phase5
 
     project = json.loads(project_json)
+    # Model only absent legacy metadata using Phase I's existing initializer.
+    # Explicit values/ownership flags always win and remain comparable.
+    job = project.get("job_type", DOC_CONTROL_DEFAULTS["job_type"])
+    project.setdefault("hole_size_customized", project.get("hole_size", DOC_CONTROL_DEFAULTS["hole_size"])
+                       != materials_db.DEFAULT_HOLE_SIZES.get(job, "12 1/4\""))
+    project.setdefault("request_description", DOC_CONTROL_DEFAULTS["request_description"]
+                       if project.get("request_description_customized") else request_description_for_job(job))
+    project.setdefault("revision_description", DOC_CONTROL_DEFAULTS["revision_description"]
+                       if project.get("revision_description_customized") else project["request_description"])
+    source = {**project, "well_data": dict(project.get("well_data", {})),
+              "cement_additives_dfs": {name: (pd.DataFrame(table["data"], columns=table["columns"])
+                  if isinstance(table, dict) and table.get("__type__") == "DataFrame" else table)
+                  for name, table in project.get("cement_additives_dfs", {}).items()}}
+    if ("bhsp" in project or "bhsp" in project.get("well_data", {})) and "well_auto_fields" not in project:
+        # The established Phase-II restoration rule treats an explicitly
+        # saved pressure as manual, even when the legacy value is blank.
+        project["well_auto_fields"] = {"bhsp": False}
     effective = {key: None for key in ("effective_mud_density", "effective_pv", "effective_yp")}
+    # Flat sources win on restore; an identical nested mirror is the same
+    # input, not a new edit when a historical flat-only file is first mounted.
+    for name, fields in (("doc_control", DOC_CONTROL_DEFAULTS),
+                         ("well_data", {**WELL_DATA_DEFAULTS, **effective})):
+        nested = project.get(name, {})
+        for key in fields:
+            if (key in nested and key in project
+                    and isinstance(nested[key], bool) == isinstance(project[key], bool)
+                    and nested[key] == project[key]):
+                nested.pop(key)
+    calendar = project.get("report_date")
+    calendar = calendar.get("val") if isinstance(calendar, dict) else calendar
+    if calendar is not None and project.get("doc_control", {}).get("date") == calendar:
+        project["doc_control"].pop("date")
+    doc_defaults = dict(DOC_CONTROL_DEFAULTS,
+                        hole_size_customized=False, request_description_customized=False,
+                        revision_description_customized=False)
     defaults = {
-        **WELL_DATA_DEFAULTS, **effective,
+        **doc_defaults, **WELL_DATA_DEFAULTS, **effective,
+        "material_property_schema": MATERIAL_PROPERTY_SCHEMA,
+        "doc_control": dict(DOC_CONTROL_DEFAULTS),
         "well_data": {**WELL_DATA_DEFAULTS, **effective},
         "well_auto_fields": {"bhsp": True},
         "well_geometry": geometry_defaults(), "geothermal_config": geothermal_defaults(),
@@ -271,8 +314,12 @@ def _project_comparison_signature(project_json):
             "cumul_time_str": "INVALID RATE"}},
         "total_pump_time_min": 0., "total_pump_time_hhmm": "INVALID RATE",
         "inactive_slurry_drafts": {}, "preflush_calc": None,
+        "centralizer_config": new_config(),
+        "cement_params": {}, "cement_additives_dfs": {}, "cement_initialized_slurries": [],
+        "spacer_dfs": {}, "spacer_initialized_names": [],
+        "lab_grid_dfs": {}, "lab_qc_params": {}, "lab_initialized_slurries": [],
+        "lab_source_signatures": {},
     }
-
     def without_defaults(record, expected):
         result = {}
         for key, value in record.items():
@@ -281,10 +328,108 @@ def _project_comparison_signature(project_json):
                     value = without_defaults(value, expected[key])
                     if not value:
                         continue
-                elif value == expected[key]:
+                elif (isinstance(value, bool) == isinstance(expected[key], bool)
+                      and value == expected[key]):
                     continue
             result[key] = value
         return result
+
+    active = project.get("fluids_config", {}).get("active", [])
+    job = project.get("job_type", DOC_CONTROL_DEFAULTS["job_type"])
+    for slurry in (name for name in active if name in materials_db.CEMENT_FORMULATION_FLUIDS):
+        defaults["cement_params"][slurry] = {
+            "yield": 1.180, "mix_water": 119.0, "dead_vol": None,
+            "tank_name": materials_db.get_tank_name(job), "last_job_type": job,
+            "base_cement": "Cement G Delijan", "cmt_sg": catalog_cement_sg(),
+            "cmt_sg_source": "catalog", "total_sacks": 0.0, "auto_calc": True,
+            "top_mode": "Not entered", "top_depth": None, "top_job_type": job,
+        }
+        defaults["cement_additives_dfs"][slurry] = pd.DataFrame(columns=[*REQUIRED_ADDITIVE_COLUMNS, "Density"])
+        defaults["cement_initialized_slurries"].append(slurry)
+        # These are the empty controls mounted before any valid lab source
+        # exists, not measured results, grids or review/source signatures.
+        defaults["lab_qc_params"][slurry] = {
+            "api_fl": 0.0, "free_water": 0.0, "free_water_45": None,
+            "surface_hardened_hours": None,
+            **{field: None if kind == "number" else "" for field, _, kind in THICKENING_TEST_FIELDS},
+        }
+        defaults["lab_qc_params"][slurry].update(
+            rheology={key: new_rheology_dataset() for key, _ in RHEOLOGY_DATASETS},
+            compressive=compressive_inputs({}))
+        if slurry not in project.get("lab_grid_dfs", {}):
+            continue
+        # Reuse the real cup authority only to recognize its exact untouched
+        # initialization. Any edited row/lot/QC or unknown field survives.
+        params = source.get("cement_params", {}).get(slurry, {})
+        fluid = source.get("fluids_config", {}).get("params", {}).get(
+            slurry, source.get("fluid_data", {}).get(slurry, {}))
+        try:
+            volume = clean_number(fluid.get("volume"))
+            density = require_positive_density(fluid.get("density"))
+            if volume <= 0 or not 75 <= density <= 180:
+                continue
+            grid = build_lab_df_from_phase5(
+                source["cement_additives_dfs"].get(slurry, pd.DataFrame()),
+                base_cement=params.get("base_cement", "Cement G Delijan"),
+                slurry_weight_pcf=density, slurry_volume_bbl=volume,
+                cmt_sg=resolve_cement_sg(params), recalculate_mass=True)
+            signature = lab_source_signature(source, slurry)
+        except (ValueError, TypeError):
+            continue  # Unreconstructable persisted content is never ignored.
+        defaults["lab_grid_dfs"][slurry] = grid
+        if (project["lab_grid_dfs"][slurry] == serialize_item(grid)
+                and not without_defaults(project.get("lab_qc_params", {}).get(slurry, {}),
+                                         serialize_item(defaults["lab_qc_params"][slurry]))):
+            defaults["lab_source_signatures"][slurry] = signature
+        defaults["lab_initialized_slurries"].append(slurry)
+        empty_qc = defaults["lab_qc_params"][slurry]
+        defaults[f"lab_payload_{slurry}"] = {
+            "grid": grid, "rheology": build_rheology(empty_qc)[0],
+            "bhct": source.get("well_data", {}).get("bhct", source.get("bhct")),
+            "bhst": source.get("well_data", {}).get("bhst", source.get("bhst")),
+            "bhsp": source.get("well_data", {}).get("bhsp", ""),
+            **{key: params.get(field, "") for key, field in (
+                ("base_fluid", "base_fluid_gal_sk"), ("mix_water", "mix_water_gal_sk"),
+                ("mix_fluid", "mix_fluid_gal_sk"))},
+            "solution_density": materials_db.SOLUTION_DENSITY_PCF,
+        }
+        if slurry in materials_db.PLACEMENT_SLURRIES:
+            defaults[f"lab_payload_{slurry}"].update(
+                api_fl=0., api_fl_collected=0., free_water=0., free_water_45=None,
+                surface_hardened_hours=None, compressive={},
+                **{field: empty_qc[field] for field, _, _ in THICKENING_TEST_FIELDS})
+    for name in active:
+        if name in materials_db.RHEOLOGY_ONLY_FLUIDS and name != "Pre Flush":
+            defaults["lab_qc_params"][name] = {"rheology": {
+                key: new_rheology_dataset() for key, _ in RHEOLOGY_DATASETS}}
+        elif name == "Pre Flush" and name in project.get("lab_qc_params", {}):
+            from centralizer_adapter import _dynamic_fann
+            legacy = source.get("centralizer_config", {}).get("aux_rheology", {}).get(name)
+            try:
+                _dynamic_fann(legacy, name)
+            except ValueError:
+                continue
+            data = {key: {**new_rheology_dataset(), "gel_10_sec": "-", "gel_10_min": "-"}
+                    for key, _ in RHEOLOGY_DATASETS}
+            data["bhct_down"].update(selected=True, readings=legacy)
+            defaults["lab_qc_params"][name] = {"rheology": data}
+    defaults["standalone_spacer_config"] = {
+        "mode": None, "dead_vol": None, "tank_name": materials_db.get_tank_name(job)}
+    defaults["formation_pressure_config"] = {"mode": "basic", "profile": []}
+    defaults["preflush_config"] = {
+        "type": "Combined (Water + NaCl + Wash)", "nacl_multiplier": 126.0, "wash_multiplier": 3.0,
+    }
+
+    reports = project.get("report_text_state", {})
+    for key in ("exec_summary_text", "procedure_text"):
+        meta = reports.get(key)
+        if (isinstance(meta, dict) and set(meta) == {"generated", "source_signature", "history"}
+                and isinstance(meta["generated"], str) and project.get(key) == meta["generated"]
+                and meta["history"] == [] and isinstance(meta["source_signature"], str)):
+            project.pop(key)
+            reports.pop(key)
+    if reports == {}:
+        project.pop("report_text_state", None)
 
     comparison = without_defaults(project, serialize_item(defaults))
     return hashlib.md5(json.dumps(comparison, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
@@ -295,14 +440,22 @@ def _mark_project_saved(project_json):
     st.session_state["_saved_comparison_sig"] = _project_comparison_signature(project_json)
     st.session_state["_saved_at"] = datetime.now().strftime("%H:%M")
     st.session_state.pop("_saved_from_upload", None)
+    st.session_state.pop("_baseline_loaded_project", None)
 
 # Loading a project is itself a saved checkpoint. Capture the normalized
 # project after the first complete render so old files that need in-memory
 # defaults do not immediately show a false unsaved-changes warning.
-if st.session_state.pop("_baseline_loaded_project", False) and current_project_json:
-    st.session_state["_saved_sig"] = hashlib.md5(current_project_json.encode()).hexdigest()
-    st.session_state["_saved_comparison_sig"] = _project_comparison_signature(current_project_json)
+if (st.session_state.get("_baseline_loaded_project", False) and current_project_json
+        and "_saved_comparison_sig" in st.session_state):
+    loaded_signature = st.session_state.get("_saved_comparison_sig")
+    current_signature = _project_comparison_signature(current_project_json)
+    # A failed first render may have been repaired alongside a genuine edit.
+    # Keep the validated incoming checkpoint as authority in that case.
+    if loaded_signature == current_signature:
+        st.session_state["_saved_sig"] = hashlib.md5(current_project_json.encode()).hexdigest()
+        st.session_state["_saved_comparison_sig"] = current_signature
     st.session_state["_saved_from_upload"] = True
+    st.session_state.pop("_baseline_loaded_project", None)
 
 # JSON is a work-in-progress checkpoint; keep incomplete additive rows, but
 # show their location so they cannot be mistaken for export-ready values.
@@ -348,69 +501,21 @@ if _project_manager_slot.button(
 ):
     _download_project(current_project_json, project_filename)
 
-def _is_meaningful(val):
-    """Safe truthiness check for the dirty-flag's data-presence test below.
-    FIX (found by testing — real crash, not a hypothetical): plain
-    `any(st.session_state.get(k) for k in (...))` calls bool() on whatever
-    it finds, and bool(DataFrame) raises ValueError ("truth value of a
-    DataFrame is ambiguous") the moment the DataFrame has more than one
-    element — hardware_table with even a single real row crashes the whole
-    app. This only stayed hidden through earlier testing because any()
-    short-circuited on an earlier truthy item; it surfaced with well_name
-    still empty and hardware_table already filled in — a perfectly normal
-    order for someone to work through the phases in."""
-    if isinstance(val, pd.DataFrame):
-        return not val.empty
-    return bool(val)
-
-_project_details = (
-    "well_name", "field", "well_location", "rig_name", "client",
-    "contract_number", "proposal_number", "prepared_by", "checked_by",
-    "approved_by", "request_date", "request_number", "request_description",
-    "prepared_date", "prepared_phone", "checked_date", "checked_phone",
-    "approved_date", "approved_phone", "revision_date", "revision_description", "bhsp",
-)
-_saved_doc_control = st.session_state.get("doc_control", {})
-_has_meaningful_data = (
-    any(_is_meaningful(st.session_state.get(k)) for k in (
-        "hardware_table", "hardware_editor_draft", "cement_params", "cement_additives_dfs",
-        "lab_grid_dfs", "spacer_dfs", "inactive_slurry_drafts"
-    ))
-    or any(str(st.session_state.get(k, "")).strip()
-           and st.session_state.get(k) != DOC_CONTROL_DEFAULTS.get(k) for k in _project_details)
-    or (isinstance(_saved_doc_control, dict) and any(
-        str(_saved_doc_control.get(k, "")).strip()
-        and _saved_doc_control.get(k) != DOC_CONTROL_DEFAULTS.get(k) for k in _project_details
-    ))
-    or any(st.session_state.get(k) not in (None, default) for k, default in
-           dict(DOC_CONTROL_DEFAULTS, **WELL_DATA_DEFAULTS, report_date=date.today()).items())
-    or any(value for key, value in st.session_state.get("placement_config", {}).items() if key != "job_type")
-    or any(st.session_state.get("placement_config", {}).get(field) is not None
-           for field, _, _ in EXCESS_FIELDS)
-    # Phase IV initializes blank records for every fluid. Only actual inputs
-    # count, including retained drafts absent from the active fluid_data view.
-    or any(params.get("volume", 0.0) != 0.0
-           or str(params.get("density", "")).strip()
-           or str(params.get("pump_rate", "")).strip()
-           or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
-           for name, params in st.session_state.get("fluids_config", {}).get("params", {}).items())
-    or any(name != "Displacement Fluid" or params.get("volume", 0.0) != 0.0
-           or str(params.get("pump_rate", "")).strip() != ""
-           or params.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")) != materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")
-           for name, params in st.session_state.get("fluid_data", {}).items())
-    or st.session_state.get("well_geometry", {}).get("type") is not None
-    or st.session_state.get("geothermal_config", {}).get("source") is not None
-    or st.session_state.get("geothermal_config", {}).get("surface_temp", 80.0) != 80.0
-    or _is_meaningful(st.session_state.get("well_geometry", {}).get("survey"))
-    or bool(st.session_state.get("hole_size_customized"))
-    or bool(st.session_state.get("centralizer_config"))
-)
+# The same serialized comparison protects every current/future project key.
+# Failure to serialize is uncertainty, never permission to discard the well.
 _current_sig = hashlib.md5(current_project_json.encode()).hexdigest()
-_has_unsaved_changes = _has_meaningful_data and (
-    st.session_state["_saved_comparison_sig"] != _project_comparison_signature(current_project_json)
-    if current_project_json and "_saved_comparison_sig" in st.session_state
-    else st.session_state.get("_saved_sig") != _current_sig
-)
+if (not current_project_json or (st.session_state.get("_baseline_loaded_project")
+                                 and "_saved_comparison_sig" not in st.session_state)):
+    _has_unsaved_changes = True
+elif "_saved_comparison_sig" in st.session_state:
+    _has_unsaved_changes = (st.session_state["_saved_comparison_sig"]
+                            != _project_comparison_signature(current_project_json))
+elif "_saved_sig" in st.session_state:
+    _has_unsaved_changes = st.session_state["_saved_sig"] != _current_sig
+else:
+    _has_unsaved_changes = (_project_comparison_signature(current_project_json)
+                            != _project_comparison_signature(json.dumps(
+                                serialize_item({"report_date": date.today()}))))
 if _has_unsaved_changes:
     _project_manager_slot.warning("⚠️ You have unsaved changes.")
     _project_manager_slot.caption("Prepare a download above, then save the file to keep them safe.")
@@ -466,8 +571,21 @@ if uploaded_project is not None:
                     st.session_state["_uploader_revision"] = uploader_revision + 1
                     st.rerun()
             if reload_requested or not pending_changes or replace_confirmed:
+                # Compute before publication: failed baseline serialization
+                # must leave the currently open project untouched.
+                checkpoint = serialize_item(prepared)
+                # Match Phase I's first mount on the comparison copy only:
+                # explicit null is blank; a missing/legacy-empty date defaults.
+                if "report_date" not in checkpoint:
+                    checkpoint["report_date"] = (None if "date" in checkpoint.get("doc_control", {})
+                        and checkpoint["doc_control"]["date"] is None else serialize_item(date.today()))
+                calendar = checkpoint["report_date"]
+                calendar = calendar.get("val") if isinstance(calendar, dict) else calendar
+                checkpoint.setdefault("doc_control", {})["date"] = "" if calendar is None else calendar
+                loaded_signature = _project_comparison_signature(json.dumps(checkpoint, allow_nan=False))
                 replace_project_state(st.session_state, prepared, upload_sig,
                                       preserved_keys=(uploader_key, "_uploader_revision"))
+                st.session_state["_saved_comparison_sig"] = loaded_signature
                 st.session_state["_baseline_loaded_project"] = True
                 # FIX (requested, Level 1 #1): st.sidebar.success(...) here used
                 # to be silently lost — st.rerun() immediately discards this

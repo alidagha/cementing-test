@@ -400,7 +400,7 @@ def test_diesel_does_not_create_phase9_auxiliary_controls(catalog):
     from test_uat_round9f_phase9 import ui_app
     app = ui_app(project(catalog))
     assert not app.exception
-    assert any("Cement/Scavenger/Diesel/Spacer: Phase VII BHCT" in item.value for item in app.caption)
+    assert any("Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT" in item.value for item in app.caption)
     assert not any((widget.key or "").startswith("_centralizer_aux_") for widget in app.number_input)
     assert "Diesel" not in app.session_state["centralizer_config"]["aux_rheology"]
 

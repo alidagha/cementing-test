@@ -713,6 +713,50 @@ def _ct_procedure(state):
     return sc.finalize("\n".join(line for line in lines if line.strip()))
 
 
+def _preflush_report_payload(fluid_data, cached):
+    """Project current canonical sources; only older projects use the cache."""
+    config = st.session_state.get("preflush_config")
+    if config is None:
+        if not isinstance(cached, dict):
+            return {}
+        # Word consumes these quantities too; unreadable legacy fields must
+        # not reach its historical zero defaults as if they were measurements.
+        for key in ("volume_bbl", "water_bbl", "wash_gal", "nacl_lbs",
+                    "nacl_multiplier", "wash_multiplier"):
+            if key in cached and safe_float(cached[key], None) is None:
+                return {}
+        return cached
+    info = fluid_data.get("Pre Flush", {})
+    if not isinstance(config, dict) or not isinstance(info, dict):
+        return {}
+    if not isinstance(config.get("type"), str):
+        return {}
+    kind = {"Chemical Wash": "Water + Chemical Wash",
+            "Combined / Custom": "Combined (Water + NaCl + Wash)"}.get(config.get("type"), config.get("type"))
+    if kind not in {"Fresh Water Only", "Brine (Water + NaCl)",
+                    "Water + Chemical Wash", "Combined (Water + NaCl + Wash)"}:
+        return {}
+    quantities = [info.get("volume")]
+    if kind in {"Brine (Water + NaCl)", "Combined (Water + NaCl + Wash)"}:
+        quantities.append(config.get("nacl_multiplier", 126.0))
+    if kind in {"Water + Chemical Wash", "Combined (Water + NaCl + Wash)"}:
+        quantities.append(config.get("wash_multiplier", 3.0))
+    values = [safe_float(value, None) for value in quantities]
+    if any(value is None or value < 0 for value in values) or values[0] <= 0:
+        return {}
+    try:
+        from engineering_tools import require_positive_density
+        from phase_6_spacer import compute_preflush_payload
+        require_positive_density(info.get("density"))
+        if "effective_density" in info:
+            density = safe_float(info["effective_density"], None)
+            if density is None or density <= 0:
+                return {}
+        return compute_preflush_payload(config, info)
+    except (TypeError, ValueError, ArithmeticError):
+        return {}
+
+
 def generate_official_procedure(
     job_type: str, 
     fluid_data: dict, 
@@ -781,20 +825,27 @@ def generate_official_procedure(
     mixing_proc_text = "\n".join(mixing_blocks)
     
     pf_line = ""
-    if preflush_calc and float(preflush_calc.get("volume_bbl", 0.0)) > 0:
-        pf_vol = float(preflush_calc.get("volume_bbl", 0.0))
-        pf_den = str(preflush_calc.get("density_pcf") or ".... [DENSITY NOT SET IN PHASE IV]")
-        pf_type = str(preflush_calc.get("type", "Combined (Water + NaCl + Wash)"))
-        wash_amt = float(preflush_calc.get("wash_gal", 0.0))
-        
-        if pf_type == "Fresh Water Only":
-            pf_line = f"Pump {pf_vol:.1f} bbl fresh water as pre flush."
-        elif pf_type == "Brine (Water + NaCl)":
-            pf_line = f"Pump {pf_vol:.1f} bbl Salt Saturated water as pre flush.({pf_den} pcf)"
-        elif pf_type == "Water + Chemical Wash":
-            pf_line = f"Pump {pf_vol:.1f} bbl fresh water mix with {wash_amt:.0f} gal chemical wash as preflush.({pf_den} pcf)"
+    if "Pre Flush" in active_fluids:
+        preflush_calc = _preflush_report_payload(fluid_data, preflush_calc)
+        pf_vol = safe_float(preflush_calc.get("volume_bbl"), None) if isinstance(preflush_calc, dict) else None
+        wash_amt = safe_float(preflush_calc.get("wash_gal", 0.0), None) if isinstance(preflush_calc, dict) else None
+        if pf_vol is None or pf_vol <= 0 or wash_amt is None:
+            # Keep Phase X repairable; the existing marked-input gate blocks
+            # both generated and manually preserved text before Word export.
+            invalidate_document(st.session_state)
+            pf_line = "[VOLUME OR WASH QUANTITY INVALID FOR Pre Flush - REVIEW PHASE VI]"
         else:
-            pf_line = f"Pump {pf_vol:.1f} bbl salt saturated water mix with {wash_amt:.0f} gal chemical wash as preflush." if "13" in job_upper else f"Pump {pf_vol:.1f} bbl salt saturated water mix {wash_amt:.0f} gal chemical wash as preflush.({pf_den} pcf)"
+            pf_den = str(preflush_calc.get("density_pcf") or ".... [DENSITY NOT SET IN PHASE IV]")
+            pf_type = str(preflush_calc.get("type", "Combined (Water + NaCl + Wash)"))
+
+            if pf_type == "Fresh Water Only":
+                pf_line = f"Pump {pf_vol:.1f} bbl fresh water as pre flush."
+            elif pf_type == "Brine (Water + NaCl)":
+                pf_line = f"Pump {pf_vol:.1f} bbl Salt Saturated water as pre flush.({pf_den} pcf)"
+            elif pf_type == "Water + Chemical Wash":
+                pf_line = f"Pump {pf_vol:.1f} bbl fresh water mix with {wash_amt:.0f} gal chemical wash as preflush.({pf_den} pcf)"
+            else:
+                pf_line = f"Pump {pf_vol:.1f} bbl salt saturated water mix with {wash_amt:.0f} gal chemical wash as preflush." if "13" in job_upper else f"Pump {pf_vol:.1f} bbl salt saturated water mix {wash_amt:.0f} gal chemical wash as preflush.({pf_den} pcf)"
             
     spacer_lines = {}
     slurry_lines = {}
@@ -1060,7 +1111,8 @@ def synchronize_report_texts():
     additives = state.get("cement_additives_dfs", {})
     hardware = state.get("hardware_table", pd.DataFrame())
     depth = state.get("geo_md")
-    preflush = state.get("preflush_calc")
+    preflush = (_preflush_report_payload(fluids, state.get("preflush_calc"))
+                if "Pre Flush" in active else None)
     pump_time = state.get("total_pump_time_min", 0.0)
     placement = state.get("placement_config", {})
     summary_config = summary_config_for_job(state.get("executive_summary_config"), job, active_slurry_names(active))
@@ -1233,21 +1285,46 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # silent 0.0 bbl row (fabricated report). Reachable only via a malformed
     # project JSON (Phase IV's own widgets always emit floats); same
     # philosophy as the placement '....' gate further below.
-    _volume_sources = list(active_slurries) + [
-        n for n in ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind", "Scavenger")
-        if n in active_fluids]
-    unreadable_volumes = sorted(
-        f"{name} → volume ({fluid_data[name].get('volume')!r})"
-        for name in dict.fromkeys(_volume_sources)
-        if isinstance(fluid_data.get(name), dict)
-        and fluid_data[name].get("volume") is not None
-        and safe_float(fluid_data[name].get("volume"), None) is None)
+    unreadable_volumes = []
+    params = st.session_state.get("fluids_config", {}).get("params", {})
+    for name in dict.fromkeys(active_fluids):
+        record = fluid_data.get(name)
+        # A canonical entry owns its inputs; only its absence permits legacy
+        # fluid_data fallback. Prepared records must also have a readable volume.
+        source = params.get(name, record)
+        for candidate in (source, record):
+            raw = candidate.get("volume") if isinstance(candidate, dict) else None
+            if safe_float(raw, None) is None:
+                unreadable_volumes.append(f"{name} → volume ({raw!r})")
+                break
+    unreadable_volumes.sort()
     if unreadable_volumes:
         invalidate_document(st.session_state)
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
     if calculations_prepared:
+        from engineering_tools import require_spacer_material_name
+        for fluid in active_fluids:
+            if fluid == "Pre Flush":
+                continue  # Its established admission and error remain below.
+            record = fluid_data[fluid]  # F3 has already validated these records.
+            source = params.get(fluid, record)
+            default_name = materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, "")
+            material_name = source.get("material_name", default_name)
+            try:
+                if fluid == "Diesel":
+                    name = default_name  # Diesel keeps its fixed identity authority.
+                else:
+                    if fluid in ("Spacer Ahead", "Spacer Behind"):
+                        require_spacer_material_name(fluid, material_name)
+                    name = "" if material_name is None else str(material_name)
+                if name != record.get("material_name", default_name):
+                    raise ValueError(f"Phase IV: {fluid} material identity changed; "
+                                     "refresh calculations before Word export.")
+            except ValueError:
+                invalidate_document(st.session_state)
+                raise
         if "Pre Flush" in active_fluids:
             from engineering_tools import require_preflush_material_name
             record = fluid_data.get("Pre Flush", {})
@@ -1452,13 +1529,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # as a fallback for projects saved before preflush_config existed.
     preflush_data = {}
     if "Pre Flush" in active_fluids:
-        _pf_config = st.session_state.get("preflush_config")
-        if _pf_config:
-            from phase_6_spacer import compute_preflush_payload
-            preflush_data = dict(compute_preflush_payload(
-                _pf_config, fluid_data.get("Pre Flush", {})))
-        else:
-            preflush_data = dict(st.session_state.get("preflush_calc") or {})
+        preflush_data = dict(_preflush_report_payload(
+            fluid_data, st.session_state.get("preflush_calc")))
     preflush_rows = []
     if preflush_data and safe_float(preflush_data.get("volume_bbl", 0.0)) > 0:
         w_bbl = safe_float(preflush_data.get("water_bbl", 0.0))
@@ -1580,7 +1652,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "contract_number": doc_ctrl.get("contract_number", ""),
         "proposal_number": doc_ctrl.get("proposal_number", ""),
         "cementing_method": doc_ctrl.get("cementing_method", "Primary Cementing"),
-        "date": doc_ctrl.get("date", datetime.today().strftime("%Y-%m-%d")),
+        "date": ("" if "date" in doc_ctrl and doc_ctrl["date"] is None
+                 else doc_ctrl.get("date", datetime.today().strftime("%Y-%m-%d"))),
         "district_phone": doc_ctrl.get("district_phone", ""),
         "made_by": doc_ctrl.get("made_by", ""),
         # FIX (requested): approval chain + revision marker, threaded through
@@ -1867,7 +1940,8 @@ def render():
     unreadable_card_volumes = []
     for s in active_slurries:
         p = cement_params.get(s, {})
-        vol_raw = fluid_data.get(s, {}).get("volume", 0.0)
+        record = fluid_data.get(s)
+        vol_raw = record.get("volume") if isinstance(record, dict) else None
         vol = safe_float(vol_raw, None)
         if vol is None:
             unreadable_card_volumes.append(f"{s} → volume ({vol_raw!r})")
