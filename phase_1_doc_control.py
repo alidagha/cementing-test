@@ -57,7 +57,7 @@ def _commit_doc_widget(field, widget_key=None):
         value = value.isoformat() if isinstance(value, (date, datetime)) else ""
     st.session_state[field] = value
     if field == "report_date":
-        value = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
+        value = value.isoformat() if isinstance(value, (date, datetime)) else "" if value is None else str(value)
     st.session_state.setdefault("doc_control", {})["date" if field == "report_date" else field] = value
     if field in ("request_description", "revision_description"):
         st.session_state[field + "_customized"] = True
@@ -97,6 +97,17 @@ def on_job_type_change():
         if params.get("top_job_type") is None:
             params["top_job_type"] = st.session_state["job_type"]
 
+    if new_job != st.session_state.get("job_type"):
+        from placement import EXCESS_FIELDS
+        from project_state import invalidate_document
+        placement = st.session_state.get("placement_config", {})
+        for field, _, _ in EXCESS_FIELDS:
+            placement.pop(field, None)
+            for key in list(st.session_state):
+                if key.startswith(f"_placement_{field}_"):
+                    st.session_state.pop(key, None)
+        st.session_state["_placement_excess_revision"] = st.session_state.get("_placement_excess_revision", 0) + 1
+        invalidate_document(st.session_state)
     _commit_doc_widget("job_type")
     if new_job == materials_db.CT_JOB:
         from project_state import reconcile_fluid_applicability, invalidate_document
@@ -150,7 +161,9 @@ def render():
     st.markdown("Enter primary operational metadata for the cementing program compliant with NIDC standards.")
     
     # 1. Initialize Flat Canonical State (shadow keys — survive navigation)
-    default_values = dict(DOC_CONTROL_DEFAULTS, report_date=date.today())
+    doc = st.session_state.get("doc_control", {})
+    default_date = None if "date" in doc and doc["date"] is None else date.today()
+    default_values = dict(DOC_CONTROL_DEFAULTS, report_date=default_date)
     for key, val in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -208,9 +221,10 @@ def render():
             st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
             st.session_state[shadow_key] = st.session_state[widget_key]
 
-        _seed("_w_report_date", "report_date")
+        if "_w_report_date" not in st.session_state:
+            value = st.session_state["report_date"]
+            st.session_state["_w_report_date"] = date.fromisoformat(value) if isinstance(value, str) else value
         st.date_input("Date", key="_w_report_date", on_change=_commit_doc_widget, args=("report_date",))
-        st.session_state["report_date"] = st.session_state["_w_report_date"]
         
         methods = ["Primary Cementing", "Remedial Cementing"]
         method_widget_key = _doc_widget_key("cementing_method")
@@ -282,7 +296,8 @@ def render():
         "client": st.session_state["client"],
         "contract_number": st.session_state["contract_number"],
         "proposal_number": st.session_state["proposal_number"],
-        "date": st.session_state["report_date"].isoformat() if isinstance(st.session_state["report_date"], (date, datetime)) else str(st.session_state["report_date"]),
+        "date": (st.session_state["report_date"].isoformat() if isinstance(st.session_state["report_date"], (date, datetime))
+                 else "" if st.session_state["report_date"] is None else str(st.session_state["report_date"])),
         "cementing_method": st.session_state["cementing_method"],
         "district_phone": st.session_state["district_phone"],
         "made_by": st.session_state["made_by"],

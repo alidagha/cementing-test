@@ -1304,6 +1304,27 @@ def build_master_context(*, calculations_prepared=False) -> dict:
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
     if calculations_prepared:
+        from engineering_tools import require_spacer_material_name
+        for fluid in active_fluids:
+            if fluid == "Pre Flush":
+                continue  # Its established admission and error remain below.
+            record = fluid_data[fluid]  # F3 has already validated these records.
+            source = params.get(fluid, record)
+            default_name = materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, "")
+            material_name = source.get("material_name", default_name)
+            try:
+                if fluid == "Diesel":
+                    name = default_name  # Diesel keeps its fixed identity authority.
+                else:
+                    if fluid in ("Spacer Ahead", "Spacer Behind"):
+                        require_spacer_material_name(fluid, material_name)
+                    name = "" if material_name is None else str(material_name)
+                if name != record.get("material_name", default_name):
+                    raise ValueError(f"Phase IV: {fluid} material identity changed; "
+                                     "refresh calculations before Word export.")
+            except ValueError:
+                invalidate_document(st.session_state)
+                raise
         if "Pre Flush" in active_fluids:
             from engineering_tools import require_preflush_material_name
             record = fluid_data.get("Pre Flush", {})
@@ -1631,7 +1652,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         "contract_number": doc_ctrl.get("contract_number", ""),
         "proposal_number": doc_ctrl.get("proposal_number", ""),
         "cementing_method": doc_ctrl.get("cementing_method", "Primary Cementing"),
-        "date": doc_ctrl.get("date", datetime.today().strftime("%Y-%m-%d")),
+        "date": ("" if "date" in doc_ctrl and doc_ctrl["date"] is None
+                 else doc_ctrl.get("date", datetime.today().strftime("%Y-%m-%d"))),
         "district_phone": doc_ctrl.get("district_phone", ""),
         "made_by": doc_ctrl.get("made_by", ""),
         # FIX (requested): approval chain + revision marker, threaded through

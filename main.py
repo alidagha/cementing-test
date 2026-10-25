@@ -574,7 +574,14 @@ if uploaded_project is not None:
                 # Compute before publication: failed baseline serialization
                 # must leave the currently open project untouched.
                 checkpoint = serialize_item(prepared)
-                checkpoint.setdefault("report_date", serialize_item(date.today()))
+                # Match Phase I's first mount on the comparison copy only:
+                # explicit null is blank; a missing/legacy-empty date defaults.
+                if "report_date" not in checkpoint:
+                    checkpoint["report_date"] = (None if "date" in checkpoint.get("doc_control", {})
+                        and checkpoint["doc_control"]["date"] is None else serialize_item(date.today()))
+                calendar = checkpoint["report_date"]
+                calendar = calendar.get("val") if isinstance(calendar, dict) else calendar
+                checkpoint.setdefault("doc_control", {})["date"] = "" if calendar is None else calendar
                 loaded_signature = _project_comparison_signature(json.dumps(checkpoint, allow_nan=False))
                 replace_project_state(st.session_state, prepared, upload_sig,
                                       preserved_keys=(uploader_key, "_uploader_revision"))

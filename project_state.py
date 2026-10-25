@@ -143,8 +143,10 @@ def restore_canonical_fields(state):
         if "report_date" not in state and doc.get("date"):
             state["report_date"] = date.fromisoformat(str(doc["date"]))
         if "report_date" in state:
+            state["doc_control"] = doc
             value = state["report_date"]
-            doc["date"] = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
+            doc["date"] = (value.isoformat() if isinstance(value, (date, datetime))
+                           else "" if value is None else str(value))
     well = state.get("well_data", {})
     if isinstance(well, dict):
         for field, effective, default in (("mud_density", "effective_mud_density", None),
@@ -557,7 +559,7 @@ def refresh_fluids(state):
         duration = volume / minimum
         cumulative += duration
         result[name] = {
-            "name": name, "material_name": str(material_name),
+            "name": name, "material_name": "" if material_name is None else str(material_name),
             "volume": volume, "density": density, "effective_density": effective,
             "pump_rate": rate, "min_rate": minimum, "duration_min": duration,
             "duration_str": format_to_hr_mm(duration), "cumul_time_min": cumulative,

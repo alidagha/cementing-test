@@ -40,7 +40,7 @@ def build_fluid_record(
     """Standardized factory ensuring strict type safety for downstream consumers (Phases 5, 6, 7, 10)."""
     return {
         "name": str(name),
-        "material_name": str(material_name),
+        "material_name": "" if material_name is None else str(material_name),
         "volume": float(volume),
         "density": str(density_str),
         "effective_density": float(effective_density),
@@ -74,7 +74,7 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     # IV recalculates durations and cumulative time when it renders again.
     record = st.session_state.get("fluid_data", {}).get(fluid)
     if isinstance(record, dict):
-        record[field] = value
+        record[field] = "" if field == "material_name" and value is None else value
         if field == "density":
             if fluid in ("Diesel", "Spacer"):
                 try:
@@ -271,15 +271,19 @@ def render():
         elif fluid == "Pre Flush":
             render_preflush_material_name()
         else:
-            p["material_name"] = st.text_input(
+            material_name = p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))
+            widget_key = f"matname_{fluid}"
+            st.session_state[widget_key] = "" if material_name is None else str(material_name)
+            entered_name = st.text_input(
                 f"Material Name - {fluid}",
-                value=("" if fluid in ("Spacer Ahead", "Spacer Behind") and "material_name" in p and p["material_name"] is None
-                       else str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, "")))),
                 help="Descriptive fluid name shown in the 'Name' column (e.g. 'Cement Slurry', 'Salt Saturated Water', 'Mud').",
                 key=f"matname_{fluid}",
                 on_change=_commit_fluid_widget,
                 args=(fluid, "material_name", f"matname_{fluid}")
             )
+            # A blank widget is a projection of null, not an operator edit.
+            if material_name is not None or entered_name:
+                p["material_name"] = entered_name
 
         col1, col2, col3, col4, col5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
         
@@ -386,7 +390,7 @@ def render():
 
         fluid_data_payload[fluid] = build_fluid_record(
             name=fluid,
-            material_name=str(p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, ""))),
+            material_name=p.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES.get(fluid, "")),
             volume=float(p["volume"]),
             density_str=disp_density_text if fluid == "Displacement Fluid" else str(p["density"]),
             effective_density=disp_effective_density,

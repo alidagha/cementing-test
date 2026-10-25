@@ -75,7 +75,15 @@ def _apply_bhct_suggestion():
     invalidate_document(st.session_state)
 
 
+def _excess_widget_key(field):
+    load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
+    revision = st.session_state.get("_placement_excess_revision", 0)
+    return f"_placement_{field}_{load_sig}_{revision}"
+
+
 def _commit_placement(field, widget_key):
+    if field in {name for name, _, _ in EXCESS_FIELDS} and widget_key != _excess_widget_key(field):
+        return  # A retired job/load generation cannot commit a late value.
     placement = st.session_state.setdefault("placement_config", {})
     placement.update(job_type=st.session_state.get("job_type", ""), **{field: st.session_state[widget_key]})
     invalidate_document(st.session_state)
@@ -510,6 +518,7 @@ def render():
     if placement.get("job_type") != job_type:
         placement.clear()
         placement["job_type"] = job_type
+        st.session_state["_placement_excess_revision"] = st.session_state.get("_placement_excess_revision", 0) + 1
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     choice_key = f"_placement_target_{fingerprint(job_type)[:10]}_{load_sig}"
     if job_type == materials_db.CT_JOB:
@@ -575,9 +584,8 @@ def render():
     else:
         _render_schematic_inputs(load_sig)
     for field, label, _ in EXCESS_FIELDS:
-        widget_key = f"_placement_{field}_{load_sig}"
-        if widget_key not in st.session_state:
-            st.session_state[widget_key] = placement.get(field)
+        widget_key = _excess_widget_key(field)
+        st.session_state[widget_key] = placement.get(field)
         placement[field] = st.number_input(
             label, min_value=0.0, step=0.1, value=None,
             key=widget_key, on_change=_commit_placement, args=(field, widget_key),
