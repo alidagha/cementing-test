@@ -433,8 +433,6 @@ def render():
                                       ("mix_water", "Manual mix water", 0.0)):
                 if field in params:
                     bounded.append((params, field, f"{label} - {slurry}", low, None, False))
-        if slurry in materials_db.PLACEMENT_SLURRIES and params.get("top_mode") == "Depth (m MD)" and params.get("top_depth") is not None:
-            bounded.append((params, "top_depth", f"Top depth - {slurry}", 0.0, None, False))
     if repair_invalid_inputs(bounded, f"phase5_{load_sig}"):
         return
     tabs = st.tabs(active_slurries)
@@ -641,6 +639,12 @@ def render():
                     p.pop("draft_top_depth", None)
                 if p.get("draft_top_job_type") not in (None, job_type):
                     p.pop("draft_top_depth", None)
+                if top_mode == "Depth (m MD)" and p.get("top_depth") is not None:
+                    if repair_invalid_inputs(
+                        [(p, "top_depth", f"Top depth - {slurry}", 0.0, None, False)],
+                        f"phase5_{load_sig}",
+                    ):
+                        return
                 mode_key = f"_top_mode_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
                 p["top_mode"] = st.selectbox(f"Top of cement - {slurry}", top_options,
                                              index=top_options.index(top_mode), key=mode_key,
@@ -763,8 +767,14 @@ def render():
             )
             
             normalized = st.session_state["cement_additives_dfs"][slurry]
-            if not normalized.equals(edited_df):
-                # Show the corrected Name/classification/default in the same row.
+            name_changed = any(
+                "Name" in changes
+                and str(changes["Name"]).strip().casefold() != str(option_df.iloc[int(position)]["Name"]).strip().casefold()
+                for position, changes in st.session_state.get(editor_key, {}).get("edited_rows", {}).items()
+                if 0 <= int(position) < len(option_df)
+            )
+            if name_changed or not normalized.equals(edited_df):
+                # Retire the old Name source even when catalog defaults match.
                 st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
                 st.rerun()
             edited_df = normalized
