@@ -1137,7 +1137,10 @@ def compute_phase_status(ss) -> dict:
                 continue
             if slurry == "Pre Flush":
                 from cement_chart_model import chart_job_kind
-                if chart_job_kind(ss.get("job_type")) is not None:
+                job = ss.get("job_type")
+                if job is None:
+                    missing.append(slurry)
+                elif chart_job_kind(job) is not None:
                     from centralizer_adapter import preflush_readings, _dynamic_fann
                     try:
                         _dynamic_fann(preflush_readings(ss), slurry)
