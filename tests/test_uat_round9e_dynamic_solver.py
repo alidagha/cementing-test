@@ -52,10 +52,6 @@ def dynamic_state(kind="casing", **fluids):
     if not fluids:
         fluids = {"Displacement Fluid": 200., "Tail": 100., "Spacer": 50.}
     state = fluid_state(kind, **fluids)
-    if kind == "liner":
-        # Synthetic scalar-representable dynamic prerequisite; the frozen
-        # friction integral includes upstream Hardware from surface.
-        state["hardware_table"].loc[state["hardware_table"]["Description"] == "Drill Pipes", "Size (in)"] = "7"
     state.update(plastic_viscosity="15-17", yield_point="8-12", effective_pv=999., effective_yp=999.)
     for row in state["fluids_config"]["params"].values():
         row.update(pump_rate="4-6", min_rate=999.)

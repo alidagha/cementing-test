@@ -121,16 +121,18 @@ def test_outer_installed_history_edit_retires_centralizer_authority():
     assert phase9.source_signature(state, catalog) != before
 
 
-def test_dynamic_upstream_od_step_cannot_be_emulated_by_scalar_solver():
+def test_dynamic_active_body_keeps_measured_upstream_od_in_fluid_path():
     from test_uat_round9e_dynamic_solver import dynamic_state, auxiliary
     from test_uat_round9d_static_solver import zones_for
     state = dynamic_state("liner")
     state["hardware_table"].loc[state["hardware_table"]["Description"] == "Drill Pipes", "Size (in)"] = "5"
     catalog = centralizer_adapter.load_official_catalog()
-    # Static projection legitimately excludes the upstream workstring.
+    # The frozen profile evaluates the active body; the fluid path still
+    # includes the actual distinct workstring. No scalar hydraulic substitute.
     assert centralizer_adapter.to_engine_geometry(state)["wellbore"]["string_top"] == 400.
-    with pytest.raises(ValueError, match="[Dd]ynamic.*(OD|diameter)|upstream"):
-        centralizer_adapter.build_dynamic_payload(state, zones_for(catalog, "liner"), catalog, aux_rheology=auxiliary())
+    result = centralizer_adapter.build_dynamic_payload(state, zones_for(catalog, "liner"), catalog, aux_rheology=auxiliary())
+    assert result["payload"]["casing"]["od"] == 7. * .0254
+    assert chart.resolve_chart_geometry(state)["active_string"][0]["od_in"] == 5.
 
 
 def test_liner_running_fit_is_separate_from_final_upstream_workstring_wall():

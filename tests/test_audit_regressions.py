@@ -82,6 +82,8 @@ def chart_fixture(job, target=3000.0):
                 ("Liner", extent, od, inner), ("Open Hole Size", extent, 12.25, 12.25),
                 ("Liner Hanger", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
     elif job in tieback:
+        # Synthetic scalar-certification well: receiver starts at the tie-in.
+        # It is NOT equivalent to the old 2500-m Top / two-ID receiving liner.
         od, inner = tieback[job]
         extent = max(extent, target + 300.)
         rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back", f"0-{target}", od, inner),
@@ -114,10 +116,6 @@ def valid_export_chart_fixture(job, target=3000.0):
     table = fixture['hardware_table']
     descriptions = target_descriptions(job)
     table.loc[table['Description'].isin(descriptions), 'MD (m)'] = str(target)
-    if 'LNR' in job and 'TIE BACK' not in job:
-        # Synthetic scalar-representable dynamic export prerequisite.
-        active_od = table.loc[table['Description'] == 'Liner', 'Size (in)'].iloc[0]
-        table.loc[table['Description'] == 'Drill Pipes', 'Size (in)'] = active_od
     if 'TIE BACK' in job:
         table.loc[table['Description'] == 'Tie Back', 'MD (m)'] = f'0-{target}'
         fixture['placement_config']['host_row'] = next(token for token, row in
@@ -604,7 +602,16 @@ class AuditRegressions(unittest.TestCase):
                 if job not in ('CMT PLUG', 'CMT SQUEEZE'):
                     table = app.session_state['hardware_table']
                     index = table.index[table['Description'].isin(target_descriptions(job))][0]
-                    self.hardware_event(app, {'edited_rows': {str(index): {'MD (m)': '2850.0'}}})
+                    # Preserve the known explicit Top while editing Tie Back Shoe.
+                    md = '0-2850.0' if 'TIE BACK' in job else '2850.0'
+                    edits = {str(index): {'MD (m)': md}}
+                    if 'TIE BACK' in job:
+                        # This synthetic scalar fixture lands at receiver Top;
+                        # move that explicit fixture prerequisite with the tie-in.
+                        receiver = table.index[table['Description'] == 'Previous Liner'][0]
+                        shoe = table.at[receiver, 'MD (m)'].rsplit('-', 1)[1]
+                        edits[str(receiver)] = {'MD (m)': '2850.0-' + shoe}
+                    self.hardware_event(app, {'edited_rows': edits})
                     token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
                     next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
                 for phase in ("phase4", "phase5", "phase6", "phase7"):

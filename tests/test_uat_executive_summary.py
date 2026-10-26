@@ -46,6 +46,34 @@ def tokens():
     return selected
 
 
+def summary_hardware(job):
+    """Synthetic, job-specific sources; the old label catalog was not one well."""
+    table = hardware()
+    if job == JOB:
+        return table.loc[table['Description'].isin(('Casing', 'Previous Casing', 'Open Hole Size'))].copy()
+    if job.startswith('TIE BACK'):
+        table = table.loc[table['Description'].isin(('Casing', 'Previous Casing', 'Open Hole Size'))].copy()
+        size, inner = ('5', 4.276) if job == 'TIE BACK LNR 5"' else ('7', 6.276)
+        return pd.concat([table, pd.DataFrame([
+            {'Description': 'Tie Back', 'MD (m)': '0-3300', 'Size (in)': size, 'ID (in)': inner},
+            {'Description': 'Previous Liner', 'MD (m)': '3000-3300', 'Size (in)': '7.625', 'ID (in)': 7.25}
+        ])], ignore_index=True)
+    if job == 'LNR 7"':
+        table = table.loc[table['Description'] != 'Tie Back'].copy()
+        table.loc[table['Description'] == 'Liner Hanger', ['Size (in)', 'ID (in)']] = ['7', 6.276]
+        return table
+    if job == 'LNR 5"':
+        table = table.loc[~table['Description'].isin(('Tie Back', 'Liner', 'Liner Hanger'))].copy()
+        return pd.concat([table, pd.DataFrame([
+            {'Description': 'Previous Liner', 'MD (m)': '1000-2800', 'Size (in)': '7', 'ID (in)': 6.276},
+            {'Description': 'Liner', 'MD (m)': '1000-3300', 'Size (in)': '5', 'ID (in)': 4.276},
+            {'Description': 'Liner Hanger', 'MD (m)': '1000', 'Size (in)': '5', 'ID (in)': 4.276}
+        ])], ignore_index=True)
+    if job.startswith(('CSG ', 'LNR ')):
+        return audit.chart_fixture(job, target=3030.)['hardware_table']
+    return table  # Plug/Squeeze tests use the label catalog, not chart admission.
+
+
 def config(job=JOB, records=None, **fields):
     return {'version': 1, 'job_type': job, 'per_slurry': records or {}, **fields}
 
@@ -61,7 +89,7 @@ def generate(job=JOB, active=('Lead', 'Tail'), metadata=None, adds=None, excess=
                  'chart_excess_mode': 'ignore', 'host_row': tokens()['Casing'],
                  'excess_csg_oh_pct': 100. if excess else None, 'excess_csg_csg_pct': 20. if excess else None}
     return report.generate_executive_summary(job, fluids, list(active), adds or {},
-        hardware() if table is None else table, cement_params=params, placement_config=placement,
+        summary_hardware(job) if table is None else table, cement_params=params, placement_config=placement,
         executive_summary_config=metadata)
 
 
@@ -135,7 +163,9 @@ class ExecutiveSummaryReferences(unittest.TestCase):
         self.assertIn('and 70.0 m liner lap inside 9 5/8" Casing', text)
 
     def test_liner_client_request_wet_stands_with_and_without_host(self):
-        for host in ('', tokens()['Liner']):
+        # The 7-inch wet-stand host is installed history, not the active 5-inch liner.
+        host_token = next(iter(hardware_choices(summary_hardware('LNR 5"'), {'Previous Liner'})))
+        for host in ('', host_token):
             with self.subTest(host=host):
                 cfg = config('LNR 5"', {'Main': {'volume_basis': 'client_request', 'wet_stands': 10., 'wet_inside_host_row': host}})
                 text = generate('LNR 5"', ('Main',), cfg)

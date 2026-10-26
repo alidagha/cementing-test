@@ -255,16 +255,13 @@ def to_engine_geometry(state):
 
 
 def require_dynamic_geometry(state):
-    """Frozen friction integrates surface→shoe with one OD, including upstream.
+    """The frozen profile consumes local drag/tension from active Top to Shoe.
 
-    Static mechanics can exclude workstring above the active top. Dynamic
-    pressure cannot: reject an OD step rather than emulate it with caliper.
+    Its surface cumulative-pressure integral is not consumed by this profile.
+    Require the same uniform active body / scalar wall contract as Static;
+    full-path fluid volumes and source identities retain measured workstring.
     """
-    geometry = cement_chart_model.resolve_chart_geometry(state)
-    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[geometry["kind"]]
-    active = [s for s in geometry["active_string"] if s["description"] == description]
-    if any(s["od_in"] != active[0]["od_in"] for s in geometry["active_string"]):
-        raise ValueError("Dynamic Centralizer geometry unsupported: upstream OD steps cannot map to the frozen scalar solver.")
+    to_engine_geometry(state)
 
 
 def _fluid_columns_override(override, shoe):

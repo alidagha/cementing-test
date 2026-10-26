@@ -285,7 +285,9 @@ def test_tieback_advanced_is_unavailable_and_draft_is_not_erased(phase):
     from test_uat_round8a_chart_model import hardware
     from placement import hardware_choices
     state=balanced_state();state['job_type']=state['placement_config']['job_type']='TIE BACK LNR 7"'
-    state['hardware_table']=hardware(('Tie Back','1000','7',6.276),('Previous Casing','1200','9.625',8.535))
+    # Synthetic surface Top and receiver-at-tie-in, wholly cased/no exposure.
+    state['hardware_table']=hardware(('Tie Back','0-1000','7',6.276),('Previous Casing','1200','9.625',8.535),
+                                     ('Previous Liner','1000-1300','7',6.276))
     state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
     state['formation_pressure_config']=configured_profile()
     draft=deepcopy(state['formation_pressure_config'])

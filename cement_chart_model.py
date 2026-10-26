@@ -360,6 +360,9 @@ def resolve_chart_geometry(state):
         active = _segments(active_rows, 0., shoe, description)
     history = {"Previous Casing", "Previous Liner", "Casing", "Liner"} - {description}
     strings = installed_geometry.physical_strings(rows, _segments, history)
+    if kind != "tieback" and any(s["description"].startswith("Previous ") and s["shoe_md"] >= shoe
+                                 for s in strings):
+        raise ValueError("Previous shoe must lie above the active string shoe.")
     outer = installed_geometry.enclosing_path(rows, strings, active, shoe, _segments)
     if kind == "tieback":
         choices = hardware_choices(table, HOST_DESCRIPTIONS)

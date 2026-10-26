@@ -365,8 +365,11 @@ NO_DIESEL_A42 = {
                    'f819749f83a9b610eb9e609c5e0c3086ca37a7d916621af78e8f759aff7e97a7'),
     'LNR 7"': ('8db5ea1d997b98f9b151226485dcea9bed2cf2849bce58557db81d5a00e3ec66',
                '4267804c582208ebd88e4dfbd6a8d6971b07470ec31873e44d628a4ac371001f'),
-    'TIE BACK LNR 7"': ('7b28fa5f211df4f078be57bc8ec9e6bcf3a3c709b70c87c7dd0132c7365ff289',
-                        'c5ae8ccbfa6fb60503c597e1d6cd3570b971836b4fc257c49bcdee17e578bfda'),
+    # Owner-approved synthetic scalar reference: explicit surface Top and
+    # receiver3000–3300. The old receiver2500–3300 is a two-ID negative control,
+    # not an equivalent scalar well (test_round15_ci14_regressions).
+    'TIE BACK LNR 7"': ('00caf3ada79194f4ecc27a68ee0f4900eeb100220cc2df7a9af7d40f9a0d0d75',
+                        '18cbad6e0d9a0dfdec8ef983483ed84bb9beec1ceaf515f9125fc9eff8fa6291'),
     'CMT PLUG': ('2d3b3558e5bdb118ea7e4d0dc97d8e09f37c122509d47506ea174c6718c7a805',
                  '60a9af129c2a0053bfa3e0c8acf9dee417d1be787e402cf7b9fdb145dab98ecb'),
     'CMT SQUEEZE': ('1b728a841796aed381a0b3f488924dedc6e8f4f65d7fe51b287711ea489ddaf4',
