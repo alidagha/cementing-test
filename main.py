@@ -175,7 +175,11 @@ def _navigation_sources_not_started(state):
             return all(key in expected and unchanged(item, expected[key]) for key, item in value.items())
         return isinstance(value, bool) == isinstance(expected, bool) and value == expected
 
-    return unchanged(serialize_item(sources), serialize_item(defaults))
+    try:
+        return unchanged(serialize_item(sources), serialize_item(defaults))
+    except ValueError:
+        # Invalid sources are not pristine; saving still rejects them.
+        return False
 
 def _phase_caption(key):
     if key == "phase10":

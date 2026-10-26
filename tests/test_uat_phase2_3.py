@@ -1,5 +1,6 @@
 """Manual UAT Round 1: blank well inputs, hardware defaults and derived values."""
 import json
+import math
 import unittest
 from unittest.mock import patch
 
@@ -47,7 +48,15 @@ class Phase23UAT(unittest.TestCase):
         self.phase(app, "phase1")
         self.phase(app, "phase2_3")
         self.assertAlmostEqual(app.session_state["geo_gradient"], ((200-80)/(3000*3.28084))*100)
-        self.assertAlmostEqual(float(app.text_input(key="_w_bhsp").value), 3000*82*0.02278)
+        pressure = 3000*82*0.02278
+        self.assertEqual(app.text_input(key="_w_bhsp").value, str(math.ceil(pressure)))
+        self.assertAlmostEqual(float(app.session_state["bhsp"]), pressure)
+        self.assertAlmostEqual(float(app.session_state["well_data"]["bhsp"]), pressure)
+        self.assertTrue(app.session_state["well_auto_fields"]["bhsp"])
+        saved = audit.round_trip(app.session_state.to_dict())
+        self.assertAlmostEqual(float(saved["bhsp"]), pressure)
+        self.assertAlmostEqual(float(saved["well_data"]["bhsp"]), pressure)
+        self.assertTrue(saved["well_auto_fields"]["bhsp"])
         app.number_input(key="_w_vertical_td").set_value(2500.).run()
         self.assertAlmostEqual(app.session_state["geo_gradient"], ((200-80)/(2500*3.28084))*100)
         self.assertAlmostEqual(float(app.session_state["bhsp"]), 2500*82*0.02278)
@@ -138,6 +147,12 @@ class Phase23UAT(unittest.TestCase):
                     project = audit.round_trip(valid)
                     if field in ("geo_md", "geo_tvd"):
                         project["well_geometry"]["td_m"] = None
+                        # No valid hardware source may legitimately auto-seed this
+                        # genuinely missing-depth negative under approved 14B.
+                        for table_key in ("hardware_table", "hardware_editor_draft"):
+                            table = project.get(table_key)
+                            if isinstance(table, pd.DataFrame):
+                                table.loc[table["Description"] == "Open Hole Size", "MD (m)"] = ""
                     elif field == "bhst":
                         project["geothermal_config"]["value"] = None
                     project[field] = None if field in ("geo_md", "geo_tvd", "bhst", "geo_gradient") else ""

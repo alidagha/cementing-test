@@ -611,6 +611,7 @@ def spacer_lab_grid(state):
     previous = state.get("lab_grid_dfs", {}).get("Spacer")
     lots = (dict(zip(previous["Material"], previous["Lot No"]))
             if isinstance(previous, pd.DataFrame) and {"Material", "Lot No"}.issubset(previous.columns) else {})
+    lots = {material: "" if lot is None else lot for material, lot in lots.items()}
     grid["Lot No"] = grid["Material"].map(
         lambda material: lots[material] if material in lots else ("Lab Sample" if material == "Fresh Water" else ""))
     # Display precision only; the solver and unrounded lab sample stay intact.

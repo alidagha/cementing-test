@@ -100,7 +100,16 @@ _render_rheology("Scavenger", st.session_state["lab_qc_params"]["Scavenger"], "c
     app.session_state["lab_qc_params"] = {"Scavenger": deepcopy(source)}
     app.run()
     assert not app.exception and not app.warning
-    assert len(app.metric) == 6
+    assert len(app.metric) == 4
+    assert [metric.label for metric in app.metric] == ["PV (cP)", "Ty (lbf/100ft²)"] * 2
+    assert app.session_state["lab_qc_params"]["Scavenger"] == before
+    from phase_10_procedure import _word_rheology
+    for key in ("surface_down", "bhct_down"):
+        assert expected[key]["iod"] is not None
+        assert _word_rheology(expected)[key]["iod"] == f"{expected[key]['iod']:.3f}"
+    assert [metric.value for metric in app.metric] == [
+        text for key in ("surface_down", "bhct_down")
+        for text in (f"{expected[key]['pv_cp']:.3f}", f"{expected[key]['ty_lbf_100ft2']:.2f}")]
 
 
 def test_exact_existing_datasets_rpms_gels_and_math_are_used():
@@ -124,7 +133,17 @@ def test_exact_existing_datasets_rpms_gels_and_math_are_used():
     expected = [(rpm, float(qc_source()["rheology"]["bhct_down"]["readings"][str(rpm)]))
                 for rpm in rheology.RPM_ORDER]
     assert observed and all(points == expected for points in observed)
-    assert len(app.metric) == 6
+    assert len(app.metric) == 4
+    assert [metric.label for metric in app.metric] == ["PV (cP)", "Ty (lbf/100ft²)"] * 2
+    assert app.session_state["lab_qc_params"]["Diesel"] == qc_source()
+    result = et.validate_lab_rheology(app.session_state["lab_qc_params"]["Diesel"], "Diesel")
+    from phase_10_procedure import _word_rheology
+    for key in ("surface_down", "bhct_down"):
+        assert result[key]["iod"] is not None
+        assert _word_rheology(result)[key]["iod"] == f"{result[key]['iod']:.3f}"
+    assert [metric.value for metric in app.metric] == [
+        text for key in ("surface_down", "bhct_down")
+        for text in (f"{result[key]['pv_cp']:.3f}", f"{result[key]['ty_lbf_100ft2']:.2f}")]
     assert_no_cement_diesel(app.session_state.to_dict())
 
 
