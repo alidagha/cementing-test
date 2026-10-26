@@ -84,7 +84,7 @@ def test_lab_word_units_are_presentation_only_and_freshwater_is_exact(source, mo
     doc = word(ctx)
     lab = next(t for t in doc.tables if t.cell(0, 0).text == "Spacer Lab Results")
     rows = lab.rows[2:-1]
-    assert [cell.text for cell in rows[0].cells[:5]] == ["Water", "Fresh Water", "", "1.0", "1.0"]
+    assert [cell.text for cell in rows[0].cells[:5]] == ["Water", "Fresh Water", "Lab Sample", "1.0", "1.0"]
     units = {"Salt": "FW lb/bbl", "O-Spacer": "FW lb/bbl", "Surfactant": "FW gal/bbl",
              "Defoamer": "FW gal/bbl", "Limestone": "FW lb/bbl", "Barite": "FW lb/bbl",
              "Ferro Bar": "FW lb/bbl"}
@@ -595,7 +595,7 @@ def test_four_mode_display_cannot_become_recipe_or_lab_authority(source, mode, d
     assert sp.formulation_from_state(state) == recipe == original_recipe
 
 
-def test_display_mapping_preserves_explicit_lot_clear(source):
+def test_display_mapping_preserves_explicit_lot_clear(source, tmp_path):
     from phase_7_lab import _spacer_lab_display, _commit_spacer_lots
     state = deepcopy(source)
     grid = state["lab_grid_dfs"]["Spacer"]
@@ -609,6 +609,21 @@ def test_display_mapping_preserves_explicit_lot_clear(source):
     state["lab_grid_dfs"]["Spacer"] = saved
     ps.refresh_spacer_lab(state)
     assert state["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] == ""
+    restored = audit.round_trip(state)
+    ps.refresh_spacer_lab(restored)
+    assert restored["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] == ""
+    assert not restored["lab_qc_params"]["Spacer"]["reviewed"]
+    case = audit.AuditRegressions()
+    app = case.app(restored)
+    case.phase(app, "phase7")
+    next(b for b in app.button if b.key.startswith("_confirm_lab_btn_spacer_")).click().run()
+    case.export(app)  # Genuine confirmation, never a forged matching review signature.
+    data = app.session_state["_compiled_doc_bytes"]
+    (tmp_path / "explicit-cleared-spacer-lot.docx").write_bytes(data)
+    lab = next(t for t in Document(BytesIO(data)).tables if t.cell(0, 0).text == "Spacer Lab Results")
+    water = next(row for row in lab.rows if row.cells[1].text == "Fresh Water")
+    assert water.cells[2].text == ""
+    assert app.session_state["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] == ""
 
 
 def test_spacer_lab_and_rheology_remain_separate_word_tables(source):

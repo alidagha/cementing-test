@@ -184,9 +184,11 @@ def render():
     with col1:
         # Job Type with instant callback
         _seed("_w_job_type", "job_type")
+        job_choices = [job for job in materials_db.JOB_TYPES
+                       if job != 'CSG 7"' or job == st.session_state["job_type"]]
         st.selectbox(
             "Job Type", 
-            materials_db.JOB_TYPES, 
+            job_choices,
             key="_w_job_type",
             on_change=on_job_type_change
         )

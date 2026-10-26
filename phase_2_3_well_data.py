@@ -6,7 +6,7 @@ import materials_db
 from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS
 from bhct_helper import M_TO_FT, suggest_bhct
 from project_state import (fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived,
-                           invalidate_document, reconcile_fluid_applicability)
+                           invalidate_document, reconcile_fluid_applicability, hardware_draft_pending)
 from project_io import normalize_hardware_text_columns
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -38,6 +38,13 @@ def get_well_data() -> dict:
 
 def _commit_well_widget(field):
     """Keep the flat input and export-facing well snapshot in step on blur."""
+    if field == "bhsp" and st.session_state["well_auto_fields"].get(field):
+        current = st.session_state[field]
+        precise = hardware_number(current)
+        displayed = (str(math.ceil(precise))
+                     if current not in (None, "") and precise is not None else current)
+        if st.session_state[f"_w_{field}"] == displayed:
+            return  # An unchanged automatic display is not a manual pressure edit.
     st.session_state[field] = st.session_state[f"_w_{field}"]
     if field in ("bhsp",):
         st.session_state["well_auto_fields"][field] = False
@@ -217,6 +224,10 @@ def _render_well_profile():
                  key="_w_geometry_type", on_change=_commit_profile_widget,
                  args=("well_geometry", "type", "_w_geometry_type"))
     if geometry.get("type") == "Vertical":
+        suggestion = _vertical_td_suggestion()
+        if suggestion is not None:
+            st.session_state["_w_vertical_td"] = suggestion
+            _commit_profile_widget("well_geometry", "td_m", "_w_vertical_td")
         _profile_number("TD / MD (m)", "well_geometry", "td_m", "_w_vertical_td",
                         min_value=0.0, step=10.0, format="%.1f")
     elif geometry.get("type") == "Directional":
@@ -267,6 +278,25 @@ def hardware_number(raw):
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _vertical_td_suggestion():
+    geometry = st.session_state.get("well_geometry", {})
+    if (geometry.get("type") != "Vertical" or geometry.get("td_m") is not None
+            or hardware_draft_pending(st.session_state)):
+        return None
+    table = st.session_state.get("hardware_table")
+    if not isinstance(table, pd.DataFrame):
+        return None
+    rows = table.loc[table["Description"] == "Open Hole Size"]
+    if len(rows) != 1:
+        return None
+    raw = rows.iloc[0]["MD (m)"]
+    scalar = hardware_number(raw)
+    if scalar is not None and scalar > 0 and measured_depth(raw) == scalar:
+        return scalar
+    return None
+
 
 
 def render():
@@ -361,7 +391,9 @@ def render():
         column_config={
             "Description": st.column_config.SelectboxColumn(
                 "Description",
-                options=materials_db.HARDWARE_DESCRIPTIONS + (["CT"] if st.session_state.get("job_type") == materials_db.CT_JOB else []),
+                options=[name for name in materials_db.HARDWARE_DESCRIPTIONS
+                         if name != "Tubing" or source["Description"].eq("Tubing").any()]
+                        + (["CT"] if st.session_state.get("job_type") == materials_db.CT_JOB else []),
                 default="Casing",
                 required=True,
                 width="medium"
@@ -694,6 +726,9 @@ def render():
             st.error("BHCT cannot exceed BHST; correct the well temperature before Lab review.")
     with cols[1]:
         _seed("_w_bhsp", "bhsp")
+        precise_pressure = hardware_number(st.session_state["bhsp"])
+        if auto_fields["bhsp"] and st.session_state["bhsp"] not in (None, "") and precise_pressure is not None:
+            st.session_state["_w_bhsp"] = str(math.ceil(precise_pressure))
         st.text_input("BHSP (psi)", key="_w_bhsp", on_change=_commit_well_widget, args=("bhsp",),
                       help="Automatic pressure uses canonical TVD and the upper Mud Weight range value. A manual entry remains authoritative.")
     if st.session_state["bhst"] is not None and st.session_state["bhst"] < 80:

@@ -50,7 +50,12 @@ def test_six_independent_thickening_inputs():
     case.phase(app, 'phase7')
     for field, label in LABELS.items():
         widgets = app.number_input if field == 'thickening_cell' else app.text_input
-        assert any(w.label == label + ' - Main' for w in widgets), label
+        if field == 'thickening_enter_time':
+            assert not any(w.label == label + ' - Main' for w in widgets)
+        else:
+            assert any(w.label == label + ' - Main' for w in widgets), label
+    hours = [w for w in app.number_input if w.label == 'Surface Sample Hours - Main']
+    assert len(hours) == 1 and hours[0].key.startswith('_qc_surface_hours_in_main_')
 
 
 def test_real_word_contains_all_six_values_without_endpoint_authority():
@@ -63,9 +68,10 @@ def test_real_word_contains_all_six_values_without_endpoint_authority():
     Path('/tmp/r52-word.docx').write_bytes(data)
     table = next(t for t in Document(BytesIO(data)).tables
                  if t.rows[0].cells[0].text == 'Thickening Time Test')
-    assert table.rows[2].cells[2].text == 'Enter Time\nhr:mm'
+    assert ' '.join(table.rows[2].cells[2].text.split()) == 'Initial Temp (degF)'
+    assert table.rows[3].cells[3].text == 'Surface'
     assert [table.rows[3].cells[i].text for i in (4, 2, 5, 6, 7, 8)] == [
-        '23:59', '00:00', '2.5', '01:10', '02:20', '03:30']
+        '23:59', '70', '2.5', '01:10', '02:20', '03:30']
     assert 'thickening_endpoint' not in app.session_state['lab_payload_Main']
 
 
@@ -150,7 +156,11 @@ def test_bhct_edit_blocks_old_document_then_reconfirmation_updates_flc():
     ('00:0', False), ('01.00', False), ('', False), (None, False)])
 def test_wall_clock_and_elapsed_boundaries(field, value, valid):
     qc = {**FIELDS, field: value}
-    if valid:
+    if field == 'thickening_enter_time':
+        # Legacy text remains persisted, but is not an invisible completion gate.
+        assert validate_thickening_test(qc)[field] == value
+        assert audit.round_trip({'job_type': 'CSG 9 5/8"', 'lab_qc_params': {'Main': qc}})['lab_qc_params']['Main'][field] == value
+    elif valid:
         assert validate_thickening_test(qc)[field] == value
     else:
         with pytest.raises(ValueError): validate_thickening_test(qc)
@@ -171,7 +181,7 @@ def test_milestone_envelope_and_no_invented_order_or_cell_bounds():
         with pytest.raises(ValueError): validate_thickening_test({**FIELDS, 'thickening_cell': cell})
 
 
-@pytest.mark.parametrize('field', list(FIELDS))
+@pytest.mark.parametrize('field', [field for field in FIELDS if field != 'thickening_enter_time'])
 def test_each_required_field_independently_blocks_ui_status_and_export(field):
     case = audit.AuditRegressions()
     state = project()
@@ -191,7 +201,7 @@ def test_first_edit_immediate_navigation_review_invalidation_and_fresh_restore()
     case = audit.AuditRegressions()
     app = case.app(project())
     case.phase(app, 'phase7')
-    edited = {**FIELDS, 'thickening_test_start': '24:00', 'thickening_enter_time': '01:25',
+    edited = {**{k: v for k, v in FIELDS.items() if k != 'thickening_enter_time'}, 'thickening_test_start': '24:00',
               'thickening_cell': -3.25, 'thickening_30_bc': '01:40',
               'thickening_50_bc': '02:40', 'thickening_time': '04:45'}
     for field, value in edited.items():
@@ -213,7 +223,7 @@ def test_first_edit_immediate_navigation_review_invalidation_and_fresh_restore()
     fresh = case.app(saved)
     case.export(fresh)  # Fresh JSON restore -> Phase X, without visiting Phase VII.
     qc = fresh.session_state['lab_qc_params']['Main']
-    assert {k: qc[k] for k in FIELDS} == edited
+    assert {k: qc[k] for k in FIELDS} == {**edited, 'thickening_enter_time': FIELDS['thickening_enter_time']}
     assert compute_phase_status(fresh.session_state)['phase7']['level'] == 'ok'
     case.phase(fresh, 'phase7')
     for field, value in edited.items():
@@ -308,7 +318,8 @@ def test_only_authorized_thickening_cell_text_changed_in_template():
     completed = BytesIO(subprocess.check_output(['git', 'show', 'a713cef:master_template.docx']))
     with zipfile.ZipFile(completed) as closed, zipfile.ZipFile('master_template.docx') as current:
         get_table = lambda x: next(m.group() for m in re.finditer(rb'<w:tbl>.*?</w:tbl>', x, re.S) if b'Thickening Time Test' in m.group())
-        assert get_table(closed.read('word/document.xml')) == get_table(current.read('word/document.xml'))
+        from test_round13b_post_b4_word_quality import approved_thickening_text
+        assert get_table(approved_thickening_text(closed.read('word/document.xml'))) == get_table(current.read('word/document.xml'))
     with zipfile.ZipFile(original) as old, zipfile.ZipFile(completed) as new:
         assert old.namelist() == new.namelist()
         for name in old.namelist():

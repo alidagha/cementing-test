@@ -160,6 +160,8 @@ def _hhmm_minutes(value, *, two_digit_hours=False):
 def validate_thickening_test(qc):
     """One completion gate for UI, status and export; unfinished drafts may save."""
     for field, label, kind in THICKENING_TEST_FIELDS:
+        if field == "thickening_enter_time":
+            continue  # Optional legacy draft, not a measured approval condition.
         value = qc.get(field)
         if kind == "number":
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -171,7 +173,7 @@ def validate_thickening_test(qc):
             minutes = _hhmm_minutes(value, two_digit_hours=True)
             if minutes is None or not 0 <= minutes <= 24 * 60:
                 raise ValueError(f"{label}: enter HH:MM from 00:00 through 24:00")
-    return {field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS}
+    return {field: qc[field] for field, _, _ in THICKENING_TEST_FIELDS if field in qc}
 
 # ==============================================================================
 # 1. CORE NUMERIC, STRING & HYDRAULIC UTILITIES

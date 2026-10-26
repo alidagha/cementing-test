@@ -131,10 +131,62 @@ def _format_phase(key):
     # Streamlit 1.64 and the next edit can route to Phase I before being saved.
     return _PHASE_LABELS[key]
 
+def _navigation_sources_not_started(state):
+    """Recognize untouched input defaults for captions, never for admission."""
+    from well_profile import geometry_defaults, geothermal_defaults
+    from phase_2_3_well_data import HARDWARE_COLUMNS
+    from phase_9_centralizer import new_config
+
+    if state.get("last_loaded_hash"):
+        return False
+    effective = {key: None for key in ("effective_mud_density", "effective_pv", "effective_yp")}
+    defaults = {
+        **DOC_CONTROL_DEFAULTS, **WELL_DATA_DEFAULTS, **effective,
+        "doc_control": DOC_CONTROL_DEFAULTS, "well_data": {**WELL_DATA_DEFAULTS, **effective},
+        "hole_size_customized": False, "request_description_customized": False,
+        "revision_description_customized": False, "well_auto_fields": {"bhsp": True},
+        "well_geometry": geometry_defaults(), "geothermal_config": geothermal_defaults(),
+        "hardware_table": pd.DataFrame(columns=HARDWARE_COLUMNS),
+        "hardware_editor_draft": pd.DataFrame(columns=HARDWARE_COLUMNS),
+        "placement_config": {"job_type": DOC_CONTROL_DEFAULTS["job_type"], "target_row": "", "host_row": "",
+                             **{field: None for field, _, _ in EXCESS_FIELDS}},
+        "centralizer_config": new_config(),
+        "fluids_config": {"active": ["Displacement Fluid"], "params": {
+            name: {"volume": 0., "density": "", "pump_rate": "",
+                   "material_name": materials_db.DEFAULT_MATERIAL_NAMES.get(name, "")}
+            for name in materials_db.FLUID_TYPES}},
+        "preflush_config": {"type": "Combined (Water + NaCl + Wash)", "nacl_multiplier": 126., "wash_multiplier": 3.},
+        "standalone_spacer_config": {"mode": None, "dead_vol": None,
+                                     "tank_name": materials_db.get_tank_name(DOC_CONTROL_DEFAULTS["job_type"])},
+        "formation_pressure_config": {"mode": "basic", "profile": []},
+        **{key: {} for key in ("cement_params", "cement_additives_dfs", "spacer_dfs", "lab_grid_dfs",
+                              "lab_qc_params", "inactive_slurry_drafts", "schematic_config", "ct_stage_config")},
+    }
+    # The calendar is automatically mounted by Phase I; its date is not a
+    # Well/Centralizer input. All other document inputs must still be defaults.
+    sources = {key: state[key] for key in defaults if key in state}
+    if isinstance(sources.get("doc_control"), dict):
+        sources["doc_control"] = {key: value for key, value in sources["doc_control"].items() if key != "date"}
+    if "fluids_config" not in state and state.get("fluid_data"):
+        return False
+
+    def unchanged(value, expected):
+        if isinstance(value, dict) and isinstance(expected, dict):
+            return all(key in expected and unchanged(item, expected[key]) for key, item in value.items())
+        return isinstance(value, bool) == isinstance(expected, bool) and value == expected
+
+    try:
+        return unchanged(serialize_item(sources), serialize_item(defaults))
+    except ValueError:
+        # Invalid sources are not pristine; saving still rejects them.
+        return False
+
 def _phase_caption(key):
     if key == "phase10":
         return ""
     level = _phase_status.get(key, {}).get("level", "empty")
+    if level == "warning" and key in ("phase2_3", "phase9") and _navigation_sources_not_started(st.session_state):
+        level = "empty"
     description = {"ok": "Complete", "warning": "Needs review", "empty": "Not started"}
     return f"{_PHASE_ICONS.get(level, '⚪')} {description.get(level, 'Not started')}"
 

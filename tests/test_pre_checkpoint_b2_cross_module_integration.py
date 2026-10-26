@@ -111,7 +111,25 @@ def assert_shared_geometry(state, ctx):
     target = drawing["casings"][drawing["current_job"]["target_index"]]
     assert target["size_in"] == expected["od_in"]
     assert target["shoe_md"] == geometry["shoe_md"]
-    assert ctx["hardware"] == state["hardware_table"].to_dict("records")
+    source_hardware = state["hardware_table"].copy(deep=True)
+    expected_hardware = deepcopy(source_hardware.to_dict("records"))
+    for row in expected_hardware:
+        for field, value in row.items():
+            if pd.isna(value) or (isinstance(value, str) and not value.strip()):
+                row[field] = "-"
+        depth = row.get("MD (m)")
+        try:
+            scalar = float(depth)
+        except (TypeError, ValueError, OverflowError):
+            scalar = None
+        if scalar is not None and math.isfinite(scalar):
+            row["MD (m)"] = "%.1f" % scalar
+        if row.get("Description") == "Open Hole Size":
+            row.update({field: "-" for field in
+                        ("Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)")})
+    assert ctx["hardware"] == expected_hardware
+    assert context(state)["hardware"] == expected_hardware
+    pd.testing.assert_frame_equal(state["hardware_table"], source_hardware, check_exact=True)
     assert ctx["cement_chart_report"]["model"] == state["_cement_chart_model"]
     intervals = {row["fluid"]: row for row in chart.resolve_cement_placement(state)}
     for slurry in ctx["slurries"]:
