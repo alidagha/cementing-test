@@ -44,12 +44,40 @@ def neutralize_centralizer_samples(xml):
     return xml
 
 
+def approved_thickening_text(xml):
+    """Change only three uniquely located cells; preserve every XML tag/run."""
+    tables = [m for m in re.finditer(rb'<w:tbl[ >].*?</w:tbl>', xml, re.S)
+              if b''.join(re.findall(rb'<w:t(?: [^>]*)?>(.*?)</w:t>', m.group(), re.S)).startswith(b'Thickening Time Test')]
+    assert len(tables) == 1
+    table = tables[0]
+    rows = list(re.finditer(rb'<w:tr[ >].*?</w:tr>', table.group(), re.S))
+    assert len(rows) == 4
+    edits = []
+    for row_index, cell_index, before, after in (
+        (2, 2, (b'Enter Time', b'', b'hr:mm', b''), (b'Initial Temp', b'', b'(degF)', b'')),
+        (3, 2, (b'{{ s.lab.thickening_enter_time }}',), (b'70',)),
+        (3, 3, (b'-',), (b'Surface',)),
+    ):
+        row = rows[row_index]
+        cells = list(re.finditer(rb'<w:tc[ >].*?</w:tc>', row.group(), re.S))
+        assert len(cells) == 9
+        cell = cells[cell_index]
+        texts = list(re.finditer(rb'<w:t(?: [^>]*)?>(.*?)</w:t>', cell.group(), re.S))
+        assert tuple(t.group(1) for t in texts) == before
+        offset = table.start() + row.start() + cell.start()
+        for text, value in zip(texts, after):
+            edits.append((offset + text.start(1), offset + text.end(1), value))
+    for start, end, value in sorted(edits, reverse=True):
+        xml = xml[:start] + value + xml[end:]
+    return xml
+
+
 def approved_template_xml(xml):
     """Historical tests retain every old check after exact new-cell verification."""
     parent = ZipFile(BytesIO(subprocess.check_output([
         'git', 'show', PARENT + ':master_template.docx'])))
     original = parent.read('word/document.xml')
-    assert xml == neutralize_centralizer_samples(original)
+    assert xml == approved_thickening_text(neutralize_centralizer_samples(original))
     return original
 
 
@@ -68,6 +96,11 @@ def test_template_changes_only_approved_sample_text_payloads():
     ('word/document.xml', b'Top Cent. MD', b'Unapproved label'),
     ('word/document.xml', b'<w:t>-</w:t>', b'<w:t>123</w:t>'),
     ('word/document.xml', b'<w:br w:type="page"/>', b'<w:br/>'),
+    ('word/document.xml', b'<w:t>Initial Temp</w:t>', b'<w:t>Initial Temp changed</w:t>'),
+    ('word/document.xml', b'>70</w:t>', b'>71</w:t>'),
+    ('word/document.xml', b'>Surface</w:t>', b'>Downhole</w:t>'),
+    ('word/document.xml', b'{{ s.lab.bhct }}', b'70'),
+    ('word/document.xml', b'{{ s.lab.thickening_30_bc }}', b'00:00'),
     ('word/styles.xml', b'</w:styles>', b'<!-- changed --></w:styles>'),
     ('word/_rels/document.xml.rels', b'</Relationships>', b'<!-- changed --></Relationships>'),
 ])

@@ -235,7 +235,7 @@ def test_template_dependency_and_protected_sources_identical():
     import subprocess
     for name in ['master_template.docx','requirements.txt','well_profile.py','placement.py','rheology.py','bhct_helper.py','test_regression_guardrails.py']:
         if name == 'master_template.docx':
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'd0f2c324cef018b87b486a3cc80ac5c2ab2274b84eb4b2514e56fb374e766487'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == 'a1128b0e9352e1dd7c8768eecc9335c50858356cee80ed33c0ec275e26c4d08b'
         elif name == 'test_regression_guardrails.py':
             # Owner-approved B4 smoke-test assertions only; all other guardrails unchanged;
             # retain byte-level protection at this explicitly reviewed checkpoint.

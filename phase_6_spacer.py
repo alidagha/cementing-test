@@ -82,8 +82,7 @@ def _render_standalone_spacer(load_sig):
         invalidate_document(st.session_state)
         st.warning(str(exc))
         return
-    st.markdown('<div style="background:#17365d;color:white;padding:8px;font-weight:bold">'
-                'Spacer Additives Data</div>', unsafe_allow_html=True)
+    st.markdown("### Spacer Additives Data")
     st.write(f"Volume: {recipe['volume_bbl']:.1f} bbl | Weight: {recipe['density_pcf']:g} pcf")
     st.write(f"Fresh Water: {recipe['water_base_bbl']:.2f} bbl (target batch); "
              f"{recipe['water_total_bbl']:.2f} bbl (including Dead Volume).")

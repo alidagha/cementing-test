@@ -25,7 +25,7 @@ from test_uat_round10c_integration import save_project, restore_project
 NAME = "Sodium Silicate"
 IDENTITY = (NAME, "Liquid Extender", "Liquid")
 CASE = audit.AuditRegressions()
-TEMPLATE_SHA = "d0f2c324cef018b87b486a3cc80ac5c2ab2274b84eb4b2514e56fb374e766487"
+TEMPLATE_SHA = "a1128b0e9352e1dd7c8768eecc9335c50858356cee80ed33c0ec275e26c4d08b"
 
 
 def stale_row(name=NAME, density=None, dosage=0.50):

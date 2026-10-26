@@ -43,6 +43,18 @@ def _render_thickening_test(slurry, qc, load_sig):
     st.markdown("#### Thickening Time Test")
     columns = st.columns(3)
     for i, (field, label, kind) in enumerate(THICKENING_TEST_FIELDS):
+        if field == "thickening_enter_time":
+            hours_key = f"_qc_surface_hours_{get_slurry_key(slurry, 'in')}_{load_sig}"
+            if hours_key not in st.session_state:
+                value = qc.get("surface_hardened_hours")
+                st.session_state[hours_key] = float(value) if value is not None else None
+            qc["surface_hardened_hours"] = columns[i % 3].number_input(
+                f"Surface Sample Hours - {slurry}",
+                min_value=0.0, step=0.25, value=None, key=hours_key,
+                on_change=_commit_lab_qc, args=(slurry, "surface_hardened_hours", hours_key),
+                help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
+            )
+            continue
         key = f"_qc_{field}_{get_slurry_key(slurry, 'in')}_{load_sig}"
         if key not in st.session_state:
             value = qc.get(field)
@@ -127,7 +139,7 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
 
 
 def _render_rheology(slurry, qc, load_sig):
-    st.markdown("#### Rheology Test — Fann 35 / R1B1 / Spring 1.0")
+    st.markdown("#### Rheology Test")
     data = qc.setdefault("rheology", {})
     token = get_slurry_key(slurry, "").strip("_")
     for dataset, label in RHEOLOGY_DATASETS:
@@ -146,13 +158,12 @@ def _render_rheology(slurry, qc, load_sig):
         condition = "Surface" if dataset == "surface_down" else f"{st.session_state.get('well_data', {}).get('bhct', st.session_state.get('bhct'))} °F (BHCT)"
         st.caption(f"{label}: {condition}")
         readings = row.setdefault("readings", {})
-        columns = st.columns(7)
-        for column, rpm in zip(columns, RPM_ORDER):
+        for rpm in RPM_ORDER:
             key = prefix + str(rpm) + "_" + load_sig
             if key not in st.session_state:
                 value = readings.get(str(rpm), "")
                 st.session_state[key] = "" if value is None else str(value)
-            column.text_input(f"{rpm} RPM - {label} - {slurry}", key=key,
+            st.text_input(f"{rpm} RPM - {label} - {slurry}", key=key,
                               on_change=_commit_rheology,
                               args=(slurry, dataset, "readings", key, rpm))
         columns = st.columns(2)
@@ -174,9 +185,9 @@ def _render_rheology(slurry, qc, load_sig):
         row = result[dataset]
         if row["selected"] and row["pv_cp"] is not None:
             st.caption(label)
-            columns = st.columns(3)
-            for column, title, field, decimals in zip(columns, ("PV (cP)", "Ty (lbf/100ft²)", "IOD"),
-                                                       ("pv_cp", "ty_lbf_100ft2", "iod"), (3, 2, 3)):
+            columns = st.columns(2)
+            for column, title, field, decimals in zip(columns, ("PV (cP)", "Ty (lbf/100ft²)"),
+                                                       ("pv_cp", "ty_lbf_100ft2"), (3, 2)):
                 column.metric(title, f"{row[field]:.{decimals}f}")
     for issue in issues:
         st.warning(issue)
@@ -657,6 +668,9 @@ def render():
             st.caption(f"BHST: {bhst} °F | BHCT: {bhct} °F | BHSP: {st.session_state.get('well_data', {}).get('bhsp', '')} psi")
             if full_lab:
                 st.markdown("#### 2. QC & Core Lab Results")
+            rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)
+            if full_lab:
+                st.markdown("#### Fluid Loss and Free Water Test")
                 col2, col3 = st.columns(2)
                 with col2:
                     fl_key = f"_qc_fl_{get_slurry_key(slurry, 'in')}_{load_sig}"
@@ -693,18 +707,9 @@ def render():
                         min_value=0.0, step=0.1, value=None, key=fw45_key,
                         on_change=_commit_lab_qc, args=(slurry, "free_water_45", fw45_key)
                     )
-                    hours_key = f"_qc_surface_hours_{get_slurry_key(slurry, 'in')}_{load_sig}"
-                    if hours_key not in st.session_state:
-                        st.session_state[hours_key] = float(qc["surface_hardened_hours"]) if qc["surface_hardened_hours"] is not None else None
-                    qc["surface_hardened_hours"] = st.number_input(
-                        f"Surface Sample Hours - {slurry}",
-                        min_value=0.0, step=0.25, value=None, key=hours_key,
-                        on_change=_commit_lab_qc, args=(slurry, "surface_hardened_hours", hours_key),
-                        help="Hours until the surface sample's hardened condition was observed; independent of Thickening Time."
-                    )
                 
-                compressive, comp_valid = _render_compressive(slurry, qc, load_sig, bhst, st.session_state.get("well_data", {}).get("bhsp", ""))
                 tt_valid = _render_thickening_test(slurry, qc, load_sig)
+                compressive, comp_valid = _render_compressive(slurry, qc, load_sig, bhst, st.session_state.get("well_data", {}).get("bhsp", ""))
 
             else:
                 compressive, comp_valid, tt_valid = {}, True, True
@@ -723,7 +728,6 @@ def render():
                 except ValueError as exc:
                     collection_valid = False
                     st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
-            rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)
             temperature_valid = lab_temperature_valid(bhct, bhst)
             review_matches = (comp_valid and temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)

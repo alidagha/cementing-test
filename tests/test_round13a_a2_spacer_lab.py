@@ -44,7 +44,7 @@ def test_spacer_tab_and_only_applicable_sections():
     text = "\n".join(item.value for item in app.markdown)
     assert "Spacer Lab Data" in [item.value for item in app.subheader]
     assert "Blend & Additives — 600 mL Cup" in text
-    assert "Fann 35 / R1B1 / Spring 1.0" in text
+    assert "#### Rheology Test" in text
     assert not any(word in text for word in ("Test Basic Data", "Thickening", "Compressive", "Free Water"))
     assert len(app.dataframe) == 1
 

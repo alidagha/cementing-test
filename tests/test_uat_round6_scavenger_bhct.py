@@ -478,6 +478,17 @@ def test_protected_algorithms_and_properties_are_byte_or_ast_identical():
                          and node.left.id == "water_vol_per_sack" and isinstance(node.ops[0], ast.Lt))
             guard.ops[0] = ast.LtE()  # Incorrectly rejecting valid zero water must fail the pin.
             assert hashlib.sha256(ast.dump(mutated).encode()).hexdigest() != expected
+        elif name == "validate_thickening_test":
+            import hashlib
+            from copy import deepcopy
+            expected = "371b80cc941874d996ee3ac91d04898bb493a640f5520dad33cb00071a6c6ae5"
+            assert hashlib.sha256(ast.dump(current).encode()).hexdigest() == expected, name
+            mutated = deepcopy(current)
+            legacy_guard = next(node for node in ast.walk(mutated)
+                                if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                                and isinstance(node.test.left, ast.Name) and node.test.left.id == "field")
+            legacy_guard.test.comparators[0] = ast.Constant(value="thickening_time")
+            assert hashlib.sha256(ast.dump(mutated).encode()).hexdigest() != expected
         else:
             assert ast.dump(current) == ast.dump(original), name
 
