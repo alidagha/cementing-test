@@ -617,12 +617,16 @@ def test_conflicting_tieback_lap_blocks_drawing_and_word_without_rewriting_physi
     assert schematic.prepare_schematic(state)["current_job"]["type"] == "tieback"
     assert ps.prepare_calculations(state) == []
     state["placement_config"]["tie_back_liner_lap_m"] = 10.
-    assert (chart.build_chart_model(state), phase9.source_signature(state),
-            pumping.source_signature(state), pump_geometry(state)) == original
-    assert phase9.result_is_current(state)
-    with pytest.raises(ValueError, match="contradicts"):
-        schematic.prepare_schematic(state)
+    hardware_before = state["hardware_table"].copy(deep=True)
+    for consumer in (chart.build_chart_model, phase9.source_signature, pump_geometry,
+                     schematic.prepare_schematic):
+        with pytest.raises(ValueError, match="contradicts"):
+            consumer(state)
+    assert pumping.source_signature(state) != original[2]
+    assert not phase9.result_is_current(state)
     assert ps.prepare_calculations(state)
+    pd.testing.assert_frame_equal(state["hardware_table"], hardware_before, check_exact=True)
+    assert "_compiled_doc_bytes" not in state
     with pytest.raises(ValueError):
         context(state)
     restored = save_restore(state).session_state.to_dict()
@@ -630,5 +634,7 @@ def test_conflicting_tieback_lap_blocks_drawing_and_word_without_rewriting_physi
     assert ps.prepare_calculations(restored)
     restored["placement_config"]["tie_back_liner_lap_m"] = 0.
     assert ps.prepare_calculations(restored) == []
+    assert chart.build_chart_model(restored) == original[0]
+    assert pump_geometry(restored) == original[3]
     execute_centralizer(restored, physics="dynamic")
     assert_shared_geometry(restored, context(restored))

@@ -151,6 +151,10 @@ def source_signature(state, products=None):
     active = cfg.get("active", [])
     sources = {name: cfg.get("params", {}).get(name, state.get("fluid_data", {}).get(name, {})) for name in active}
     body = {"job": state.get("job_type"), "geometry": geometry,
+            "measured_hardware": state["hardware_table"].reindex(columns=[
+                "Description", "MD (m)", "Size (in)", "ID (in)"]),
+            "geometry_selection": {key: state.get("placement_config", {}).get(key)
+                                   for key in ("target_row", "host_row", "tie_back_liner_lap_m")},
             "snapshot": snapshot, "placement_mode": config["placement_mode"], "physics_mode": config["physics_mode"],
             "zones": config["zones"], "products": mapped,
             "custom_products": {p["custom_id"]:p for p in config["custom_products"] if p["custom_id"] in selected_custom},
@@ -158,6 +162,7 @@ def source_signature(state, products=None):
                                **({"density": source.get("density")} if name != "Displacement Fluid" else {})}
                        for name, source in sources.items() if name != "Spacer Behind"}}
     if config["physics_mode"] == "dynamic":
+        adapter.require_dynamic_geometry(state)
         body["dynamic"] = {
             "active": sorted(active), "pump_rate": sources.get("Displacement Fluid", {}).get("pump_rate"),
             "mud": {field: state.get(field, state.get("well_data", {}).get(field))

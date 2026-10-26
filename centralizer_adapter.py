@@ -238,10 +238,10 @@ def to_engine_geometry(state):
     if not cased or len({s["id_in"] for s in cased}) != 1:
         raise ValueError("Centralizer enclosing cased geometry requires one identical scalar ID.")
     previous_id = cased[0]["id_in"]
-    if kind == "tieback":
+    if not holes:
         previous_shoe, hole = shoe, previous_id
     else:
-        if outer != cased + holes or not holes or len({s["od_in"] for s in holes}) != 1:
+        if outer != cased + holes or len({s["od_in"] for s in holes}) != 1:
             raise ValueError("Centralizer requires one cased to open-hole transition and one scalar open-hole diameter.")
         previous_shoe, hole = cased[-1]["bottom_md"], holes[0]["od_in"]
 
@@ -252,6 +252,19 @@ def to_engine_geometry(state):
                      "prev_shoe_depth": previous_shoe, "open_hole_top": previous_shoe,
                      "open_hole_bottom": shoe, "string_top": active[0]["top_md"], "string_shoe": shoe},
     }
+
+
+def require_dynamic_geometry(state):
+    """Frozen friction integrates surface→shoe with one OD, including upstream.
+
+    Static mechanics can exclude workstring above the active top. Dynamic
+    pressure cannot: reject an OD step rather than emulate it with caliper.
+    """
+    geometry = cement_chart_model.resolve_chart_geometry(state)
+    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[geometry["kind"]]
+    active = [s for s in geometry["active_string"] if s["description"] == description]
+    if any(s["od_in"] != active[0]["od_in"] for s in geometry["active_string"]):
+        raise ValueError("Dynamic Centralizer geometry unsupported: upstream OD steps cannot map to the frozen scalar solver.")
 
 
 def _fluid_columns_override(override, shoe):
@@ -590,6 +603,7 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
     payload = build_static_payload(state, zones, products, custom_products=custom_products)
     if payload is None:
         return None
+    require_dynamic_geometry(state)
     config = state.get("fluids_config", {})
     active = config.get("active", [])
     if "Displacement Fluid" not in active:

@@ -374,7 +374,8 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
         else:  # Tie Back
             if kind == "tieback":
                 from cement_chart_model import resolve_chart_geometry
-                top = resolve_chart_geometry(state)["active_string"][0]["top_md"]
+                top = next(section["top_md"] for section in resolve_chart_geometry(state)["active_string"]
+                           if section["description"] == "Tie Back")
                 explicit = (state.get("placement_config") or {}).get("tie_back_liner_lap_m")
                 if explicit is not None and _finite(explicit, "Tie Back Top", nonnegative=True) != top:
                     raise ValueError("Schematic Tie Back Top contradicts the certified active-string geometry")
@@ -424,6 +425,15 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
             shoe_md=sections[-1].end_md,
             sections=sections,
         ))
+
+    if kind in ("casing", "liner", "tieback"):
+        from installed_geometry import require_running_fit
+        current_desc = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[kind]
+        current = [sec for string in strings if string.description == current_desc for sec in string.sections]
+        restrictions = [{"top_md": sec.start_md, "id_in": sec.id_in}
+                        for string in strings if string.description != current_desc
+                        for sec in string.sections if sec.id_in is not None]
+        require_running_fit(restrictions, [{"bottom_md": sec.end_md, "od_in": sec.size_in} for sec in current])
 
     by_id = {s.string_id: s for s in strings}
     if len(by_id) != len(strings):
@@ -492,17 +502,16 @@ def _resolve_tieback_landings(strings: Sequence[WellString], state=None) -> None
             if ln.top_md - DEPTH_TOL <= tb.shoe_md <= ln.shoe_md + DEPTH_TOL
         ]
         if len(candidates) > 1 and state is not None and _job_kind(state.get("job_type")) == "tieback":
-            # Consume the frozen app's selected continuation, not a second
-            # nearest/deepest-host walk in the schematic adapter.
-            from pumping_simulation import _geometry
-            geometry, _ = _geometry(state, "tieback")
-            continuation = [section for section in geometry.pipe_sections
-                            if section.z_top == tb.shoe_md and section.z_bot > tb.shoe_md]
-            if len(continuation) == 1:
-                section = continuation[0]
-                candidates = [ln for ln in candidates if ln.size_in == section.od_in and any(
-                    sec.start_md <= tb.shoe_md < sec.end_md and sec.end_md == section.z_bot
-                    and sec.id_in == section.id_in for sec in ln.sections)]
+            # Share physical receiver selection without hydraulic admission:
+            # a measured Hanger can locate a drawing's scalar liner endpoint.
+            from cement_chart_model import _segments
+            from installed_geometry import physical_strings, receiving_liner
+            rows = _rows_from_table(state.get("hardware_table"))
+            installed = physical_strings(rows, _segments, {"Previous Casing", "Casing", "Previous Liner", "Liner"})
+            receiver = receiving_liner(installed, tb.shoe_md)
+            candidates = [ln for ln in candidates if any(
+                sec.row_index in receiver["indices"] and sec.start_md <= tb.shoe_md < sec.end_md
+                for sec in ln.sections)]
         if len(candidates) != 1:
             raise ValueError(
                 f"{tb.label}: tie-in {tb.shoe_md:g} m requires exactly one resolved receiving historical Liner interval"
@@ -674,29 +683,6 @@ def _resolve_open_hole(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any
             if len(candidates) != 1:
                 raise ValueError("current CSG Open Hole top is ambiguous between previous casing Shoes")
             host = candidates[0]
-    elif kind == "tieback" and any(
-            _parse_md(row.get("MD (m)"), "Historical liner section")[0] is not None
-            for row in rows if row.get("Description") in ("Previous Liner", "Liner")):
-        # The certified flow path already owns this cased-to-OH transition.
-        # This does not choose the TB geometric host or its receiving liner.
-        from cement_chart_model import resolve_chart_geometry
-        from pumping_simulation import _tieback_paths
-        table = state.get("hardware_table")
-        if isinstance(table, list):
-            table = pd.DataFrame(table)
-        _, enclosing, _ = _tieback_paths(rows, table, state["placement_config"], resolve_chart_geometry(state))
-        for index, section in enumerate(enclosing):
-            if section["description"] != "Open Hole Size":
-                continue
-            if index == 0:
-                raise ValueError("The certified Open Hole path has no enclosing string at its Top")
-            parent = enclosing[index - 1]
-            candidates = [s for s in strings if s.description == parent["description"]
-                          and s.size_in == parent["od_in"] and s.shoe_md == section["top_md"]]
-            if len(candidates) != 1:
-                raise ValueError("The certified Open Hole transition does not identify one physical host string")
-            host = candidates[0]
-            break
     if kind not in ("casing", "liner") and host is None:
         # Geometry-only resolution: prefer a host Shoe crossed by an explicitly hosted child
         # that is smaller than this hole.  If geometry does not make that unique, block.
@@ -728,6 +714,8 @@ def _resolve_open_hole(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any
                 else:
                     raise ValueError("current Open Hole Top is ambiguous; review canonical Hardware")
 
+    if kind == "tieback" and host is None:
+        raise ValueError("Actual drilled Open Hole host is unresolved behind the installed liner.")
     top = 0.0 if host is None else host.shoe_md
     if bottom <= top + DEPTH_TOL:
         raise ValueError(f"Open Hole Bottom/TD {bottom:g} m must be deeper than its resolved Top {top:g} m")
@@ -1071,6 +1059,11 @@ def _build_known_schematic_payload(state: Mapping[str, Any], *, _drawing_inputs=
         current_structural = _resolve_current_structural_target(state, rows, strings, row_to_string)
 
     open_hole = _resolve_open_hole(state, rows, strings, current_structural)
+    if open_hole and current_structural is not None:
+        from installed_geometry import require_running_fit
+        require_running_fit([{"top_md": open_hole["top_md"], "id_in": open_hole["hole_size_in"]}],
+                            [{"bottom_md": sec.end_md, "od_in": sec.size_in}
+                             for sec in current_structural.sections])
 
     ordered = _order_strings(strings)
     index_by_id = {s.string_id: i for i, s in enumerate(ordered)}

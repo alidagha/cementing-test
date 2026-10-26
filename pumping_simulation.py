@@ -7,6 +7,7 @@ import pandas as pd
 import cement_chart_model as chart_model
 import fluids_charts_module_v1_4_2 as fcm
 import materials_db
+import installed_geometry
 from centralizer_adapter import spacer_bhct_down, preflush_readings
 from engineering_tools import parse_effective_numeric
 from placement import HOST_DESCRIPTIONS, hardware_choices, measured_depth, target_depth, target_descriptions
@@ -38,31 +39,20 @@ def _mud_rheology(state):
 def _tieback_paths(rows, table, config, resolved):
     """Selected-host annulus plus the certified old-liner continuation; no host inference."""
     tie_in = resolved["shoe_md"]
-    candidates = []
-    for row in rows:
-        if row.get("Description") not in ("Previous Liner", "Liner"):
-            continue
-        top, bottom = fcm.parse_md_interval(row.get("MD (m)"))
-        if top is not None and bottom is not None and top <= tie_in < bottom:
-            candidates.append((top, bottom, row))
-    if not candidates:
+    strings = installed_geometry.physical_strings(rows, chart_model._segments,
+        {"Previous Casing", "Casing", "Previous Liner", "Liner"})
+    receiver = installed_geometry.receiving_liner(strings, tie_in)
+    # Hanger-inferred Top is sufficient for drawing, not hydraulic admission.
+    if not any(top is not None and top <= tie_in < bottom
+               for top, bottom in (installed_geometry.md_bounds(row.get("MD (m)"))
+                                   for row in receiver["rows"])):
         raise ValueError("Tie Back Pumping Simulation requires an explicit old-liner interval containing the tie-in and continuing to its shoe.")
-    # Same deepest-top connection criterion as frozen D11b; equal-ranked
-    # candidates are unresolved, rather than silently choosing list order.
-    deepest = max(top for top, _, _ in candidates)
-    connection = [entry for entry in candidates if entry[0] == deepest]
-    if len(connection) != 1:
-        raise ValueError("Tie Back Pumping Simulation old-liner continuation is ambiguous.")
-    top, shoe, row = connection[0]
-    old_liner = chart_model._segments([row], top, shoe, "Pumping Simulation old liner")[0]
-    active = [*resolved["active_string"], {**old_liner, "top_md": tie_in}]
-    host = hardware_choices(table, HOST_DESCRIPTIONS)[config["host_row"]]
-    host_rows = [r for r in rows if r.get("Description") == host["description"]]
-    host_end = measured_depth(host_rows[-1].get("MD (m)"))
-    outer = chart_model._segments(host_rows, 0., min(host_end, shoe), "Pumping Simulation selected host")
-    if host_end < shoe:
-        outer += chart_model._segments([r for r in rows if r.get("Description") == "Open Hole Size"],
-                                      host_end, shoe, "Pumping Simulation Open Hole Size")
+    shoe = receiver["shoe_md"]
+    continuation = [{**sec, "top_md": max(tie_in, sec["top_md"])}
+                    for sec in receiver["sections"] if sec["bottom_md"] > tie_in]
+    active = [*resolved["active_string"], *continuation]
+    outer = installed_geometry.enclosing_path(rows, strings, active, shoe, chart_model._segments,
+                                              excluded=receiver["indices"], excluded_below=tie_in, running=resolved["active_string"])
     return active, outer, shoe
 
 
@@ -202,7 +192,7 @@ def source_signature(state):
     hardware = table.reindex(columns=["Description", "MD (m)", "Size (in)", "ID (in)"]) if isinstance(table, pd.DataFrame) else table
     placement = state.get("placement_config", {})
     return fingerprint({"job": job, "hardware": hardware,
-        "placement": {key: placement.get(key) for key in ("job_type", "target_row", "host_row", "chart_excess_mode", "excess_csg_oh_pct", "excess_csg_csg_pct")},
+        "placement": {key: placement.get(key) for key in ("job_type", "target_row", "host_row", "tie_back_liner_lap_m", "chart_excess_mode", "excess_csg_oh_pct", "excess_csg_csg_pct")},
         "well": {key: state.get(key, well.get(key)) for key in ("plastic_viscosity", "yield_point", "bhsp", chart_model.PORE_FIELD, chart_model.FRAC_FIELD)},
         "mud_density": state.get("mud_density") or well.get("mud_density"),
         "fluids": fluids, "lab": lab, "aux_rheology": auxiliaries})

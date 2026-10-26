@@ -27,6 +27,7 @@ def adapter():
 def program_state(kind="casing", fluids=None):
     state = state_for(kind)
     if kind == "tieback":
+        state["placement_config"]["tie_back_liner_lap_m"] = 0.
         state["hardware_table"] = hardware(
             ("Tie Back", "400", "7", 6.),
             ("Previous Casing", "800", "9 5/8", 8.535),

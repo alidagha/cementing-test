@@ -33,12 +33,15 @@ def state_for(kind="casing"):
                 ("Open Hole Size", "1000", "8.5", 8.5))
     else:
         rows = (("Tie Back", "1000", "7", 6.),
-                ("Previous Casing", "1000", "9 5/8", 8.535))
+                ("Previous Casing", "1100", "9 5/8", 8.535),
+                ("Previous Liner", "1000-1200", "7", 6.),
+                ("Open Hole Size", "1100-1200", "8.5", 8.5))
     state = {"job_type": job, "hardware_table": hardware(*rows),
              "well_geometry": {"version": 1, "type": "Vertical", "td_m": 1200.},
              "placement_config": {"job_type": job, "target_row": "__manual__",
                                   "manual_depth_m": 1000., "chart_excess_mode": "ignore"}}
     if kind == "tieback":
+        state["placement_config"]["tie_back_liner_lap_m"] = 0.  # Explicit synthetic surface Top.
         state["placement_config"]["host_row"] = next(iter(hardware_choices(
             state["hardware_table"], {"Previous Casing"})))
     return state
@@ -220,7 +223,7 @@ def test_multiple_contiguous_identical_envelope_rows_collapse_exactly():
     state = state_for()
     state["hardware_table"] = hardware(("Casing", "300", "9 5/8", 8.535),
         ("Casing", "300-1000", "9.625", 8.535), ("Previous Casing", "200", "13 3/8", 12.25),
-        ("Previous Liner", "200-500", "13.375", 12.25),
+        ("Previous Casing", "200-500", "13.375", 12.25),
         ("Open Hole Size", "700", "12.25", 12.25), ("Open Hole Size", "700-1000", "12.25", 12.25))
     result = project(state)
     assert result["wellbore"] == project(state_for())["wellbore"]
@@ -230,7 +233,7 @@ def test_multiple_contiguous_identical_envelope_rows_collapse_exactly():
 def test_tieback_uses_exact_selected_host_and_continuity_at_shoe():
     state = state_for("tieback")
     state["hardware_table"] = pd.concat([state["hardware_table"],
-        hardware(("Previous Liner", "1000", "8 5/8", 7.5))], ignore_index=True)
+        hardware(("Previous Casing", "1200", "13 3/8", 12.347))], ignore_index=True)
     result = project(state)
     assert result["job_type"] == "tieback"
     assert result["wellbore"] == {"prev_casing_id": 8.535 * .0254, "hole_size": 8.535 * .0254,
@@ -242,7 +245,9 @@ def test_tieback_host_scalar_variation_blocks_and_identical_segments_pass():
     state = state_for("tieback")
     state["hardware_table"] = hardware(("Tie Back", "1000", "7", 6.),
         ("Previous Casing", "500", "9 5/8", 8.535),
-        ("Previous Casing", "500-1000", "9.625", 8.535))
+        ("Previous Casing", "500-1100", "9.625", 8.535),
+        ("Previous Liner", "1000-1200", "7", 6.),
+        ("Open Hole Size", "1100-1200", "8.5", 8.5))
     state["placement_config"]["host_row"] = next(iter(hardware_choices(
         state["hardware_table"], {"Previous Casing"})))
     assert project(state)["wellbore"]["prev_casing_id"] == 8.535 * .0254

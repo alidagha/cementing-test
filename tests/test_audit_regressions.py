@@ -83,7 +83,9 @@ def chart_fixture(job, target=3000.0):
                 ("Liner Hanger", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
     elif job in tieback:
         od, inner = tieback[job]
-        rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back", extent, od, inner)]
+        extent = max(extent, target + 300.)
+        rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back", f"0-{target}", od, inner),
+                ("Previous Liner", f"{target}-{extent}", 9.625, 8.535)]
     else:
         rows = [("Previous Casing", target, 20., 18.)]
     table = pd.DataFrame([{"Description": desc, "MD (m)": str(md), "Size (in)": str(size),
@@ -112,11 +114,12 @@ def valid_export_chart_fixture(job, target=3000.0):
     table = fixture['hardware_table']
     descriptions = target_descriptions(job)
     table.loc[table['Description'].isin(descriptions), 'MD (m)'] = str(target)
+    if 'LNR' in job and 'TIE BACK' not in job:
+        # Synthetic scalar-representable dynamic export prerequisite.
+        active_od = table.loc[table['Description'] == 'Liner', 'Size (in)'].iloc[0]
+        table.loc[table['Description'] == 'Drill Pipes', 'Size (in)'] = active_od
     if 'TIE BACK' in job:
-        old_liner = table.iloc[0].copy()
-        old_liner.update({'Description': 'Previous Liner', 'MD (m)': f'{target-500.}-{target+300.}',
-                          'Size (in)': '9.625', 'ID (in)': 8.535})
-        table.loc[len(table)] = old_liner
+        table.loc[table['Description'] == 'Tie Back', 'MD (m)'] = f'0-{target}'
         fixture['placement_config']['host_row'] = next(token for token, row in
             hardware_choices(table, HOST_DESCRIPTIONS).items() if row['description'] == 'Previous Casing')
     fixture['placement_config']['target_row'] = next(iter(hardware_choices(table, descriptions)))

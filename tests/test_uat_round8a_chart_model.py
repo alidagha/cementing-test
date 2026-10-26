@@ -295,7 +295,7 @@ def test_csg_continuous_and_mixed_intervals_tapered_ids():
     state["hardware_table"] = hardware(
         ("Casing", "300", "10", 9.), ("Casing", "300-700", "9.625", 8.535),
         ("Casing", "1000", "8.625", 7.5), ("Previous Casing", "200", "15", 13.),
-        ("Previous Liner", "200-500", "13.375", 12.25), ("Open Hole Size", "1000", "12.25", 12.25))
+        ("Previous Casing", "200-500", "13.375", 12.25), ("Open Hole Size", "1000", "12.25", 12.25))
     geom = chart_module().resolve_chart_geometry(state)
     assert [(s["top_md"], s["bottom_md"], s["id_in"]) for s in geom["active_string"]] == [
         (0., 300., 9.), (300., 700., 8.535), (700., 1000., 7.5)]
@@ -350,7 +350,9 @@ def test_tieback_host_is_selected_and_pore_frac_are_shoe_markers():
     state["job_type"] = state["placement_config"]["job_type"] = 'TIE BACK LNR 7"'
     state["cement_params"]["Main"]["top_job_type"] = state["job_type"]
     state["hardware_table"] = hardware(("Tie Back", "1000", "7", 6.),
-        ("Previous Casing", "1000", "9.625", 8.535), ("Previous Liner", "1000", "8.625", 7.5))
+        ("Previous Casing", "1100", "9.625", 8.535),
+        ("Previous Liner", "1000-1200", "7", 6.))
+    state["placement_config"]["tie_back_liner_lap_m"] = 0.  # Explicit synthetic Top.
     assert "selected" in chart_module().chart_readiness(state)["issues"][0]
     state["placement_config"]["host_row"] = next(iter(hardware_choices(state["hardware_table"], {"Previous Casing"})))
     mod = chart_module()
