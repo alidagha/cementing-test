@@ -8,7 +8,8 @@ import cement_chart_model as chart_model
 import fluids_charts_module_v1_4_2 as fcm
 import materials_db
 import installed_geometry
-from centralizer_adapter import spacer_bhct_down, preflush_readings
+from centralizer_adapter import (spacer_bhct_down, preflush_readings, centralizer_applicable,
+                                 SHALLOW_CASING_JOBS, SHALLOW_CASING_NOT_APPLICABLE)
 from engineering_tools import parse_effective_numeric
 from placement import HOST_DESCRIPTIONS, hardware_choices, measured_depth, target_depth, target_descriptions
 from project_state import fingerprint, refresh_fluids
@@ -99,8 +100,10 @@ def prepare_pumping_simulation(state):
     nor altered. Report-only placement overrides never enter this projection.
     """
     kind = chart_model.chart_job_kind(state.get("job_type"))
-    if kind is None:
-        return {"applicable": False, "message": "Not applicable (Plug/Squeeze).", "inputs": None, "warnings": []}
+    if kind is None or not centralizer_applicable(state.get("job_type")):
+        message = (SHALLOW_CASING_NOT_APPLICABLE if state.get("job_type") in SHALLOW_CASING_JOBS
+                   else "Not applicable (Plug/Squeeze).")
+        return {"applicable": False, "message": message, "inputs": None, "warnings": []}
     mud = _mud_rheology(state)
     geometry, warnings = _geometry(state, kind)
     projected = deepcopy({key: state[key] for key in ("fluids_config", "fluid_data", "mud_density", "mud_type", "well_data") if key in state})
@@ -165,7 +168,7 @@ def prepare_pumping_simulation(state):
 def source_signature(state):
     """Fingerprint canonical consumed inputs, never a simulation or its output."""
     job = state.get("job_type")
-    if chart_model.chart_job_kind(job) is None:
+    if chart_model.chart_job_kind(job) is None or not centralizer_applicable(job):
         return fingerprint({"job": job})
     well = _record(state.get("well_data", {}), "Phase II Well Data")
     config = _record(state.get("fluids_config", {}), "Phase IV fluid train")

@@ -127,7 +127,8 @@ def test_custom_management_identity_maximum_and_selected_deletion(catalog):
 def test_phase9_job_applicability(job):
     result = tools.compute_phase_status({"job_type":job})
     assert "phase9" in result, "Phase IX status is missing"
-    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
+    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB,
+               'CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'):
         assert result["phase9"]["level"] == "ok"
         assert "Not applicable" in result["phase9"]["message"]
     else:
@@ -453,7 +454,8 @@ def test_fresh_phase9_defaults_and_products_are_not_auto_selected(catalog):
     assert app.session_state["centralizer_config"]["zones"][0]["product_nr"] is None
 
 
-@pytest.mark.parametrize("job", ["CMT PLUG","CMT SQUEEZE"])
+@pytest.mark.parametrize("job", ["CMT PLUG", "CMT SQUEEZE",
+    'CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'])
 def test_na_ui_has_no_centralizer_controls_or_solver(catalog, job):
     state = configured(catalog);state["job_type"] = job;state.pop("centralizer_config")
     with patch.object(adapter,"solve_static",side_effect=AssertionError("N/A solver")), \

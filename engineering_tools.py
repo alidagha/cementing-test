@@ -1202,11 +1202,13 @@ def compute_phase_status(ss) -> dict:
         )
 
     # Phase IX completion is canonical and required by Word for applicable jobs.
-    from centralizer_adapter import centralizer_applicable
+    from centralizer_adapter import centralizer_applicable, SHALLOW_CASING_JOBS, SHALLOW_CASING_NOT_APPLICABLE
     from phase_9_centralizer import result_is_current
     job = ss.get("job_type")
     if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         status["phase9"] = {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
+    elif job in SHALLOW_CASING_JOBS:
+        status["phase9"] = {"level": "ok", "message": SHALLOW_CASING_NOT_APPLICABLE}
     elif not centralizer_applicable(job):
         status["phase9"] = {"level": "empty", "message": "Select a supported Centralizer job in Phase I."}
     elif result_is_current(ss):
