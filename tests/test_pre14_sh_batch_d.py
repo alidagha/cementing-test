@@ -108,12 +108,18 @@ def test_l9_default_shallow_phase9_na_mount_keeps_project_clean():
         assert not any(b.key == '_confirm_upload_replacement' for b in app.button)
 
 
-def test_l9_applicable_phase9_mount_keeps_json_configuration_without_dirty():
+def test_l9_applicable_phase9_mount_keeps_json_configuration_without_dirty(downloads):
     import phase_9_centralizer as p9
     app = CASE.app({'job_type': 'CSG 9 5/8"'})
+    assert dirty(app)  # A nondefault, unsaved Job is meaningful project work.
+    offered = mark_saved(app, downloads)
+    assert json.loads(offered['data'])['job_type'] == 'CSG 9 5/8"'
+    assert not dirty(app)
+    comparison = app.session_state['_saved_comparison_sig']
     CASE.phase(app, 'phase9')
     assert app.session_state['centralizer_config'] == p9.new_config()
     assert json.loads(save_project(app))['centralizer_config'] == p9.new_config()
+    assert app.session_state['_saved_comparison_sig'] == comparison
     assert not dirty(app)
 
 
@@ -208,9 +214,13 @@ def test_ct_stage_only_edit_protects_an_existing_saved_checkpoint(downloads):
 
 
 @pytest.mark.parametrize('control', ['physics', 'placement', 'zone', 'auxiliary', 'custom'])
-def test_real_centralizer_changes_are_significant_after_default_only_mount(control):
+def test_real_centralizer_changes_are_significant_after_default_only_mount(control, downloads):
     # Centralizer is N/A for fresh default CSG20; exercise live controls on an applicable job.
     app = CASE.app({'job_type': 'CSG 9 5/8"'})
+    assert dirty(app)
+    offered = mark_saved(app, downloads)
+    assert json.loads(offered['data'])['job_type'] == 'CSG 9 5/8"'
+    assert not dirty(app)
     CASE.phase(app, 'phase9')
     assert not dirty(app)
     if control == 'physics':
@@ -226,6 +236,7 @@ def test_real_centralizer_changes_are_significant_after_default_only_mount(contr
         from test_uat_round9f_phase9 import custom
         app.session_state['centralizer_config']['custom_products'] = [custom()]
         app.run()
+    assert dirty(app)
     CASE.phase(app, 'phase1')
     assert_replacement_guard(app)
 
