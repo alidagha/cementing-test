@@ -20,6 +20,8 @@ st.set_page_config(page_title="Cementing Report Engine", layout="wide", page_ico
 def serialize_item(obj, path="project"):
     """Recursively serializes objects including DataFrames and Dates for JSON export."""
     if isinstance(obj, pd.DataFrame):
+        if not obj.columns.is_unique:
+            raise ValueError(f"{path}: duplicate DataFrame column labels are not supported.")
         rows = []
         for index, record in enumerate(obj.to_dict(orient="records")):
             # Keep unfinished table cells as JSON null so a project can be
