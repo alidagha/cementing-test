@@ -33,8 +33,9 @@ def diesel_state(job=JOBS[0], excess="ignore"):
             ('Previous Casing', '500', '9.625', 8.535), ('Open Hole Size', '1000', '8.5', 8.5))
     elif job == JOBS[2]:
         state['hardware_table'] = hardware(
-            ('Tie Back', '1000', '7', 6.), ('Previous Casing', '1000', '9.625', 8.535),
-            ('Previous Liner', '500-1300', '8.625', 7.5))
+            ('Tie Back', '0-1000', '7', 6.), ('Previous Casing', '1000', '9.625', 8.535),
+            # Synthetic receiver must pass the measured 8.535-inch host ID.
+            ('Previous Liner', '500-1300', '8.5', 7.5))
         state['placement_config']['host_row'] = next(iter(
             hardware_choices(state['hardware_table'], {'Previous Casing'})))
     state['placement_config'].update(

@@ -4,11 +4,11 @@ Hardware supplies diameters/capacities; official Phase IV volumes supply cement
 placement; well_profile supplies TVD. Derived results are rebuilt from current canonical inputs.
 """
 import math
-import re
 from numbers import Real
 
 import pandas as pd
 import materials_db
+import installed_geometry
 from engineering_tools import BBL_TO_CUFT, parse_fractional_size, require_positive_density, require_fluid_density
 from well_profile import tvd_at_md, trajectory_tvd_decreases
 
@@ -28,7 +28,7 @@ FRAC_FIELD = "frac_gradient_emw_pcf"
 PCF_TO_KG_M3 = 0.45359237 / 0.3048**3
 STANDARD_GRAVITY = 9.80665
 PA_PER_PSI = 0.45359237 * STANDARD_GRAVITY / 0.0254**2
-_MD_INTERVAL = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:[-–]\s*(\d+(?:\.\d+)?)\s*)?$")
+_MD_INTERVAL = installed_geometry.MD_INTERVAL
 
 
 def chart_job_kind(job):
@@ -294,12 +294,12 @@ def _segments(rows, start, end, label):
             raise ValueError(f"{label}: reversed/duplicate Hardware MD segment.")
         if top != boundary:
             raise ValueError(f"{label}: Hardware geometry gap or overlap at {boundary:g} m MD.")
-        od = parse_fractional_size(row.get("Size (in)"))
+        od = installed_geometry.positive_size(row.get("Size (in)"))
         _number(od, f"{label} Hardware Size (in)", positive=True)
         # Hardware ID is numeric in the current schema; a hole diameter is Size.
         inner = _number(row.get("ID (in)"), f"{label} Hardware ID (in)", positive=True)
-        if row["Description"] != "Open Hole Size" and inner > od:
-            raise ValueError(f"{label}: Hardware ID cannot exceed OD.")
+        if row["Description"] != "Open Hole Size" and inner >= od:
+            raise ValueError(f"{label}: Hardware ID must be less than OD.")
         segments.append({"top_md": top, "bottom_md": bottom, "od_in": od,
                          "id_in": inner, "description": row["Description"]})
         boundary = bottom
@@ -351,30 +351,34 @@ def resolve_chart_geometry(state):
         active = _segments([r for r in rows if r.get("Description") == "Drill Pipes"], 0., hanger,
                            "Drill Pipes above Liner Hanger")
         active += _segments(active_rows, hanger, shoe, "Liner")
+    elif kind == "tieback":
+        top = installed_geometry.tieback_top(active_rows, config)
+        active = (_segments([r for r in rows if r.get("Description") == "Drill Pipes"],
+                            0., top, "Drill Pipes above Tie Back Top") if top > 0 else [])
+        active += _segments(active_rows, top, shoe, description)
     else:
         active = _segments(active_rows, 0., shoe, description)
+    history = {"Previous Casing", "Previous Liner", "Casing", "Liner"} - {description}
+    strings = installed_geometry.physical_strings(rows, _segments, history)
+    if kind != "tieback" and any(s["description"].startswith("Previous ") and s["shoe_md"] >= shoe
+                                 for s in strings):
+        raise ValueError("Previous shoe must lie above the active string shoe.")
+    outer = installed_geometry.enclosing_path(rows, strings, active, shoe, _segments)
     if kind == "tieback":
         choices = hardware_choices(table, HOST_DESCRIPTIONS)
         host = choices.get(config.get("host_row"))
-        if host is None:
-            raise ValueError("Tie Back requires the explicitly selected Hardware host.")
-        host_rows = [r for r in rows if r.get("Description") == host["description"]]
-        # A duplicated token must not silently overwrite a possible host.
-        selected = [r for r in host_rows if config.get("host_row") in
-                    hardware_choices(pd.DataFrame([r]), HOST_DESCRIPTIONS)]
-        if len(selected) != 1:
-            raise ValueError("Tie Back host Hardware is ambiguous.")
-        outer = _segments(host_rows, 0., shoe, "Tie Back host")
-    else:
-        previous = [r for r in rows if r.get("Description") in ("Previous Casing", "Previous Liner")]
-        if not previous:
-            raise ValueError("Resolve the Previous Casing / Previous Liner shoe from explicit Hardware.")
-        previous_shoe = measured_depth(previous[-1].get("MD (m)"))
-        if previous_shoe is None or previous_shoe >= shoe:
-            raise ValueError("Previous shoe must lie above the active string shoe.")
-        outer = _segments(previous, 0., previous_shoe, "Previous Casing / Previous Liner")
-        outer += _segments([r for r in rows if r.get("Description") == "Open Hole Size"],
-                           previous_shoe, shoe, "Open Hole Size")
+        selected = [i for i, row in enumerate(rows) if config.get("host_row") in
+                    hardware_choices(pd.DataFrame([row]), HOST_DESCRIPTIONS)]
+        if host is None or len(selected) != 1:
+            raise ValueError("Tie Back requires one explicitly selected unambiguous Hardware host.")
+        selected_string = [s for s in strings if selected[0] in s["indices"]]
+        at_top = _at(outer, top)
+        if len(selected_string) != 1 or not any(
+                sec["top_md"] <= top < sec["bottom_md"] and
+                sec["id_in"] == at_top["id_in"] and sec["od_in"] == at_top["od_in"]
+                for sec in selected_string[0]["sections"]):
+            raise ValueError("Selected Tie Back host is not the actual immediate enclosing string at its Top.")
+        installed_geometry.receiving_liner(strings, shoe)
     boundaries = sorted({0., shoe, *(s[k] for s in active+outer for k in ("top_md", "bottom_md"))})
     capacities = []
     for top, bottom in zip(boundaries, boundaries[1:]):

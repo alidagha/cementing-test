@@ -467,6 +467,9 @@ def certified_interior_state():
     state = program_state("tieback")
     state.update(valid_export_chart_fixture('TIE BACK LNR 7"'))
     state['well_geometry']['td_m'] = 3000.
+    # Preserve the original interior-lap fixture independently of the uniform
+    # Centralizer success prerequisite used by generic valid-export helpers.
+    state['hardware_table'].loc[state['hardware_table']['Description'] == 'Previous Liner', 'MD (m)'] = '2500-3300'
     return state
 
 

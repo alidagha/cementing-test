@@ -173,7 +173,9 @@ def test_directional_formation_and_crossing_use_tvd_authority(monkeypatch):
 def test_tieback_no_exposure_and_plug_squeeze_applicability_unchanged():
     state=balanced_state(); state['job_type']='TIE BACK LNR 7"'
     from placement import hardware_choices
-    state['hardware_table']=hardware(('Tie Back','1000','7',6.276),('Previous Casing','1200','9.625',8.535))
+    # Synthetic surface Top and receiver-at-tie-in, wholly cased/no exposure.
+    state['hardware_table']=hardware(('Tie Back','0-1000','7',6.276),('Previous Casing','1200','9.625',8.535),
+                                     ('Previous Liner','1000-1300','7',6.276))
     state['placement_config'].update(job_type=state['job_type'],host_row=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'}))))
     assert model.build_chart_model(state)['pore_frac']['kind']=='markers'
     assert model.build_chart_model(state)['static_security']['domain'] is None
