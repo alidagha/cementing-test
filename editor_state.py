@@ -58,7 +58,17 @@ def _commit_editor_change(key: str, source_key: str, persist_to: tuple[str, str 
         saved = saved.drop(index=[index for index in deleted if index in saved.index])
     added = edits.get("added_rows", [])
     if added:
-        saved = pd.concat([saved, pd.DataFrame(added).reindex(columns=saved.columns)], ignore_index=True)
+        additions = pd.DataFrame(added).reindex(columns=saved.columns)
+        columns = {}
+        for column in saved.columns:
+            incoming = additions[column]
+            if incoming.isna().all() and isinstance(saved[column].dtype, pd.api.extensions.ExtensionDtype):
+                incoming = pd.Series(index=additions.index, dtype=saved[column].dtype)
+            # Series concatenation includes all-NA cells in dtype resolution.
+            # Keep nullable columns and blank rows without frame-level inference.
+            columns[column] = (pd.concat([saved[column], incoming], ignore_index=True)
+                               if len(saved) else incoming.reset_index(drop=True))
+        saved = pd.DataFrame(columns, index=range(len(saved) + len(added)), columns=saved.columns)
     saved = saved.reset_index(drop=True)
 
     if normalize is not None:

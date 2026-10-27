@@ -465,6 +465,7 @@ def render():
     )
 
     pending_rows = edited_df.copy(deep=True)
+    pending_rows["Grade"] = pending_rows["Grade"].astype(object)
     cleaned_rows = []
     dimension_warnings = []
     corrected_hardware = False
