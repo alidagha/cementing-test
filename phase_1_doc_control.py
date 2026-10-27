@@ -100,6 +100,10 @@ def on_job_type_change():
     if new_job != st.session_state.get("job_type"):
         from placement import EXCESS_FIELDS
         from project_state import invalidate_document
+        from centralizer_adapter import SHALLOW_CASING_JOBS
+        if new_job in SHALLOW_CASING_JOBS or st.session_state.get("job_type") in SHALLOW_CASING_JOBS:
+            for key in ("_centralizer_result", "_centralizer_signature", "_centralizer_error"):
+                st.session_state.pop(key, None)
         placement = st.session_state.get("placement_config", {})
         for field, _, _ in EXCESS_FIELDS:
             placement.pop(field, None)

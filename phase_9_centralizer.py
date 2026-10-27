@@ -347,6 +347,9 @@ def render():
     if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         st.info("Not applicable: Centralizer calculation is not required for Plug or Squeeze.")
         return
+    if job in adapter.SHALLOW_CASING_JOBS:
+        st.info("Not applicable: Centralizer calculation is not required for this shallow casing job.")
+        return
     if not adapter.centralizer_applicable(job):
         st.warning("Select a supported Casing, Liner or Tie Back job in Phase I.")
         return

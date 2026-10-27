@@ -1613,7 +1613,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
     # procedure branch above (grouped with 20"/24"/30"), so it must also be
     # excluded from centralizer and open-hole content — previously it got
     # stab-in steps AND centralizer/open-hole notes in the same document.
-    has_centralizer = not any(x in job_type.upper() for x in ["PLUG", "SQUEEZE", "20", "24", "30", "18"])
+    has_centralizer = centralizer_applicable(job_type)
     # Notes 5-6 (Hydrostatic / Pore & Frac) follow the exact same job-type
     # grouping as has_centralizer — validated against all 8 real reference
     # documents: present for CSG 13-3/8"/9-5/8"/7", LNR, and Tie Back; absent

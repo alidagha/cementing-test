@@ -212,12 +212,22 @@ def test_actual_docx_tables_chart_note_and_page_transition(word_state, job):
 
 @pytest.mark.parametrize("job", ['CSG 30"','CSG 24"','CSG 20"','CSG 18 5/8"'])
 def test_shallow_csg_gets_centralizer_without_open_hole_notes(word_state,job):
-    state=deepcopy(word_state); state.update(audit.chart_fixture(job),job_type=job)
+    from project_state import prepare_calculations
+    state=deepcopy(word_state); state.update(audit.valid_export_chart_fixture(job),job_type=job)
     execute_centralizer(state)
+    assert prepare_calculations(state) == []
     ctx=context(state)
-    assert ctx['centralizer_report']['applicable']
-    assert not ctx['has_open_hole_notes']
+    assert ctx['centralizer_report']['applicable'] is False
+    assert ctx['has_centralizer'] is False and not ctx['has_open_hole_notes']
     assert not ctx['note_hydrostatic'] and not ctx['note_porefrac']
+    doc = Document(BytesIO(render(ctx)))
+    region = ix_region(doc)
+    assert not [table for table in doc.tables if table._tbl in region]
+    assert not any(element.xpath('.//w:drawing') for element in region)
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert text.count("Not applicable (shallow casing).") == 1 and BODY not in text
+    assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
+    assert doc.element.body.xpath('.//wp:docPr[@descr="Static Well Security and Fluid Sequence"]')
 
 
 @pytest.mark.parametrize("physics",["static","dynamic"])

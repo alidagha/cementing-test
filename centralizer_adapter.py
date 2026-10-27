@@ -178,9 +178,14 @@ def resolve_zone_product(zone, products, custom_products=()):
     return to_engine_custom_product(matches[0])
 
 
+SHALLOW_CASING_JOBS = frozenset(('CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'))
+SHALLOW_CASING_NOT_APPLICABLE = "Not applicable (shallow casing)."
+
+
 def centralizer_applicable(job_type):
     """Exact current supported jobs only; no guessed future-job applicability."""
-    return job_type in materials_db.JOB_TYPES and job_type not in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB)
+    return (job_type in materials_db.JOB_TYPES and job_type not in SHALLOW_CASING_JOBS
+            and job_type not in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB))
 
 
 def to_engine_geometry(state):

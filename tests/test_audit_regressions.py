@@ -318,6 +318,11 @@ class AuditRegressions(unittest.TestCase):
             app.button(key=key).click().run()
         ensure_current_centralizer(app.session_state)
         if optional_fluids and job not in ('CMT PLUG', 'CMT SQUEEZE'):
+            # These explicit legacy Pre Flush readings also feed Phase VII.
+            # N/A jobs do not create config through Centralizer execution.
+            if 'centralizer_config' not in app.session_state:
+                from phase_9_centralizer import new_config
+                app.session_state['centralizer_config'] = new_config()
             app.session_state['centralizer_config']['aux_rheology'] = {
                 fluid: dict(zip(('300', '200', '100', '60', '30', '6', '3'),
                                 (168., 116., 64., 41., 24., 8., 6.)))

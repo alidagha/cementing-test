@@ -347,4 +347,10 @@ def test_every_exact_supported_job_maps_only_through_existing_authorities(job):
     else:
         state = state_for(kind)
         state["job_type"] = state["placement_config"]["job_type"] = job
-        assert project(state)["job_type"] == kind
+        if job in ('CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'):
+            # Casing remains an independent chart/geometry job; only Centralizer is N/A.
+            assert kind == "casing"
+            assert project(state) is None
+            assert cement_chart_model.resolve_chart_geometry(state)["kind"] == "casing"
+        else:
+            assert project(state)["job_type"] == kind

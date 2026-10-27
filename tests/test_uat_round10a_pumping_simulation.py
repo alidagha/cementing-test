@@ -120,11 +120,14 @@ def test_exact_supported_applicability(job, monkeypatch):
     app = adapter()
     def forbidden(*args, **kwargs):
         raise AssertionError("N/A job executed or parsed simulation inputs")
-    if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
+    shallow = job in ('CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"')
+    if shallow or job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         monkeypatch.setattr(app.fcm, "build_three_charts", forbidden)
         result = app.run_pumping_simulation({"job_type": job})
         assert result["applicable"] is False
-        assert result["message"] == "Not applicable (Plug/Squeeze)."
+        assert result["message"] == ("Not applicable (shallow casing)." if shallow else "Not applicable (Plug/Squeeze).")
+        if shallow:
+            assert cement_chart_model.chart_job_kind(job) == "casing"
         assert result["figure"] is None and result["result"] is None and result["inputs"] is None
     else:
         kind = cement_chart_model.chart_job_kind(job)

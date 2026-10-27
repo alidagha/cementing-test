@@ -31,6 +31,9 @@ def prepare_report(state):
     job = state.get("job_type")
     if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
         return {"applicable": False, "analysis": None, "view": None, "source": None, "warning": False}
+    if job in adapter.SHALLOW_CASING_JOBS:
+        return {"applicable": False, "analysis": None, "view": None, "source": None, "warning": False,
+                "message": adapter.SHALLOW_CASING_NOT_APPLICABLE}
     if not adapter.centralizer_applicable(job) or not result_is_current(state):
         raise ValueError("Phase IX: Execute a current successful Centralizer calculation before Word export.")
     result = state["_centralizer_result"]

@@ -189,7 +189,9 @@ def test_corrupt_catalog_fails_controlled_validation(tmp_path, mutation, message
 
 @pytest.mark.parametrize("job", materials_db.JOB_TYPES)
 def test_exact_current_job_applicability(job):
-    assert adapter().centralizer_applicable(job) is (job not in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB))
+    assert adapter().centralizer_applicable(job) is (job not in (
+        "CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB,
+        'CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'))
 
 
 @pytest.mark.parametrize("job", ["", 'CSG 42"', 'TIE BACK LNR 9 5/8"', "NEW LINER"])

@@ -23,9 +23,11 @@ def caption(app, phase):
 def assert_pristine_captions(app):
     status = compute_phase_status(app.session_state)
     assert status["phase2_3"]["level"] == "warning"
-    assert status["phase9"]["level"] == "warning"
     assert caption(app, "phase2_3") == "⚪ Not started"
-    assert caption(app, "phase9") == "⚪ Not started"
+    # The actual fresh default is CSG20: Round16 makes only its simulations N/A.
+    assert app.session_state["job_type"] == 'CSG 20"'
+    assert status["phase9"] == {"level": "ok", "message": "Not applicable (shallow casing)."}
+    assert caption(app, "phase9") == "✅ Complete"
 
 
 def test_actual_fresh_launch_has_neutral_sidebar_only(tmp_path):
@@ -66,7 +68,7 @@ def test_default_navigation_keeps_neutral_captions_and_selection(tmp_path):
         observed.append((caption(app, "phase2_3"), caption(app, "phase9")))
         assert not any("unsaved changes" in w.value for w in app.warning)
     (tmp_path / "navigation.json").write_text(json.dumps(snapshots, ensure_ascii=False, indent=2))
-    assert all(pair == ("⚪ Not started", "⚪ Not started") for pair in observed)
+    assert all(pair == ("⚪ Not started", "✅ Complete") for pair in observed)
 
 
 @pytest.mark.parametrize("project", [
@@ -76,11 +78,12 @@ def test_default_navigation_keeps_neutral_captions_and_selection(tmp_path):
     {"mud_density": "unreadable"},
     {"centralizer_config": {**new_config(), "physics_mode": "dynamic"}},
     {"centralizer_config": {**new_config(), "zones": [{"top_md": 100.0}]}},
-    {"placement_config": {"job_type": 'CSG 20"', "excess_csg_oh_pct": 0.0}},
+    {"placement_config": {"job_type": 'CSG 9 5/8"', "excess_csg_oh_pct": 0.0}},
     {"fluids_config": {"active": ["Displacement Fluid"], "params": {"Main": {"volume": 1.0}}}},
 ])
 def test_meaningful_or_invalid_sources_keep_actionable_computed_warnings(project):
-    app = CASE.app(deepcopy(project))
+    # Keep these actionable negatives on a genuinely applicable job.
+    app = CASE.app({"job_type": 'CSG 9 5/8"', **deepcopy(project)})
     before = deepcopy(compute_phase_status(app.session_state))
     for phase in ("phase2_3", "phase9"):
         assert before[phase]["level"] == "warning"
@@ -107,7 +110,8 @@ def test_real_job_change_does_not_hide_unexecuted_centralizer():
     assert app.radio(key="_app_mode_key").value == "phase1"
 
 
-@pytest.mark.parametrize("project", [{"job_type": 'CSG 20"'}, {"well_name": "Loaded unfinished project"}])
+@pytest.mark.parametrize("project", [{"job_type": 'CSG 20"'}, {"well_name": "Loaded unfinished project"},
+                                     {"job_type": 'CSG 9 5/8"'}])
 def test_actual_loaded_checkpoint_keeps_warning_and_exact_receipt(project):
     app = CASE.app()
     with upload(app, json.dumps(project).encode()):
@@ -115,8 +119,13 @@ def test_actual_loaded_checkpoint_keeps_warning_and_exact_receipt(project):
         CASE.healthy(app)
         receipt = app.session_state["_saved_sig"]
         assert app.session_state["last_loaded_hash"]
-        for phase in ("phase2_3", "phase9"):
-            assert caption(app, phase) == "⚠️ Needs review"
+        assert caption(app, "phase2_3") == "⚠️ Needs review"
+        if app.session_state["job_type"] == 'CSG 20"':
+            assert compute_phase_status(app.session_state)["phase9"] == {
+                "level": "ok", "message": "Not applicable (shallow casing)."}
+            assert caption(app, "phase9") == "✅ Complete"
+        else:
+            assert caption(app, "phase9") == "⚠️ Needs review"
         app.run()
         CASE.healthy(app)
         assert app.session_state["_saved_sig"] == receipt
@@ -145,9 +154,13 @@ def test_neutral_caption_does_not_authorize_word_or_change_engineering_status():
     ("phase9", "_centralizer_physics", "dynamic"),
 ])
 def test_first_real_phase_input_refreshes_caption_without_changing_status_level(phase, widget, value):
-    app = CASE.app()
+    # Phase IX has controls only on an applicable job; the fresh default is N/A.
+    app = CASE.app({"job_type": 'CSG 9 5/8"'} if phase == "phase9" else None)
     CASE.phase(app, phase)
-    assert_pristine_captions(app)
+    if phase == "phase9":
+        assert caption(app, phase) == "⚠️ Needs review"
+    else:
+        assert_pristine_captions(app)
     before = deepcopy(compute_phase_status(app.session_state))
     control = app.selectbox(key=widget) if phase == "phase2_3" else app.radio(key=widget)
     control.set_value(value).run()

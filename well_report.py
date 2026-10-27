@@ -282,7 +282,7 @@ def _postprocess_centralizer(doc, prepared):
     if not prepared["applicable"]:
         for table in tables:
             table._tbl.getparent().remove(table._tbl)
-        replace_text(note, NOT_APPLICABLE)
+        replace_text(note, prepared.get("message", NOT_APPLICABLE))
         drawing.getparent().remove(drawing)
     else:
         view = prepared["view"]

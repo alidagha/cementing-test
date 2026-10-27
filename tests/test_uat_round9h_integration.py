@@ -58,7 +58,11 @@ def test_all_jobs_navigate_without_implicit_execution_or_false_completion(job):
         assert not app.exception
         assert app.radio(key="_app_mode_key").value == "phase9"
         status = tools.compute_phase_status(app.session_state)["phase9"]
-        if job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
+        if job in ('CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"'):
+            assert not adapter.centralizer_applicable(job)
+            assert status == {"level": "ok", "message": "Not applicable (shallow casing)."}
+            assert not any(button.label == "Execute Centralizer" for button in app.button)
+        elif job in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB):
             assert not adapter.centralizer_applicable(job)
             assert status == {"level": "ok", "message": "Not applicable (Plug/Squeeze)."}
             assert not any(button.label == "Execute Centralizer" for button in app.button)
