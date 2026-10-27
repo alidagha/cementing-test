@@ -12,6 +12,7 @@ permissions:
 jobs:
   regression:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,4 +36,69 @@ jobs:
         run: python -B -m pytest test_regression_guardrails.py -v
       - name: Certification gate
         if: github.event_name == 'pull_request'
-        run: python -B -m pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/certification"
+          python - <<'PY'
+          import importlib.metadata as metadata
+          import json, os, platform, subprocess, sys
+          from pathlib import Path
+          packages = ("pytest", "streamlit", "pandas", "numpy", "pyarrow", "docxtpl", "python-docx", "Jinja2", "matplotlib")
+          data = {
+              "checkout_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_os": os.environ["RUNNER_OS"],
+              "runner_arch": os.environ["RUNNER_ARCH"],
+              "python": sys.version,
+              "packages": {name: metadata.version(name) for name in packages},
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "certification/metadata.json").write_text(json.dumps(data, indent=2, sort_keys=True))
+          PY
+          set +e
+          python -B -m pytest --durations=0 --durations-min=0 --junitxml="$RUNNER_TEMP/certification/junit.xml" 2>&1 | tee "$RUNNER_TEMP/certification/certification.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 )); then
+            exit "${statuses[0]}"
+          fi
+          exit "${statuses[1]}"
+      - name: Verify certification evidence
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          directory = Path(os.environ["RUNNER_TEMP"]) / "certification"
+          missing = [name for name in ("junit.xml", "certification.log", "metadata.json")
+                     if not (directory / name).is_file() or not (directory / name).stat().st_size]
+          if missing:
+              sys.exit("Certification incomplete: missing or empty " + ", ".join(missing))
+          data = json.loads((directory / "metadata.json").read_text())
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if data["checkout_sha"] != actual or not data["github_run_id"] or not data["github_run_attempt"]:
+              sys.exit("Certification incomplete: invalid run metadata")
+          root = ET.parse(directory / "junit.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          total = sum(int(suite.attrib["tests"]) for suite in suites)
+          if not suites or total <= 0 or total != len(list(root.iter("testcase"))):
+              sys.exit("Certification incomplete: empty or inconsistent JUnit")
+          if any(int(suite.attrib[field]) for suite in suites for field in ("failures", "errors", "skipped")) or any(
+                  element.tag in ("failure", "error", "skipped") for element in root.iter()):
+              sys.exit("Certification did not pass: JUnit contains failed, errored or skipped tests")
+          print(f"Certification evidence complete: {total} passed test cases; checkout {actual}")
+          PY
+      - name: Upload certification evidence
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: certification-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/certification/junit.xml
+            ${{ runner.temp }}/certification/certification.log
+            ${{ runner.temp }}/certification/metadata.json
+          retention-days: 7
+          if-no-files-found: error
