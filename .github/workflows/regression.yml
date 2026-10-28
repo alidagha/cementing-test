@@ -151,3 +151,144 @@ jobs:
             ${{ runner.temp }}/certification/metadata.json
           retention-days: 7
           if-no-files-found: error
+
+  # Experimental only: the serial regression job above is the mandatory reference.
+  shadow-collection:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHADOW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest==9.1.1
+      - name: Collect the complete original tree without executing tests
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          python -B tools/round17_shadow.py run --role collect --directory "$RUNNER_TEMP/shadow-collection" 2>&1 | tee "$RUNNER_TEMP/shadow-launch.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 )); then exit "${statuses[0]}"; fi
+          exit "${statuses[1]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shadow-collection-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shadow-collection/manifest.json
+            ${{ runner.temp }}/shadow-collection/metadata.json
+            ${{ runner.temp }}/shadow-collection/observation.json
+            ${{ runner.temp }}/shadow-collection/process.json
+            ${{ runner.temp }}/shadow-collection/certification.log
+            ${{ runner.temp }}/shadow-collection/checksums.json
+          retention-days: 7
+          if-no-files-found: error
+
+  shadow-modules:
+    if: github.event_name == 'pull_request'
+    needs: shadow-collection
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [A, B]
+    env:
+      SHADOW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest==9.1.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: shadow-collection-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/collection-input
+      - name: Full discovery then visible whole-module routing
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          python -B tools/round17_shadow.py run --role "${{ matrix.shard }}" --directory "$RUNNER_TEMP/shadow-${{ matrix.shard }}" --reference "$RUNNER_TEMP/collection-input/manifest.json" 2>&1 | tee "$RUNNER_TEMP/shadow-launch.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 )); then exit "${statuses[0]}"; fi
+          exit "${statuses[1]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shadow-${{ matrix.shard }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/manifest.json
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/metadata.json
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/observation.json
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/process.json
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/certification.log
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/checksums.json
+            ${{ runner.temp }}/shadow-${{ matrix.shard }}/junit.xml
+          retention-days: 7
+          if-no-files-found: error
+
+  shadow-parity:
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [regression, shadow-collection, shadow-modules]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHADOW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      SHADOW_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest==9.1.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: certification-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/serial-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: shadow-collection-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/collection-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: shadow-A-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/A-input
+      - uses: actions/download-artifact@v4
+        with:
+          name: shadow-B-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/B-input
+      - name: Independent exact-head serial-versus-shadow parity
+        shell: bash
+        run: |
+          set -o pipefail
+          python -B tools/round17_shadow.py compare --serial "$RUNNER_TEMP/serial-input" --collection "$RUNNER_TEMP/collection-input" --A "$RUNNER_TEMP/A-input" --B "$RUNNER_TEMP/B-input" --output "$RUNNER_TEMP/shadow-parity.json" 2>&1 | tee "$RUNNER_TEMP/shadow-parity.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shadow-parity-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shadow-parity.json
+            ${{ runner.temp }}/shadow-parity.log
+          retention-days: 7
+          if-no-files-found: error
