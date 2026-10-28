@@ -12,6 +12,7 @@ permissions:
 jobs:
   regression:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,4 +36,118 @@ jobs:
         run: python -B -m pytest test_regression_guardrails.py -v
       - name: Certification gate
         if: github.event_name == 'pull_request'
-        run: python -B -m pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/certification"
+          python - <<'PY'
+          import importlib.metadata as metadata
+          import json, os, platform, subprocess, sys
+          from pathlib import Path
+          packages = ("pytest", "streamlit", "pandas", "numpy", "pyarrow", "docxtpl", "python-docx", "Jinja2", "matplotlib")
+          data = {
+              "checkout_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_os": os.environ["RUNNER_OS"],
+              "runner_arch": os.environ["RUNNER_ARCH"],
+              "python": sys.version,
+              "packages": {name: metadata.version(name) for name in packages},
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "certification/metadata.json").write_text(json.dumps(data, indent=2, sort_keys=True))
+          PY
+          set +e
+          python -B -m pytest --durations=0 --durations-min=0 --junitxml="$RUNNER_TEMP/certification/junit.xml" 2>&1 | tee "$RUNNER_TEMP/certification/certification.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if (( statuses[0] != 0 )); then
+            exit "${statuses[0]}"
+          fi
+          exit "${statuses[1]}"
+      - name: Verify certification evidence
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, sys
+          from collections import Counter
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          directory = Path(os.environ["RUNNER_TEMP"]) / "certification"
+          missing = [name for name in ("junit.xml", "certification.log", "metadata.json")
+                     if not (directory / name).is_file() or not (directory / name).stat().st_size]
+          if missing:
+              sys.exit("Certification incomplete: missing or empty " + ", ".join(missing))
+          data = json.loads((directory / "metadata.json").read_text())
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          expected = {"checkout_sha": actual, "github_run_id": os.environ["GITHUB_RUN_ID"],
+                      "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
+          if any(data.get(key) != value for key, value in expected.items()) or any(
+                  not re.fullmatch(r"[1-9][0-9]*", expected[key]) for key in ("github_run_id", "github_run_attempt")):
+              sys.exit("Certification incomplete: invalid run metadata")
+          if data.get("packages", {}).get("pytest") != "9.1.1" or any(
+                  not isinstance(data.get(key), str) or not data[key].strip() for key in ("python", "runner_os", "runner_arch")):
+              sys.exit("Certification incomplete: invalid environment metadata")
+          root = ET.parse(directory / "junit.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite") if root.tag == "testsuites" else []
+          cases = [case for suite in suites for case in suite.findall("testcase")]
+          identities = [(case.get("classname"), case.get("name")) for case in cases]
+          if not suites or not cases or len(cases) != len(list(root.iter("testcase"))) or any(
+                  not all(identity) for identity in identities) or len(set(identities)) != len(cases):
+              sys.exit("Certification incomplete: empty, misplaced or duplicate JUnit testcases")
+          if any(int(suite.attrib[field]) for suite in suites for field in ("failures", "errors", "skipped")) or any(
+                  element.tag in ("failure", "error", "skipped") for element in root.iter()):
+              sys.exit("Certification did not pass: JUnit contains failed, errored or skipped tests")
+          log = (directory / "certification.log").read_text()
+          lines = log.rstrip().splitlines()
+          collected_lines = [line for line in lines if line.startswith("collected ")]
+          collected = re.fullmatch(r"collected ([1-9][0-9]*) items?", collected_lines[0]) if len(collected_lines) == 1 else None
+          passed = re.fullmatch(r"=+ ([1-9][0-9]*) passed in [0-9]+(?:\.[0-9]+)?s(?: \([^)]+\))? =+", lines[-1])
+          summaries = [line for line in lines if re.match(r"=+ [0-9]+ (?:passed|failed|errors?|skipped|xfailed|xpassed)\b", line)]
+          if not collected or not passed or summaries != [lines[-1]] or int(collected[1]) != len(cases) or int(passed[1]) != len(cases):
+              sys.exit("Certification incomplete: collected, terminal passed and XML item counts disagree")
+          if not re.search(r"\bpytest-9\.1\.1\b", log) or re.search(
+                  r"^=+\s*(?:warnings summary|FAILURES|ERRORS|short test summary info)\s*=+$", log, re.M | re.I):
+              sys.exit("Certification did not pass: unsupported pytest log or failure/warning summary")
+          headers = [i for i, line in enumerate(lines) if re.fullmatch(r"=+ slowest durations =+", line)]
+          if len(headers) != 1:
+              sys.exit("Certification incomplete: missing or repeated full durations report")
+          phases = {phase: Counter() for phase in ("setup", "call", "teardown")}
+          for line in lines[headers[0] + 1:-1]:
+              if not line.strip():
+                  continue
+              duration = re.fullmatch(r"\s*[0-9]+(?:\.[0-9]+)?s\s+(setup|call|teardown)\s+(.+)", line.rstrip())
+              if not duration:
+                  sys.exit("Certification incomplete: unrecognized durations entry")
+              phases[duration[1]][duration[2]] += 1
+          items = set(phases["call"])
+          if len(items) != len(cases) or any(set(phases[phase]) != items or any(
+                  count != 1 for count in phases[phase].values()) for phase in ("setup", "teardown")):
+              sys.exit("Certification incomplete: missing or duplicate root-item execution evidence")
+          reported_identities = set()
+          for nodeid in items:
+              path, bracket, parameters = nodeid.partition("[")
+              parts = path.split("::")
+              parts[0] = re.sub(r"\.py$", "", parts[0].replace("/", "."))
+              parts[-1] += bracket + parameters
+              reported_identities.add((".".join(parts[:-1]), parts[-1]))
+          if reported_identities != set(identities):
+              sys.exit("Certification incomplete: durations and XML testcase identities disagree")
+          # Pytest subtest call reports share a parent testcase but increment suite statistics.
+          events = sum(phases["call"].values())
+          if sum(int(suite.attrib["tests"]) for suite in suites) != events:
+              sys.exit("Certification incomplete: suite statistics disagree with observed call reports")
+          print(f"Certification evidence consistent: {len(cases)} collected/passed unique items; "
+                f"{events} call reports ({events - len(cases)} additional parent reports); checkout {actual}")
+          PY
+      - name: Upload certification evidence
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: certification-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/certification/junit.xml
+            ${{ runner.temp }}/certification/certification.log
+            ${{ runner.temp }}/certification/metadata.json
+          retention-days: 7
+          if-no-files-found: error
