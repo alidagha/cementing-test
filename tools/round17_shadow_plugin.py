@@ -10,7 +10,7 @@ from tools import round17_shadow as evidence
 
 def pytest_addoption(parser):
     group = parser.getgroup('round17-shadow')
-    group.addoption('--shadow-role', choices=('collect', 'A', 'B'))
+    group.addoption('--shadow-role', choices=('collect', 'serial', *evidence.SHARDS))
     group.addoption('--shadow-dir')
     group.addoption('--shadow-manifest')
 
@@ -75,7 +75,7 @@ class Observer:
                              root_identity_sha256=evidence.digest(evidence.canonical(sorted(r['nodeid'] for r in records))))
         ids = evidence.validate_manifest(self.manifest, self.context, self.groups)
         reference = config.getoption('--shadow-manifest')
-        if self.role != 'collect':
+        if self.role not in ('collect','serial'):
             evidence.require(reference and evidence.load(reference) == self.manifest, 'full discovery differs from collector')
             selected = [i for i in items if i.nodeid.split('::')[0] in self.groups[self.role]]
             removed = [i for i in items if i.nodeid.split('::')[0] not in self.groups[self.role]]
@@ -85,7 +85,7 @@ class Observer:
             config.hook.pytest_deselected(items=removed)
             items[:] = selected
         else:
-            evidence.require(config.option.collectonly and not reference, 'collector cannot execute tests')
+            evidence.require(not reference and (self.role == 'serial' or config.option.collectonly), 'collector cannot execute tests or serial cannot route')
             self.observation['selected'] = ids
         evidence.write(self.directory / 'manifest.json', self.manifest)
         return result

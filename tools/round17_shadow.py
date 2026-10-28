@@ -17,11 +17,10 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ('tools/round17_shadow.py', 'tools/round17_shadow_plugin.py', 'tools/round17_shadow_schedule.json')
-SCHEDULE_SHA = 'c185a884ec51059468440666c621b7afedad2b90a06b2ef12e257a4ace3e73d7'
-# Fixed reviewed baseline identities, not a future test-count acceptance threshold.
-BASELINE_ROOTS = '4639129d9f11427fea3bfefdedf28590412511e75ddd97a9d38e3413af2f512b'
-BASELINE_PROTECTED = '0bf884932475e9704d568dfef07a0e9ec33eb5ecbe1ffe180346e013ac028432'
-BASELINE_WORKFLOW = '90d3b2e5578fbe4913f859413370d010c44577a00f42f8ae21b457f71166f79a'
+SHARDS = ('A', 'B', 'C')
+SCHEDULE_SHA = 'ea13171f309d820631c5d9ee03008da66a9c0c65a9896eef106b78fbd0a9a1ee'
+# Archived certified reference: diagnostic only, never a fixed current-source admission pin.
+ARCHIVED_BASELINE = {'head': '56afa9efbd52eb89b72f232cad092991decca4ff', 'run_id': '40665991772', 'attempt': '1', 'root_identity_sha256': '4639129d9f11427fea3bfefdedf28590412511e75ddd97a9d38e3413af2f512b', 'protected_source_sha256': '0bf884932475e9704d568dfef07a0e9ec33eb5ecbe1ffe180346e013ac028432', 'phase_counts_sha256': '7667b21d251e30e9da25c9d1faebe157ff2ad1a88c7d123bedc3b340cdd78179', 'roots_diagnostic': 4816, 'call_reports_diagnostic': 6110}
 PACKAGES = ('pytest', 'streamlit', 'pandas', 'numpy', 'pyarrow', 'docxtpl', 'python-docx', 'Jinja2', 'matplotlib')
 
 
@@ -38,8 +37,18 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
 
 
+def read_json(text):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'duplicate JSON key: ' + key)
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=unique)
+
+
 def load(path):
-    return json.loads(Path(path).read_text())
+    return read_json(Path(path).read_text())
 
 
 def write(path, data):
@@ -49,8 +58,8 @@ def write(path, data):
 def schedule():
     raw = (ROOT / TOOLS[2]).read_bytes()
     require(digest(raw) == SCHEDULE_SHA, 'approved schedule checksum drift')
-    s = json.loads(raw)
-    require(set(s['shards']) == {'A', 'B'}, 'missing/extra shard')
+    s = read_json(raw)
+    require(set(s['shards']) == set(SHARDS), 'missing/extra shard')
     groups = {k: v['modules'] for k, v in s['shards'].items()}
     flat = sum(groups.values(), [])
     require(flat and len(flat) == len(set(flat)), 'duplicate/overlapping schedule modules')
@@ -73,9 +82,6 @@ def provenance():
         require(path.is_file() and not path.is_symlink(), 'missing/symlink source: ' + name)
         files[name] = digest(path.read_bytes())
     protected = {k: v for k, v in files.items() if k not in TOOLS and k != '.github/workflows/regression.yml'}
-    require(digest(canonical(protected)) == BASELINE_PROTECTED, 'protected source/test/template/policy drift')
-    require(digest((ROOT / '.github/workflows/regression.yml').read_bytes()[:8874]) == BASELINE_WORKFLOW,
-            'original serial workflow prefix drift')
     hosted = os.environ.get('GITHUB_ACTIONS') == 'true'
     run = os.environ.get('GITHUB_RUN_ID', 'local')
     attempt = os.environ.get('GITHUB_RUN_ATTEMPT', 'local')
@@ -90,9 +96,9 @@ def provenance():
                 runner_os=os.environ.get('RUNNER_OS', platform.system()),
                 runner_arch=os.environ.get('RUNNER_ARCH', platform.machine()), python=sys.version,
                 packages=packages, source=files, schedule_sha256=SCHEDULE_SHA,
-                baseline_root_identity_sha256=BASELINE_ROOTS,
+                protected_source_identity=digest(canonical(protected)), archived_baseline=ARCHIVED_BASELINE,
                 plugin_distributions={'anyio': md.version('anyio')},
-                environment_limitations='Serial metadata does not attest all transitive packages, locale or runner image.')
+                environment_limitations='Only declared Python/package/plugin/platform fields are compared; transitive, locale/image and universal numerical or CemCADE equivalence are not attested.')
 
 
 def validate_manifest(manifest, expected, groups):
@@ -101,8 +107,9 @@ def validate_manifest(manifest, expected, groups):
     ids = [r['nodeid'] for r in records]
     require(ids and len(ids) == len(set(ids)), 'empty/duplicate root identities')
     require(digest(canonical(sorted(ids))) == manifest['root_identity_sha256'], 'root identity checksum')
-    require(manifest['root_identity_sha256'] == expected['baseline_root_identity_sha256'], 'baseline root additions/deletions/renames')
+    require(set(groups) == set(SHARDS), 'missing/extra assigned shard')
     owned = sum(groups.values(), [])
+    require(all(groups[k] for k in SHARDS), 'empty assigned shard')
     require(len(owned) == len(set(owned)), 'overlapping module assignment')
     for r in records:
         require(r['module'] in owned and r['nodeid'].startswith(r['module'] + '::') and r['collector'] and r['collector'][0] in ('_pytest.python.Function', '_pytest.unittest.TestCaseFunction'),
@@ -189,9 +196,9 @@ def check_bundle(directory, expected, groups, role):
     manifest = load(directory / 'manifest.json')
     ids = validate_manifest(manifest, expected, groups)
     observation = load(directory / 'observation.json')
-    selected = ids if role == 'collect' else [n for n in ids if n.split('::')[0] in groups[role]]
+    selected = ids if role in ('collect', 'serial') else [n for n in ids if n.split('::')[0] in groups[role]]
     selected_set = set(selected)
-    routed = [] if role == 'collect' else [n for n in ids if n not in selected_set]
+    routed = [] if role in ('collect', 'serial') else [n for n in ids if n not in selected_set]
     require(selected and observation['selected'] == selected and observation['routed'] == routed, 'selection/order/partition drift')
     require(observation['warnings'] == [] and observation['collection_errors'] == [] and type(observation['exitstatus']) is int and observation['exitstatus'] == 0,
             'warning/error/incomplete execution')
@@ -226,36 +233,74 @@ def check_bundle(directory, expected, groups, role):
     return manifest, phases
 
 
-def compare(serial, collection, shards, expected, groups, jobs):
-    require(set(jobs) == {'regression', 'shadow-collection', 'shadow-modules'} and
-            all(v['result'] == 'success' for v in jobs.values()), 'missing/failed/empty dependency jobs')
+def job_gate(event, jobs):
+    required = {'fast-gate', 'shadow-collection', 'shadow-modules'}
+    require(set(jobs) == required and all(isinstance(v, dict) and 'result' in v for v in jobs.values()),
+            'missing dependency jobs')
+    require(jobs['fast-gate']['result'] == 'success', 'Fast Gate not successful')
+    if event == 'pull_request':
+        require(all(v['result'] == 'success' for v in jobs.values()), 'missing/failed/skipped/cancelled PR dependency')
+    elif event == 'push':
+        require(all(jobs[k]['result'] == 'skipped' for k in ('shadow-collection', 'shadow-modules')),
+                'unexpected main-push execution plan')
+    else:
+        raise ValueError('unsupported certification event')
+    return {'event': event, 'dependencies': jobs, 'status': 'FAST_ONLY' if event == 'push' else 'READY_FOR_EVIDENCE'}
+
+
+def compare(collection, shards, expected, groups, jobs):
+    job_gate('pull_request', jobs)
+    require(set(shards) == set(SHARDS), 'partial/empty/extra matrix')
+    require(len({Path(p).resolve() for p in shards.values()}) == len(SHARDS), 'duplicate shard artifact path')
     manifest, _ = check_bundle(collection, expected, groups, 'collect')
     ids = [r['nodeid'] for r in manifest['items']]
-    require(set(shards) == {'A', 'B'}, 'partial/empty matrix')
-    serial = Path(serial)
-    require({p.name for p in serial.iterdir()} == {'junit.xml', 'certification.log', 'metadata.json'}, 'missing/extra serial artifact')
-    for p in serial.iterdir():
-        require(p.is_file() and not p.is_symlink() and p.stat().st_size, 'empty serial artifact')
-    metadata = load(serial / 'metadata.json')
-    for key in ('checkout_sha', 'github_run_id', 'github_run_attempt', 'runner_os', 'runner_arch', 'python', 'packages'):
-        require(metadata.get(key) == expected[key], 'serial provenance mismatch: ' + key)
-    serial_log = (serial / 'certification.log').read_text()
-    validate_log_environment(serial_log, expected)
-    reference = parse_result(serial, ids, ids, [])
-    instances = [load(Path(shards[k]) / 'metadata.json')['runner_instance'] for k in ('A', 'B')]
-    require(instances[0] != instances[1], 'shards do not identify independent runners')
     executed = set()
-    for role in ('A', 'B'):
+    combined = {k: Counter() for k in ('setup', 'call', 'teardown')}
+    instances = []
+    for role in SHARDS:
         other, phases = check_bundle(shards[role], expected, groups, role)
         require(other == manifest, 'shard full discovery differs')
         own = set(phases['call'])
         require(not executed & own, 'overlapping executed shards')
         executed |= own
-        for k in phases:
-            require(phases[k] == Counter({n: reference[k][n] for n in own}), 'serial/shadow phase or subtest mismatch')
+        for phase in combined:
+            combined[phase].update(phases[phase])
+        instances.append(canonical(load(Path(shards[role]) / 'metadata.json')['runner_instance']))
+    require(len(set(instances)) == len(SHARDS), 'shards do not identify independent runners')
     require(executed == set(ids), 'execution union gap')
-    return {'status': 'EXPERIMENTAL_PARITY_ONLY', 'roots': len(ids), 'serial_call_reports': sum(reference['call'].values()),
-            'checkout_sha': expected['checkout_sha'], 'limitations': expected['environment_limitations']}
+    baseline = expected['archived_baseline']
+    phase_hash = digest(canonical({k: dict(v) for k, v in combined.items()}))
+    drift = dict(source_matches=expected['protected_source_identity'] == baseline['protected_source_sha256'],
+                 roots_match=manifest['root_identity_sha256'] == baseline['root_identity_sha256'],
+                 phase_counts_match=phase_hash == baseline['phase_counts_sha256'])
+    # Same unchanged test/source universe must retain its certified parent-report coverage.
+    # Legitimate reviewed source/test additions use fresh full discovery, not this historic hash.
+    if drift['source_matches'] and drift['roots_match']:
+        require(drift['phase_counts_match'], 'unchanged-source certified subtest multiplicity drift')
+    return {'status': 'EVIDENCE_CERTIFIED_THREE_SHARDS', 'roots': len(ids),
+            'call_reports': sum(combined['call'].values()), 'checkout_sha': expected['checkout_sha'],
+            'archived_baseline_drift': drift, 'limitations': expected['environment_limitations']}
+
+
+def certify(collection, shards, expected, groups, jobs, output):
+    result = compare(collection, shards, expected, groups, jobs)
+    output = Path(output).resolve()
+    require(not output.exists() and not output.is_relative_to(ROOT), 'new external aggregate directory required')
+    output.mkdir(parents=True)
+    # Bundle only validated evidence, never application renders/session/project data.
+    import shutil
+    for role, directory in [('collection', collection), *shards.items()]:
+        directory = Path(directory)
+        target = output / role
+        target.mkdir()
+        names = set(load(directory / 'checksums.json')) | {'checksums.json'}
+        for name in names:
+            shutil.copyfile(directory / name, target / name)
+    write(output / 'certification.json', result)
+    write(output / 'job_results.json', jobs)
+    write(output / 'aggregate_checksums.json', {
+        str(p.relative_to(output)): digest(p.read_bytes()) for p in output.rglob('*') if p.is_file()})
+    return result
 
 
 def run(role, directory, reference):
@@ -270,9 +315,12 @@ def run(role, directory, reference):
     if role == 'collect':
         command.append('--collect-only')
     else:
-        require(reference, 'missing full discovery manifest')
-        command += ['--shadow-manifest=' + str(Path(reference).resolve()), '--durations=0', '--durations-min=0',
-                    '--junitxml=' + str(directory / 'junit.xml')]
+        if role != 'serial':
+            require(reference, 'missing full discovery manifest')
+            command.append('--shadow-manifest=' + str(Path(reference).resolve()))
+        else:
+            require(not reference, 'serial diagnostic cannot route')
+        command += ['--durations=0', '--durations-min=0', '--junitxml=' + str(directory / 'junit.xml')]
     with (directory / 'certification.log').open('wb') as log:
         process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for block in iter(lambda: process.stdout.read(65536), b''):
@@ -297,21 +345,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     r = sub.add_parser('run')
-    r.add_argument('--role', required=True, choices=['collect', 'A', 'B'])
+    r.add_argument('--role', required=True, choices=['collect', 'serial', *SHARDS])
     r.add_argument('--directory', required=True)
     r.add_argument('--reference')
     c = sub.add_parser('compare')
-    for n in ('serial', 'collection', 'A', 'B', 'output'):
-        c.add_argument('--' + n, required=True)
+    for name in ('collection', 'output'):
+        c.add_argument('--' + name, required=True)
+    for role in SHARDS:
+        c.add_argument('--' + role, action='append', required=True)
+    g = sub.add_parser('gate')
+    g.add_argument('--event', required=True, choices=['pull_request', 'push'])
     sub.add_parser('self-test')
     args = parser.parse_args()
     if args.command == 'run':
         return run(args.role, args.directory, args.reference)
+    if args.command == 'gate':
+        print(json.dumps(job_gate(args.event, read_json(os.environ['SHADOW_NEEDS_JSON']))))
+        return 0
     if args.command == 'compare':
-        require(os.environ.get('GITHUB_ACTIONS') == 'true', 'hosted comparator requires actual run context')
-        result = compare(args.serial, args.collection, {'A': args.A, 'B': args.B}, provenance(), schedule(),
-                         json.loads(os.environ['SHADOW_NEEDS_JSON']))
-        write(args.output, result)
+        require(all(len(getattr(args, k)) == 1 for k in SHARDS), 'duplicate shard option')
+        require(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('GITHUB_EVENT_NAME') == 'pull_request',
+                'hosted PR comparator requires actual run context')
+        shards = {k: getattr(args, k)[0] for k in SHARDS}
+        result = certify(args.collection, shards, provenance(), schedule(),
+                         read_json(os.environ['SHADOW_NEEDS_JSON']), args.output)
         print(json.dumps(result))
         return 0
     return self_test()
@@ -323,28 +380,36 @@ def self_test():
     """Disposable synthetic evidence only; no project data, pytest, solver or Word run."""
     results = []
     ids = ['tests/test_synthetic_a.py::test_one[α]', 'tests/test_synthetic_a.py::test_two',
-           'tests/test_synthetic_b.py::Case::test_three', 'tests/test_synthetic_b.py::test_four']
-    groups = {'A': ['tests/test_synthetic_a.py'], 'B': ['tests/test_synthetic_b.py']}
+           'tests/test_synthetic_b.py::Case::test_three', 'tests/test_synthetic_b.py::test_four',
+           'tests/test_synthetic_c.py::test_five', 'tests/test_synthetic_c.py::test_six']
+    groups = {'A': ['tests/test_synthetic_a.py'], 'B': ['tests/test_synthetic_b.py'], 'C': ['tests/test_synthetic_c.py']}
     expected = dict(checkout_sha='a' * 40, github_run_id='123', github_run_attempt='1',
         runner_os='Linux', runner_arch='X64', python='3.12.15 (synthetic fixture)', packages={'pytest': '9.1.1'},
         source={'synthetic-only': 'b' * 64}, schedule_sha256='c' * 64,
-        baseline_root_identity_sha256=digest(canonical(sorted(ids))), plugin_distributions={'anyio': '1.0'},
+        protected_source_identity='baseline-source', archived_baseline={'protected_source_sha256':'baseline-source',
+            'root_identity_sha256':digest(canonical(sorted(ids))), 'phase_counts_sha256':None}, plugin_distributions={'anyio': '1.0'},
         environment_limitations='synthetic self-check, no product execution')
-    manifest = dict(schema=1, provenance=expected, root_identity_sha256=expected['baseline_root_identity_sha256'],
+    manifest = dict(schema=1, provenance=expected, root_identity_sha256=digest(canonical(sorted(ids))),
         items=[dict(nodeid=n, module=n.split('::')[0], collector=['_pytest.python.Function', []]) for n in ids])
-    jobs = {k: {'result': 'success'} for k in ('regression', 'shadow-collection', 'shadow-modules')}
+    jobs = {k: {'result': 'success'} for k in ('fast-gate', 'shadow-collection', 'shadow-modules')}
 
     def seal(path):
         write(path / 'checksums.json', {f.name: digest(f.read_bytes()) for f in path.iterdir() if f.name != 'checksums.json'})
 
     def fixture(base, subtests):
-        for role in ('serial', 'collect', 'A', 'B'):
+        if expected['protected_source_identity'] == expected['archived_baseline']['protected_source_sha256']:
+            expected['archived_baseline']['phase_counts_sha256'] = digest(canonical({
+                p: {n: (3 if subtests and n == ids[0] else 1) if p == 'call' else 1 for n in ids}
+                for p in ('setup','call','teardown')}))
+        manifest = dict(schema=1, provenance=expected, root_identity_sha256=digest(canonical(sorted(ids))),
+            items=[dict(nodeid=n,module=n.split('::')[0],collector=['_pytest.python.Function',[]]) for n in ids])
+        for role in ('serial', 'collect', *SHARDS):
             d = base / role
             d.mkdir()
             selected = ids if role in ('serial', 'collect') else [n for n in ids if n.split('::')[0] in groups[role]]
             routed = [n for n in ids if n not in selected]
             meta = {k: expected[k] for k in ('checkout_sha', 'github_run_id', 'github_run_attempt', 'runner_os', 'runner_arch', 'python', 'packages')}
-            write(d / 'metadata.json', meta if role == 'serial' else dict(expected, role=role, runner_instance={'name': role, 'host': 'synthetic-' + role}))
+            write(d / 'metadata.json', dict(expected, role=role, runner_instance={'name': role, 'host': 'synthetic-' + role}))
             events = []
             for n in selected if role != 'collect' else []:
                 events.append(dict(nodeid=n, when='setup', outcome='passed', wasxfail=False))
@@ -370,11 +435,10 @@ def self_test():
             else:
                 log += f'================ {len(ids)} tests collected in 0.01s ================\n'
             (d / 'certification.log').write_text(log)
-            if role != 'serial':
-                write(d / 'manifest.json', manifest)
-                write(d / 'observation.json', dict(selected=selected, routed=routed, events=events, warnings=[], collection_errors=[], exitstatus=0))
-                write(d / 'process.json', dict(pytest_exit=0, evidence_complete=True))
-                seal(d)
+            write(d / 'manifest.json', manifest)
+            write(d / 'observation.json', dict(selected=selected, routed=routed, events=events, warnings=[], collection_errors=[], exitstatus=0))
+            write(d / 'process.json', dict(pytest_exit=0, evidence_complete=True))
+            seal(d)
 
     def mutate_json(path, fn):
         value = load(path)
@@ -400,26 +464,27 @@ def self_test():
     add('truncated XML', lambda b: (b / 'A/junit.xml').write_text('<testsuites>'), 'A')
     def replace_log(b, old, new, role='A'):
         path = b / role / 'certification.log'; path.write_text(path.read_text().replace(old, new))
-    add('wrong collected count', lambda b: replace_log(b, 'collected 4 items', 'collected 5 items'), 'A')
+    add('wrong collected count', lambda b: replace_log(b, 'collected 6 items', 'collected 7 items'), 'A')
     add('wrong terminal passed', lambda b: replace_log(b, '2 passed,', '3 passed,'), 'A')
     add('truncated terminal', lambda b: replace_log(b, 'in 0.01s', 'unfinished'), 'A')
     add('missing durations', lambda b: replace_log(b, 'slowest durations', 'other heading'), 'A')
     add('unexpected phase grammar', lambda b: replace_log(b, '0.00s setup', '0.00s other'), 'A')
     add('pytest warning summary', lambda b: replace_log(b, 'pytest-9.1.1', 'pytest-9.1.1\n==== warnings summary ===='), 'A')
-    add('pytest warning terminal', lambda b: replace_log(b, '2 passed, 2 deselected', '2 passed, 2 deselected, 1 warning'), 'A')
+    add('pytest warning terminal', lambda b: replace_log(b, '2 passed, 4 deselected', '2 passed, 4 deselected, 1 warning'), 'A')
     add('unknown pytest version', lambda b: replace_log(b, 'pytest-9.1.1', 'pytest-8.0'), 'A')
     add('truncated collector log', lambda b: replace_log(b, 'tests collected in 0.01s', 'unfinished', 'collect'), 'collect')
     add('shadow plugin log drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0'), 'A')
     add('collector Python log drift', lambda b: replace_log(b, 'Python 3.12.15', 'Python 3.11.0', 'collect'), 'collect')
-    add('serial plugin drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0', 'serial'))
+    add('C plugin drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0', 'C'), 'C')
     for key in ('checkout_sha', 'github_run_id', 'github_run_attempt', 'python', 'runner_os', 'runner_arch', 'packages'):
-        add('serial wrong ' + key, lambda b, k=key: mutate_json(b / 'serial/metadata.json', lambda x: x.update({k: 'wrong'})))
+        add('C wrong ' + key, lambda b, k=key: mutate_json(b / 'C/metadata.json', lambda x: x.update({k: 'wrong'})), 'C')
     for key in ('role', 'source', 'schedule_sha256', 'github_run_attempt'):
         add('shadow wrong ' + key, lambda b, k=key: mutate_json(b / 'A/metadata.json', lambda x: x.update({k: 'wrong'})), 'A')
     for outcome in ('failed', 'skipped'):
         add('observer ' + outcome, lambda b, v=outcome: mutate_json(b / 'A/observation.json', lambda x: x['events'][0].update(outcome=v)), 'A')
     add('observer xfail', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['events'][0].update(wasxfail=True)), 'A')
     add('invalid phase order', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['events'].insert(0, x['events'].pop())), 'A')
+    add('missing teardown report', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['events'].pop()), 'A')
     add('missing call event', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['events'].pop(1)), 'A')
     add('duplicate setup event', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['events'].insert(0, deepcopy(x['events'][0]))), 'A')
     add('observer warning', lambda b: mutate_json(b / 'A/observation.json', lambda x: x['warnings'].append('warning')), 'A')
@@ -447,7 +512,7 @@ def self_test():
     add('duplicate manifest root', lambda b: mutate_json(b / 'A/manifest.json', lambda x: x['items'].append(deepcopy(x['items'][0]))), 'A')
     add('collector identity drift', lambda b: mutate_json(b / 'A/manifest.json', lambda x: x['items'][0].update(collector=['wrong'])), 'A')
     add('missing artifact', lambda b: (b / 'A/junit.xml').unlink())
-    add('missing serial metadata', lambda b: (b / 'serial/metadata.json').unlink())
+    add('missing C metadata', lambda b: (b / 'C/metadata.json').unlink())
     add('empty evidence', lambda b: (b / 'A/junit.xml').write_bytes(b''), 'A')
     add('bad checksum', lambda b: mutate_json(b / 'A/checksums.json', lambda x: x.update({'junit.xml': 'bad'})))
     add('corrupt JSON', lambda b: (b / 'A/observation.json').write_text('{'), 'A')
@@ -455,31 +520,67 @@ def self_test():
         base = Path(temp)
         for subtests in (False, True):
             d = base / ('subtests' if subtests else 'normal'); d.mkdir(); fixture(d, subtests)
-            result = compare(d / 'serial', d / 'collect', {k: d / k for k in groups}, expected, groups, jobs)
+            result = compare(d / 'collect', {k: d / k for k in groups}, expected, groups, jobs)
             results.append(dict(case=d.name, expected='ACCEPT', actual='ACCEPT', result=result))
         for i, (name, action, reseal) in enumerate(mutations):
             d = base / str(i); d.mkdir(); fixture(d, True); action(d)
             if reseal:
                 seal(d / reseal)
             try:
-                compare(d / 'serial', d / 'collect', {k: d / k for k in groups}, expected, groups, jobs)
+                compare(d / 'collect', {k: d / k for k in groups}, expected, groups, jobs)
             except (ValueError, KeyError, TypeError, IndexError, OSError, ET.ParseError) as error:
                 results.append(dict(case=name, expected='REJECT', actual='REJECT', reason=str(error)))
             else:
                 raise AssertionError('unsafe acceptance: ' + name)
+        check_bundle(base / 'subtests/serial', expected, groups, 'serial')
+        results.append(dict(case='explicit serial diagnostic evidence',expected='ACCEPT',actual='ACCEPT'))
+        artifact = base / 'aggregate'
+        certify(base/'subtests/collect',{k:base/'subtests'/k for k in SHARDS},expected,groups,jobs,artifact)
+        for name, value in load(artifact/'aggregate_checksums.json').items():
+            require(digest((artifact/name).read_bytes()) == value, 'aggregate copy checksum')
+        require((artifact/'C/junit.xml').is_file(), 'aggregate missing C')
+        results.append(dict(case='self-contained aggregate artifact',expected='ACCEPT',actual='ACCEPT'))
+        complete = {k: base / 'subtests' / k for k in SHARDS}
         for name, altered_jobs, altered_shards, altered_groups in (
-            ('missing job', {}, {'A': base / 'normal/A', 'B': base / 'normal/B'}, groups),
-            ('failed job', {**jobs, 'shadow-modules': {'result': 'failure'}}, {'A': base / 'normal/A', 'B': base / 'normal/B'}, groups),
-            ('partial matrix', jobs, {'A': base / 'normal/A'}, groups),
+            ('missing job', {}, complete, groups),
+            ('failed job', {**jobs, 'shadow-modules': {'result': 'failure'}}, complete, groups),
+            ('missing C', jobs, {k:v for k,v in complete.items() if k != 'C'}, groups),
+            ('duplicate C path', jobs, {**complete,'C':complete['B']}, groups),
             ('empty matrix', jobs, {}, groups),
-            ('overlap assignment', jobs, {'A': base / 'normal/A', 'B': base / 'normal/B'}, {'A': groups['A'], 'B': groups['A']}),
-            ('missing assigned module', jobs, {'A': base / 'normal/A', 'B': base / 'normal/B'}, {'A': [], 'B': groups['B']})):
+            ('overlap assignment', jobs, complete, {**groups,'C':groups['A']}),
+            ('missing assigned module', jobs, complete, {**groups,'C':[]})):
             try:
-                compare(base / 'normal/serial', base / 'normal/collect', altered_shards, expected, altered_groups, altered_jobs)
+                compare(base / 'subtests/collect', altered_shards, expected, altered_groups, altered_jobs)
             except (ValueError, KeyError) as error:
                 results.append(dict(case=name, expected='REJECT', actual='REJECT', reason=str(error)))
             else:
                 raise AssertionError('unsafe acceptance: ' + name)
+        from itertools import product
+        for outcomes in product(('success','skipped','failure','cancelled','timed_out'), repeat=3):
+            branch_jobs = {k: {'result': v} for k,v in zip(jobs,outcomes)}
+            try:
+                job_gate('pull_request',branch_jobs)
+            except ValueError:
+                require(outcomes != ('success',)*3,'rejected valid PR DAG')
+            else:
+                require(outcomes == ('success',)*3,'unsafe green from skipped/cancelled dependency')
+        results.append(dict(case='125 PR dependency combinations',expected='ACCEPT',actual='ACCEPT'))
+        job_gate('push',{'fast-gate':{'result':'success'},'shadow-collection':{'result':'skipped'},'shadow-modules':{'result':'skipped'}})
+        results.append(dict(case='main push fast-only',expected='ACCEPT',actual='ACCEPT'))
+        try:
+            read_json('{"C":1,"C":2}')
+        except ValueError:
+            results.append(dict(case='duplicate JSON C',expected='REJECT',actual='REJECT'))
+        else:
+            raise AssertionError('duplicate C key accepted')
+        # Legitimate new tests in an assigned module: fresh manifest governs, historic counts do not.
+        expected['protected_source_identity'] = 'reviewed-new-source'
+        expected['source'] = {'reviewed-synthetic-only':'new'}
+        ids.append('tests/test_synthetic_c.py::test_reviewed_addition')
+        d = base / 'reviewed-new-test';d.mkdir();fixture(d,True)
+        result = compare(d / 'collect',{k:d/k for k in SHARDS},expected,groups,jobs)
+        require(result['roots'] == len(ids) and not result['archived_baseline_drift']['roots_match'], 'fixed historical count gate')
+        results.append(dict(case='reviewed source and new test in assigned module',expected='ACCEPT',actual='ACCEPT'))
     print(json.dumps(results, indent=2, ensure_ascii=False))
     return 0
 
