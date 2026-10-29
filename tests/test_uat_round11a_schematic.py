@@ -16,6 +16,179 @@ from test_uat_round10a_pumping_simulation import program_state
 TEMPLATE_SHA = "a1128b0e9352e1dd7c8768eecc9335c50858356cee80ed33c0ec275e26c4d08b"
 
 
+def radial_reference_payload():
+    """Synthetic depths/hosts; nominal diameters are the Owner's radial references."""
+    return {"casings": [
+        {"type": "casing", "size_in": 20., "shoe_md": 100.},
+        {"type": "casing", "size_in": 13.375, "shoe_md": 600.},
+        {"type": "casing", "size_in": 9.625, "shoe_md": 1500.}],
+        "open_holes": [
+            {"top_md": 100., "bottom_md": 600., "hole_size_in": 17.5, "host_index": 0},
+            {"top_md": 600., "bottom_md": 1500., "hole_size_in": 12.25, "host_index": 1},
+            {"top_md": 1500., "bottom_md": 1800., "hole_size_in": 8.5, "host_index": 2}],
+        "current_job": {"type": "casing", "target_index": 2}}
+
+
+def rendered_radial_artists(payload, path, monkeypatch):
+    """Observe real artists at save time; still execute the original PNG writer."""
+    import well_schematic_engine as engine
+    captured = {}
+    original = engine.plt.Figure.savefig
+    def observe(figure, *args, **kwargs):
+        ax = figure.axes[-1]
+        captured.update(patches=list(ax.patches), lines=list(ax.lines), texts=list(ax.texts))
+        return original(figure, *args, **kwargs)
+    before = deepcopy(payload)
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.plt.Figure, "savefig", observe)
+        engine.render_well_schematic(payload, str(path), dpi=120)
+    assert payload == before
+    return captured
+
+
+@pytest.mark.parametrize("layout", ["standard", "schematic_right"])
+def test_radial_nominal_outer_envelopes_share_one_linear_scale(layout, tmp_path, monkeypatch):
+    import well_schematic_engine as engine
+    from PIL import Image
+    payload = radial_reference_payload()
+    payload["column_layout"] = layout
+    artists = rendered_radial_artists(payload, tmp_path / "radial.png", monkeypatch)
+    c1, c2, c3 = engine.COLUMN_FRACTIONS
+    x0, width = (c1 + c2, c3) if layout == "schematic_right" else (c1, c2)
+    center = x0 + width / 2
+    walls = [p for p in artists["patches"] if p.get_zorder() == 3.0]
+    radii = {}
+    for i, size in enumerate((20., 13.375, 9.625)):
+        left, right = walls[2*i:2*i+2]
+        radius = right.get_x() + right.get_width() - center
+        assert center - left.get_x() == pytest.approx(radius, abs=1e-12)
+        radii[size] = radius
+    hole_lines = [line for line in artists["lines"] if line.get_zorder() == 2.5
+                  and len(set(line.get_xdata())) == 1]
+    for i, size in enumerate((17.5, 12.25, 8.5)):
+        radii[size] = float(hole_lines[2*i+1].get_xdata()[0]) - center
+    factor = radii[20.] / 20.
+    for size, radius in radii.items():
+        assert radius == pytest.approx(factor * size, rel=1e-12, abs=1e-12)
+    assert radii[13.375] / radii[9.625] == pytest.approx(13.375 / 9.625)
+    assert radii[20.] / radii[13.375] == pytest.approx(20. / 13.375)
+    assert radii[9.625] < radii[12.25] < radii[13.375] < radii[17.5] < radii[20.]
+    for patch in walls:
+        assert x0 < patch.get_x() < patch.get_x() + patch.get_width() < x0 + width
+    # Physical depths and all depth labels use the unchanged +200 m axis, not radial width.
+    y = lambda d: (1-engine.layout_geometry()["header_frac"]) * (1-d/2000.)
+    for i, shoe in enumerate((100., 600., 1500.)):
+        assert walls[2*i].get_y() == pytest.approx(y(shoe))
+        assert walls[2*i].get_height() == pytest.approx(y(0)-y(shoe))
+    assert engine.resolve_depth_axis(engine.validate_schematic_data(deepcopy(payload))) == (2000., [0., 1000., 2000.])
+    assert {"0", "1000", "2000"} <= {t.get_text() for t in artists["texts"]}
+    with Image.open(tmp_path / "radial.png") as image:
+        assert image.size == (720, 912)
+
+
+@pytest.mark.parametrize("preset", ["liner_5in", "liner_4_5in", "tieback_7in", "tieback_5in", "separate_host"])
+def test_radial_liner_tieback_type_and_depth_do_not_change_nominal_envelope(preset, tmp_path, monkeypatch):
+    import well_schematic_engine as engine
+    payload = connection_payload() if preset == "separate_host" else engine.get_preset_schematic_data(preset)
+    artists = rendered_radial_artists(payload, tmp_path / "strings.png", monkeypatch)
+    center = engine.COLUMN_FRACTIONS[0] + engine.COLUMN_FRACTIONS[1]/2
+    walls = [p for p in artists["patches"] if p.get_zorder() == 3.0]
+    strings = sorted(payload["casings"], key=lambda c: (-c["size_in"], c["type"] == "tieback"))
+    factors, by_size = [], {}
+    for i, string in enumerate(strings):
+        left, right = walls[2*i:2*i+2]
+        radius = right.get_x() + right.get_width() - center
+        factors.append(radius / string["size_in"])
+        by_size.setdefault(string["size_in"], []).append(radius)
+    assert factors == pytest.approx([factors[0]] * len(factors), rel=1e-12)
+    for values in by_size.values():
+        assert values == pytest.approx([values[0]] * len(values), abs=1e-12)
+    # The decorative collar meets the declared host inner stroke and child OD; no host substitution.
+    collars = [p for p in artists["patches"] if p.get_zorder() == 3.15]
+    assert len(collars) == 2 * sum(c["type"] in ("liner", "tieback") and c["top_md"] > 0 for c in strings)
+    assert len([p for p in artists["patches"] if p.get_zorder() == 3.2]) == 2 * sum(c["type"] != "tieback" for c in strings)
+    factor = factors[0]
+    for i, child in enumerate(c for c in strings if c["type"] in ("liner", "tieback") and c["top_md"] > 0):
+        collar = collars[2*i+1]
+        host = payload["casings"][child["host_index"]]
+        assert collar.get_x() == pytest.approx(center + factor*child["size_in"])
+        assert collar.get_x() + collar.get_width() == pytest.approx(center + factor*host["size_in"] - walls[0].get_width())
+
+
+def test_radial_operation_only_diameters_share_domain_without_rank_or_rounding(tmp_path, monkeypatch):
+    import well_schematic_engine as engine
+    payload = {"casings": [{"type": "casing", "size_in": 9.62501, "shoe_md": 100.}],
+        "plug_bores": [{"top_md": 100., "bottom_md": 200., "diameter_in": 30.}],
+        "cement_plugs": [{"top_md": 100., "bottom_md": 200.}],
+        "squeezes": [{"depth_m": 150., "wall_diameter_in": 20., "target_kind": "point"}],
+        "current_job": {"type": "cmt_plug", "target_index": 0}}
+    artists = rendered_radial_artists(payload, tmp_path / "operation.png", monkeypatch)
+    center = engine.COLUMN_FRACTIONS[0] + engine.COLUMN_FRACTIONS[1]/2
+    pipe = [p for p in artists["patches"] if p.get_zorder() == 3.0][1]
+    plug = next(p for p in artists["patches"] if p.get_zorder() == 3.28)
+    squeeze = [p for p in artists["patches"] if p.get_zorder() == 3.25][1]
+    radius = pipe.get_x() + pipe.get_width() - center
+    plug_radius = max(plug.get_xy()[:, 0]) - center
+    assert plug_radius / radius == pytest.approx(30. / 9.62501, rel=1e-12)
+    assert (squeeze.get_x()-center) / radius == pytest.approx(20. / 9.62501, rel=1e-12)
+    data = engine.validate_schematic_data(deepcopy(payload))
+    pipes, holes = engine._build_radial_maps(data, [], engine.COLUMN_FRACTIONS[1])
+    assert pipes[9.62501] / holes[30.] == pytest.approx(9.62501 / 30.)
+    extra = deepcopy(data)
+    extra["casings"].append({"type": "casing", "size_in": 13.375, "top_md": 0., "shoe_md": 50.})
+    assert engine._build_radial_maps(extra, [], .495)[0][9.62501] == pipes[9.62501]
+
+
+def test_radial_open_hole_squeeze_uses_measured_bore_not_host(tmp_path, monkeypatch):
+    payload = radial_reference_payload()
+    payload["squeezes"] = [{"depth_m": 1700., "open_hole_index": 2, "target_kind": "point"}]
+    artists = rendered_radial_artists(payload, tmp_path / "hole-squeeze.png", monkeypatch)
+    wall = [l for l in artists["lines"] if l.get_zorder() == 2.5 and len(set(l.get_xdata())) == 1][-1]
+    patch = [p for p in artists["patches"] if p.get_zorder() == 3.25][1]
+    assert patch.get_x() == pytest.approx(float(wall.get_xdata()[0]), abs=1e-12)
+    # The Open Hole really is 8.5/20 of the outer casing, not simply a host-aligned envelope.
+    center = .155 + .495/2
+    outer = [p for p in artists["patches"] if p.get_zorder() == 3.0][1]
+    assert (patch.get_x()-center) / (outer.get_x()+outer.get_width()-center) == pytest.approx(8.5/20.)
+
+
+def test_radial_open_hole_envelope_is_host_independent_and_type_invariant(tmp_path, monkeypatch):
+    payload = radial_reference_payload()
+    payload["casings"].append({"type": "casing", "size_in": 40., "shoe_md": 50.})
+    payload["casings"][2]["size_in"] = 8.5
+    first = rendered_radial_artists(payload, tmp_path / "host20.png", monkeypatch)
+    payload["casings"][0]["size_in"] = 25.
+    second = rendered_radial_artists(payload, tmp_path / "host25.png", monkeypatch)
+    hole_walls = lambda a: [tuple(l.get_xdata()) for l in a["lines"] if l.get_zorder() == 2.5]
+    assert hole_walls(first) == hole_walls(second)
+    pipe = [p for p in second["patches"] if p.get_zorder() == 3.0][-1]
+    hole = [l for l in second["lines"] if l.get_zorder() == 2.5 and len(set(l.get_xdata())) == 1][-1]
+    assert pipe.get_x() + pipe.get_width() == pytest.approx(float(hole.get_xdata()[0]))
+
+
+@pytest.mark.parametrize("case", ["casing", "tieback_5in", "cmt_plug_lap", "squeeze_7in"])
+def test_radial_repair_preserves_every_structural_depth_and_label(case, tmp_path, monkeypatch):
+    import subprocess
+    import well_schematic_engine as engine
+    payload = radial_reference_payload() if case == "casing" else engine.get_preset_schematic_data(case)
+    source = subprocess.check_output(['git', 'show', '47bde4cb55044cae60be3ecc33b164cd0d4e1bb6:well_schematic_engine.py'])
+    reference = {"__name__": "radial_depth_reference"}
+    exec(compile(source, "baseline_renderer", "exec"), reference)
+    final = rendered_radial_artists(payload, tmp_path / "final.png", monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(engine, "render_well_schematic", reference["render_well_schematic"])
+        baseline = rendered_radial_artists(payload, tmp_path / "baseline.png", monkeypatch)
+    for old, new in zip(baseline["patches"], final["patches"], strict=True):
+        assert list(old.get_path().vertices[:, 1]) == list(new.get_path().vertices[:, 1])
+        # Rectangles store vertical origin/height in their transform, not their unit path.
+        if hasattr(old, "get_y"):
+            assert (old.get_y(), old.get_height()) == (new.get_y(), new.get_height())
+    old_walls = [list(l.get_ydata()) for l in baseline["lines"] if l.get_zorder() == 2.5]
+    new_walls = [list(l.get_ydata()) for l in final["lines"] if l.get_zorder() == 2.5]
+    assert old_walls == new_walls
+    assert [(t.get_text(), t.get_position()) for t in baseline["texts"]] == [(t.get_text(), t.get_position()) for t in final["texts"]]
+
+
 def remaining_case(job, change):
     import test_audit_regressions as audit
     state = {"job_type": job, **audit.valid_export_chart_fixture(job)}

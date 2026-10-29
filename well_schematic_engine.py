@@ -489,61 +489,19 @@ def _prepare_open_holes(open_holes: List[dict], casings: List[dict]) -> List[dic
 # 4. TWO-STAGE RADIAL ENGINE
 # =========================================================================================
 def _build_radial_maps(data: dict, open_holes: List[dict], col_span: float) -> Tuple[Dict[float, float], Dict[float, float]]:
-    pipe_sizes = sorted({round(float(c["size_in"]), 4) for c in data.get("casings", [])})
-    operation_sizes = [b["diameter_in"] for b in data.get("plug_bores", [])]
-    operation_sizes += [sq["wall_diameter_in"] for sq in data.get("squeezes", []) if "wall_diameter_in" in sq]
-    oh_sizes = sorted({round(float(oh.get("hole_size_in", 8.5)), 4) for oh in open_holes} |
-                      {round(float(size), 4) for size in operation_sizes})
+    """Nominal outer envelopes share one linear, diameter-only horizontal scale.
 
-    min_pipe_hw = 0.135
-    max_pipe_hw = 0.385
-    max_s = max(pipe_sizes + oh_sizes) if (pipe_sizes or oh_sizes) else 30.0
-
-    n_p = len(pipe_sizes)
-    pipe_map: Dict[float, float] = {}
-    if n_p == 1:
-        s0 = pipe_sizes[0]
-        pipe_map[s0] = 0.25
-    elif n_p > 1:
-        s_min, s_max = pipe_sizes[0], pipe_sizes[-1]
-        s_span = max(s_max - s_min, 1.0)
-        raw_hw = []
-        for idx, s in enumerate(pipe_sizes):
-            phys_norm = (s - s_min) / s_span
-            rank_norm = idx / (n_p - 1)
-            blend = 0.50 * phys_norm + 0.50 * rank_norm
-            raw_hw.append(min_pipe_hw + blend * (max_pipe_hw - min_pipe_hw))
-        min_step = min(0.042, (max_pipe_hw - min_pipe_hw) / (n_p - 1))
-        for i in range(1, n_p):
-            if raw_hw[i] - raw_hw[i - 1] < min_step:
-                raw_hw[i] = raw_hw[i - 1] + min_step
-        if raw_hw[-1] > max_pipe_hw:
-            sp = raw_hw[-1] - raw_hw[0]
-            raw_hw = [min_pipe_hw + (h - raw_hw[0]) / sp * (max_pipe_hw - min_pipe_hw) for h in raw_hw]
-        pipe_map = {s: h for s, h in zip(pipe_sizes, raw_hw)}
-
-    oh_map: Dict[float, float] = {}
-    shoe_flare_w = 0.028
-    for ohs in oh_sizes:
-        smaller_pipes = [s for s in pipe_sizes if s < ohs]
-        larger_pipes = [s for s in pipe_sizes if s >= ohs]
-        if smaller_pipes and larger_pipes:
-            s_in = smaller_pipes[-1]
-            s_out = larger_pipes[0]
-            hw_in, hw_out = pipe_map[s_in], pipe_map[s_out]
-            # CemCADE look: the hole wall aligns with the outer edge of the string above it.
-            # Always strictly wider than the inner string and never wider than the outer one,
-            # whatever the number of distinct sizes (the pipe steps may be very small).
-            oh_map[ohs] = max(hw_out - 0.00675, 0.5 * (hw_in + hw_out))
-        elif smaller_pipes:
-            s_in = smaller_pipes[-1]
-            oh_map[ohs] = min(0.435, pipe_map[s_in] + 0.028)
-        else:
-            # hole smaller than every string (e.g. open hole below the last shoe): it can only be
-            # as wide as the narrowest string it was drilled through
-            oh_map[ohs] = (pipe_map[pipe_sizes[0]] - 0.00675) if pipe_sizes else 0.35 * col_span
-
-    return pipe_map, oh_map
+    Coordinates are fractions of the schematic column. The remaining margin reserves
+    space for hatching and shoe flares; decorative pipe strokes do not model steel ID.
+    """
+    pipe_sizes = {float(c["size_in"]) for c in data["casings"]}
+    bore_sizes = {float(oh["hole_size_in"]) for oh in open_holes}
+    bore_sizes.update(float(b["diameter_in"]) for b in data.get("plug_bores", []))
+    bore_sizes.update(float(sq["wall_diameter_in"]) for sq in data.get("squeezes", [])
+                      if "wall_diameter_in" in sq)
+    radial_scale = 0.385 / max(pipe_sizes | bore_sizes)
+    return ({size: size * radial_scale for size in pipe_sizes},
+            {size: size * radial_scale for size in bore_sizes})
 
 
 def _explicit_host(data: dict, string: dict) -> dict:
@@ -1231,10 +1189,10 @@ def render_well_schematic(schematic_data: dict,
         pipe_map, oh_map = _build_radial_maps(data, open_holes, col_span)
 
         def hw_pipe(sz: float) -> float:
-            return pipe_map.get(round(float(sz), 4), 0.15 * col_span)
+            return pipe_map[float(sz)]
 
         def hw_oh(sz: float) -> float:
-            return oh_map.get(round(float(sz), 4), 0.22 * col_span)
+            return oh_map[float(sz)]
 
         def dx(x_col):
             return sch_x0 + x_col * sch_w
@@ -1246,7 +1204,7 @@ def render_well_schematic(schematic_data: dict,
         deepest_oh_bot = max((float(oh["bottom_md"]) for oh in open_holes), default=-1.0)
         for oh in sorted(open_holes, key=lambda o: -float(o.get("hole_size_in", 8.5))):
             top, bot = float(oh["top_md"]), float(oh["bottom_md"])
-            hw = (hw_pipe(float(oh["_host_od"])) - 0.00675) if oh.get("_host_od") is not None else hw_oh(float(oh.get("hole_size_in", 8.5)))
+            hw = hw_oh(float(oh["hole_size_in"]))
             y_top, y_bot = yd(top), yd(bot)
             bw = 0.042
             bh = 0.011 * body_h
@@ -1269,7 +1227,10 @@ def render_well_schematic(schematic_data: dict,
         # 4. Casing, Liner & Tie-back Strings
         strings = sorted(data.get("casings", []),
                          key=lambda c: (-float(c["size_in"]), 0 if c.get("type") != "tieback" else 1))
-        bar_w = 0.0135 * col_span
+        # Keep decorative strokes inside nominal OD, without moving close-size envelopes.
+        radii = sorted(pipe_map.values())
+        bar_w = min([0.0135, radii[0] / 2] +
+                    [(outer - inner) / 2 for inner, outer in zip(radii, radii[1:])]) * col_span
         fw, fh = 0.020 * col_span, 0.014 * body_h
 
         for c in strings:
@@ -1279,14 +1240,14 @@ def render_well_schematic(schematic_data: dict,
 
             for sgn in (-1, 1):
                 xw = dx(0.5 + sgn * hw)
-                ax.add_patch(Rectangle((xw - bar_w / 2, yd(shoe)), bar_w,
+                ax.add_patch(Rectangle((xw - bar_w if sgn > 0 else xw, yd(shoe)), bar_w,
                                        yd(top) - yd(shoe), facecolor=C_TUBULAR_FILL,
                                        edgecolor=C_TUBULAR_EDGE, linewidth=0.9, zorder=3.0))
 
             # Tie-back connection is explicit; CSG/LNR keep the shoe flare.
             if stype != "tieback":
                 for sgn in (-1, 1):
-                    xw_outer = dx(0.5 + sgn * hw) + sgn * (bar_w / 2)
+                    xw_outer = dx(0.5 + sgn * hw)
                     tri = Polygon([(xw_outer, yd(shoe)),
                                    (xw_outer + sgn * fw, yd(shoe)),
                                    (xw_outer, yd(shoe) + fh)], closed=True,
@@ -1301,8 +1262,8 @@ def render_well_schematic(schematic_data: dict,
                 host_hw = hw_pipe(float(host["size_in"]))
                 hh = 0.0085 * body_h
                 for sgn in (-1, 1):
-                    xa = dx(0.5 + sgn * hw) + sgn * (bar_w / 2)
-                    xb = dx(0.5 + sgn * host_hw) - sgn * (bar_w / 2)
+                    xa = dx(0.5 + sgn * hw)
+                    xb = dx(0.5 + sgn * host_hw) - sgn * bar_w
                     rx0, rw0 = min(xa, xb), abs(xb - xa)
                     ax.add_patch(Rectangle((rx0, yd(top) - hh), rw0, hh,
                                            facecolor=C_COLLAR_FILL, edgecolor="none", zorder=3.15))
@@ -1313,7 +1274,7 @@ def render_well_schematic(schematic_data: dict,
                               if float(c["top_md"]) <= d_mid <= float(c["shoe_md"])]
             if covering_pipes:
                 innermost = min(covering_pipes, key=lambda c: float(c["size_in"]))
-                return (dx(0.5 + hw_pipe(float(innermost["size_in"]))) - bar_w * 0.5) - dx(0.5)
+                return (dx(0.5 + hw_pipe(float(innermost["size_in"]))) - bar_w) - dx(0.5)
             covering_ohs = [oh for oh in open_holes
                             if float(oh["top_md"]) <= d_mid <= float(oh["bottom_md"])]
             if covering_ohs:
@@ -1370,9 +1331,7 @@ def render_well_schematic(schematic_data: dict,
 
             if sq.get("open_hole_index") is not None:
                 target_oh = open_holes[sq["open_hole_index"]]
-                oh_hw = ((hw_pipe(float(target_oh["_host_od"])) - 0.00675)
-                         if target_oh.get("_host_od") is not None
-                         else hw_oh(float(target_oh["hole_size_in"])))
+                oh_hw = hw_oh(float(target_oh["hole_size_in"]))
                 for sgn in (-1, 1):
                     x_wall = dx(0.5 + sgn * oh_hw)
                     x0 = x_wall if sgn > 0 else x_wall - squeeze_w
@@ -1386,8 +1345,8 @@ def render_well_schematic(schematic_data: dict,
                 host = _explicit_host(data, target)
                 host_hw = hw_pipe(float(host["size_in"]))
                 for sgn in (-1, 1):
-                    inner_edge = dx(0.5 + sgn * target_hw) + sgn * (bar_w / 2)
-                    outer_edge = dx(0.5 + sgn * host_hw) - sgn * (bar_w / 2)
+                    inner_edge = dx(0.5 + sgn * target_hw)
+                    outer_edge = dx(0.5 + sgn * host_hw) - sgn * bar_w
                     x0, width = min(inner_edge, outer_edge), abs(outer_edge - inner_edge)
                     if width <= 0:
                         raise ValueError(f"squeeze annulus is unresolved at {d:g} m")
@@ -1396,7 +1355,7 @@ def render_well_schematic(schematic_data: dict,
             else:
                 # Shoe or arbitrary point on a string: a short symmetric patch immediately behind pipe.
                 for sgn in (-1, 1):
-                    x_outer = dx(0.5 + sgn * target_hw) + sgn * (bar_w / 2)
+                    x_outer = dx(0.5 + sgn * target_hw)
                     x0 = x_outer if sgn > 0 else x_outer - squeeze_w
                     ax.add_patch(Rectangle((x0, y0), squeeze_w, squeeze_h,
                                            facecolor=C_SQUEEZE_CEM, edgecolor="black", lw=0.7, zorder=3.25))

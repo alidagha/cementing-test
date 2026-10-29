@@ -333,8 +333,52 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
     assert not any(isinstance(v,bytes) for k,v in s.items() if k.startswith('_well_schematic'))
 
 
+def assert_authorized_radial_renderer(source):
+    """Only the Owner-approved radial functions differ from the frozen renderer.
+
+    Fixed final-function identities protect depth code inside render too; the rest
+    of the module remains byte-identical to the original independent reference.
+    """
+    import ast
+    expected = {
+        '_build_radial_maps': '5bb3e530061079b1092fbc8dc250c4812bd2d4b469ed0c99561e135739231773',
+        'render_well_schematic': 'f584e7c575bdce5056969e56056a8a8551639561a7df8afa6db85d40ed5b0801',
+    }
+    def split(raw):
+        lines = raw.splitlines(keepends=True)
+        remaining, functions, start = [], {}, 0
+        for node in ast.parse(raw).body:
+            if isinstance(node, ast.FunctionDef) and node.name in expected:
+                remaining.extend(lines[start:node.lineno-1])
+                remaining.append(('APPROVED_RADIAL_FUNCTION:' + node.name).encode())
+                functions[node.name] = b''.join(lines[node.lineno-1:node.end_lineno])
+                start = node.end_lineno
+        remaining.extend(lines[start:])
+        return b''.join(remaining), functions
+    reference = subprocess.check_output(['git', 'show', '184cc888552f54df6a1d02fd0bdca16b77e358a4:well_schematic_engine.py'])
+    remainder, functions = split(source)
+    assert remainder == split(reference)[0]
+    assert {name: hashlib.sha256(raw).hexdigest() for name, raw in functions.items()} == expected
+
+
+@pytest.mark.parametrize('old,new', [
+    (b'radial_scale = 0.385', b'radial_scale = 0.386'),
+    (b'1.0 - float(depth) / y_max', b'1.0 - float(depth) / (y_max + 1)'),
+    (b'y_max = float(max_depth) + 200.0', b'y_max = float(max_depth) + 201.0'),
+])
+def test_authorized_radial_renderer_identity_rejects_radial_depth_and_module_mutations(old, new):
+    original = Path('well_schematic_engine.py').read_bytes()
+    assert original.count(old) == 1
+    assert_authorized_radial_renderer(original)
+    with pytest.raises(AssertionError):
+        assert_authorized_radial_renderer(original.replace(old, new))
+
+
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
     for name in ['well_schematic_engine.py','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
+        if name == 'well_schematic_engine.py':
+            assert_authorized_radial_renderer(Path(name).read_bytes())
+            continue
         if name == 'phase_5_cement.py':
             import hashlib
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3a30e2a0d42316b34d0c15b88ef7f2c539e8c1b38b48bd8a0ed614e6704469de'
