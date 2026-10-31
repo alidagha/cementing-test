@@ -120,7 +120,7 @@ def test_independent_selection_and_real_docx_direct_restore(selected):
         output=BytesIO();template.save(output);docbytes=output.getvalue()
     Path('/tmp/r5-'+ '-'.join(selected)+'.docx').write_bytes(docbytes)
     table=next(t for t in Document(BytesIO(docbytes)).tables if t.rows[0].cells[0].text=='Rheology Test')
-    assert table.rows[1].cells[2].text == table.rows[1].cells[3].text == 'Tstart: 150 degF'
+    assert table.rows[1].cells[2].text == table.rows[1].cells[3].text == 'Tstart: 150.0 degF'
     for i,key in enumerate(KEYS,1):
         assert table.rows[3].cells[i].text == (str(CORPUS[i-1][1][0]) if key in selected else '-')
         assert table.rows[10].cells[i].text == (f"{result[key]['pv_cp']:.3f}" if key in selected else '-')
