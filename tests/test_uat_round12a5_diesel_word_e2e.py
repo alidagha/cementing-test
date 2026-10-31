@@ -383,8 +383,27 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     # Preserve the original four-stage source program and exact A-4-2 text
     # snapshots. This is a source-projection test, not a Standalone Word build.
     state = projects(job, active=False, mud=mud, include_standalone_spacer=True)
-    specs = sync(state)
-    assert (specs['exec_summary_text']['signature'], specs['procedure_text']['signature']) == NO_DIESEL_A42[job]
+    captured = []
+    original_fingerprint = report.fingerprint
+    def observe(value):
+        captured.append(deepcopy(value))
+        return original_fingerprint(value)
+    with patch.object(report, 'fingerprint', observe):
+        specs = sync(state)
+    expected_summary, expected_procedure = NO_DIESEL_A42[job]
+    assert specs['exec_summary_text']['signature'] == expected_summary
+    if job == 'CMT PLUG':
+        # Keep the original gold. Only the approved presentation tag may differ.
+        inputs = next(value for value in captured if isinstance(value, list)
+                      and len(value) == 2 and value[0] == 1)
+        assert inputs[1][-1] == {'plug_numeric_display_revision': 2}
+        assert ps.fingerprint([1, inputs[1][:-1]]) == expected_procedure
+        assert specs['procedure_text']['signature'] == ps.fingerprint(inputs)
+        assert specs['procedure_text']['signature'] != expected_procedure
+        for modified in (inputs[1][:-1], inputs[1] + [{'unauthorized': 1}]):
+            assert ps.fingerprint([1, modified]) != specs['procedure_text']['signature']
+    else:
+        assert specs['procedure_text']['signature'] == expected_procedure
     assert 'Diesel' not in specs['exec_summary_text']['generated']
     assert 'Diesel' not in specs['procedure_text']['generated']
     ctx = context(state)
@@ -408,3 +427,21 @@ def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(
                                           if name not in ('Diesel', 'Scavenger')]
     ps.refresh_fluids(without)
     assert sync(without)['exec_summary_text'] == after
+
+
+@pytest.mark.parametrize('job', JOBS)
+def test_wnf_plug_only_revision_preserves_other_generated_text_and_sources(projects,job):
+    from test_uat_terminal_precision import wnf_baseline
+    baseline=wnf_baseline.__wrapped__()
+    state=projects(job);old_state=deepcopy(state);new_state=deepcopy(state)
+    with patch.object(report.st,'session_state',old_state):old=baseline['synchronize_report_texts']()
+    new=sync(new_state)
+    assert old['exec_summary_text']==new['exec_summary_text']
+    if job!='CMT PLUG':assert old['procedure_text']==new['procedure_text']
+    else:
+        old_line=next(l for l in old['procedure_text']['generated'].splitlines() if 'Min rate for pump slurry / displacement,' in l)
+        new_line=next(l for l in new['procedure_text']['generated'].splitlines() if 'Min rate for pump slurry / displacement,' in l)
+        assert old['procedure_text']['generated'].replace(old_line,new_line)==new['procedure_text']['generated']
+        assert old['procedure_text']['signature']!=new['procedure_text']['signature']
+    assert new_state['fluids_config']==old_state['fluids_config']
+    assert new_state['fluid_data']==old_state['fluid_data']

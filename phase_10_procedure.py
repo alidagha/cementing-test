@@ -7,6 +7,8 @@ import math
 import os
 import re
 from collections import deque
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
 from centralizer_report import prepare_report as prepare_centralizer_report, NOTE_BODY as CENTRALIZER_NOTE_BODY
@@ -23,7 +25,7 @@ import pumping_simulation
 from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, WORD_ADVISORY_PHASES, safe_float,
-                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm)
+                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm, normalize_digits)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -71,6 +73,44 @@ def _word_rheology(source_rheology):
     return rheology
 
 
+def _word_fluid_number(value, decimals, *, density=False):
+    """Format admitted decimal text only; preserve values and range order.
+
+    This is a terminal Word view, not a validator or engineering input parser.
+    Missing/invalid markers retain their original representation.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = normalize_digits(value).strip()
+        parts = re.split(r'\s*([-/])\s*', text)
+        scalar = r'(?:\d+(?:\.\d*)?|\.\d+)'
+        if not density:
+            scalar = r'\+?' + scalar
+            if len(parts) > 3 or '/' in parts[1::2]:
+                return value
+        if not all(re.fullmatch(scalar, part) for part in parts[::2]):
+            return value
+    else:
+        parts = [str(value)]
+    try:
+        numbers = [Decimal(part) for part in parts[::2]]
+    except InvalidOperation:
+        return value
+    if not all(number.is_finite() and number > 0 for number in numbers):
+        return value
+    rendered = []
+    for source, number in zip(parts[::2], numbers):
+        whole, _, fraction = format(number, 'f').partition('.')
+        if not density:
+            fraction = fraction.rstrip('0')
+        rendered.append(('+' if source.startswith('+') else '') + whole + '.' + fraction.ljust(decimals, '0'))
+    result = rendered[0]
+    for separator, number in zip(parts[1::2], rendered[1:]):
+        result += ('–' if separator == '-' else '/') + number
+    return result
+
+
 def _word_quantity_context(context):
     """Format a template-only copy after report arithmetic; retain raw context."""
     slurries = []
@@ -107,6 +147,12 @@ def _word_quantity_context(context):
             row["lab"]["rheology"] = _word_rheology(row["lab"]["rheology"])
         slurries.append(row)
     rendered = dict(context, slurries=slurries)
+    if "fluids_train" in context:
+        rendered["fluids_train"] = deepcopy(context["fluids_train"])
+        for row in rendered["fluids_train"]:
+            for key, decimals in (("pump_rate", 1), ("density", 1)):
+                if key in row:
+                    row[key] = _word_fluid_number(row[key], decimals, density=key == "density")
     if context.get("has_scavenger"):
         rendered["scavenger"] = _word_program_quantities(context["scavenger"])
     if context.get("has_spacer"):
@@ -887,7 +933,12 @@ def generate_official_procedure(
             for f in active_fluids
             if f in fluid_data and fluid_data[f].get("min_rate") not in (None, "", 0.0)
         ]
-        min_rate_str = f"{min(configured_rates):.0f} bbl/ min." if configured_rates else ".... bbl/ min. [PUMP RATE NOT SET IN PHASE IV]"
+        if configured_rates:
+            rate_display = (_word_fluid_number(min(configured_rates), 1) if job_type == "CMT PLUG"
+                            else f"{min(configured_rates):.0f}")
+            min_rate_str = f"{rate_display} bbl/ min."
+        else:
+            min_rate_str = ".... bbl/ min. [PUMP RATE NOT SET IN PHASE IV]"
         lines = [
             "IX. Cementing Procedure",
             sc.next(f"Clean up {tank_name} and preparing chemicals for mixing fluid."),
@@ -1135,6 +1186,8 @@ def synchronize_report_texts():
                         {name: state.get(f"cement_calc_{name}") for name in active}]
     if any(name in active for name in ("Spacer Ahead", "Spacer Behind")):
         procedure_source.append({"operational_spacers_contract": 1})
+    if job == "CMT PLUG":
+        procedure_source.append({"plug_numeric_display_revision": 2})
     if job == materials_db.CT_JOB:
         from placement import ct_setting_depth
         from ct_stages import ct_stage_projection
@@ -1150,7 +1203,13 @@ def synchronize_report_texts():
         },
     }
     for key, spec in specs.items():
-        spec["pending"] = sync_report_text(state, key, spec["generated"], spec["signature"])
+        meta = state.get("report_text_state", {}).get(key)
+        if (job == "CMT PLUG" and key == "procedure_text" and state.get(key) is not None
+                and (not meta or meta.get("generated") is None or not meta.get("source_signature"))):
+            # Unknown provenance is not proof of auto ownership, even if the text matches.
+            spec["pending"] = True
+        else:
+            spec["pending"] = sync_report_text(state, key, spec["generated"], spec["signature"])
     return specs
 
 
@@ -1225,7 +1284,7 @@ def document_signature(context, template_path):
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items()
                                    if k not in ("generated_timestamp", "well_profile_report")},
-                        "template": template_hash})
+                        "template": template_hash, "word_output_revision": "WNF-01-r2"})
 
 
 # BUG-32: the single source of truth for "which bracketed tokens mark an

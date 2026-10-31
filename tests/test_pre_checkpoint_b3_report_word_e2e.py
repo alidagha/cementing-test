@@ -99,6 +99,25 @@ def sequence_table(doc):
     return table
 
 
+def expected_word_fluid_cell(raw, decimals, *, rate=False):
+    """Independent Decimal display oracle for already-admitted fixture components."""
+    from decimal import Decimal
+    pieces = re.split(r'([-/])', eng.normalize_digits(raw).strip())
+    values = []
+    for token in pieces[::2]:
+        number = Decimal(token.strip())
+        precision = max(decimals, -number.as_tuple().exponent)
+        text = format(number, f'.{precision}f')
+        if rate:
+            text = text.rstrip('0').rstrip('.')
+            if '.' not in text: text += '.0'
+        values.append(('+' if token.strip().startswith('+') else '') + text)
+    result = values[0]
+    for delimiter, value in zip(pieces[1::2], values[1:]):
+        result += ('–' if delimiter == '-' else '/') + value
+    return result
+
+
 def assert_document(data, state):
     doc = Document(BytesIO(data))
     text = "\n".join(node.text or "" for node in doc.element.body.iter(qn("w:t")))
@@ -119,7 +138,8 @@ def assert_document(data, state):
     ctx = context(state)
     for source in ctx["fluids_train"]:
         row = next(r for r in rows if r[0] == source["name"])
-        assert row[2:5] == [str(source["density"]), f'{source["volume"]:.1f}', str(source["pump_rate"])]
+        assert row[2:5] == [expected_word_fluid_cell(source["density"], 1),
+                            f'{source["volume"]:.1f}', expected_word_fluid_cell(source["pump_rate"], 1, rate=True)]
     actual_steps = [p.text.strip() for p in doc.paragraphs if re.match(r"^\d+\. ", p.text.strip())]
     steps = numbered_steps(unescape(ctx["procedure_text"]))
     assert actual_steps == [f"{number}. {body}" for number, body in steps]
