@@ -7,6 +7,8 @@ import math
 import os
 import re
 from collections import deque
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from well_report import canonical_report_source, prepared_well_report, postprocess_well_report
 from centralizer_report import prepare_report as prepare_centralizer_report, NOTE_BODY as CENTRALIZER_NOTE_BODY
@@ -23,7 +25,7 @@ import pumping_simulation
 from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
 from engineering_tools import (round_half_up, clean_number, normalize_additive_mix,
                                resolve_physical_state, compute_phase_status, WORD_ADVISORY_PHASES, safe_float,
-                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm)
+                               parse_effective_numeric, require_nonnegative_number, THICKENING_TEST_FIELDS, BBL_TO_CUFT, format_to_hr_mm, normalize_digits)
 try:
     from docxtpl import DocxTemplate
 except ModuleNotFoundError as exc:
@@ -71,6 +73,75 @@ def _word_rheology(source_rheology):
     return rheology
 
 
+def _word_fluid_number(value, decimals, *, density=False):
+    """Format admitted decimal text only; preserve values and range order.
+
+    This is a terminal Word view, not a validator or engineering input parser.
+    Missing/invalid markers retain their original representation.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = normalize_digits(value).strip()
+        parts = re.split(r'\s*([-/])\s*', text)
+        scalar = r'(?:\d+(?:\.\d*)?|\.\d+)'
+        if not density:
+            scalar = r'\+?' + scalar
+            if len(parts) > 3 or '/' in parts[1::2]:
+                return value
+        if not all(re.fullmatch(scalar, part) for part in parts[::2]):
+            return value
+    else:
+        parts = [str(value)]
+    try:
+        numbers = [Decimal(part) for part in parts[::2]]
+    except InvalidOperation:
+        return value
+    if not all(number.is_finite() and number > 0 for number in numbers):
+        return value
+    rendered = []
+    for source, number in zip(parts[::2], numbers):
+        whole, _, fraction = format(number, 'f').partition('.')
+        if not density:
+            fraction = fraction.rstrip('0')
+        rendered.append(('+' if source.startswith('+') else '') + whole + '.' + fraction.ljust(decimals, '0'))
+    result = rendered[0]
+    for separator, number in zip(parts[1::2], rendered[1:]):
+        result += ('–' if separator == '-' else '/') + number
+    return result
+
+
+def _word_fluid_rows(rows, *, for_export=True):
+    """One copied HH:MM projection; previews stay editable for blocked plans."""
+    rendered = deepcopy(rows)
+    previous = 0
+    for row in rendered:
+        duration = safe_float(row.get("duration_min"), None)
+        cumulative = safe_float(row.get("cumul_time_min"), None)
+        if duration is None or cumulative is None:
+            continue  # Incomplete previews retain existing markers/admission.
+        boundary_text = format_to_hr_mm(cumulative)
+        hours, minutes = map(int, boundary_text.split(":"))
+        boundary = hours * 60 + minutes
+        allocated = boundary - previous
+        if duration > 0 and allocated == 0:
+            if for_export:
+                invalidate_document(st.session_state)
+                raise ValueError(f"Word HH:MM cannot represent the positive pumping duration for {row.get('name', 'stage')} "
+                                 "without 00:00. Adjust the pumping plan to export Word.")
+            # Preview only: keep the original token; strict Word entry points reject.
+        else:
+            row["duration_str"] = format_to_hr_mm(allocated)
+        row["cumul_time_str"] = boundary_text
+        previous = boundary
+    return rendered
+
+
+def _word_temperature(value):
+    number = safe_float(value, None)
+    return f"{round_half_up(number, 1):.1f}" if number is not None else value
+
+
 def _word_quantity_context(context):
     """Format a template-only copy after report arithmetic; retain raw context."""
     slurries = []
@@ -80,6 +151,9 @@ def _word_quantity_context(context):
             value = safe_float(row["lab"].get(key), None)
             if value is not None:
                 row["lab"][key] = f"{value:.3f}"
+        for key in ("bhct", "bhst", "uca_temp", "crush_temp"):
+            if key in row["lab"]:
+                row["lab"][key] = _word_temperature(row["lab"][key])
         for key in ("bhsp", "uca_pressure", "crush_pressure"):
             value = safe_float(row["lab"].get(key), None)
             if value is not None and math.isfinite(value):
@@ -107,10 +181,24 @@ def _word_quantity_context(context):
             row["lab"]["rheology"] = _word_rheology(row["lab"]["rheology"])
         slurries.append(row)
     rendered = dict(context, slurries=slurries)
+    if "well_data" in context:
+        rendered["well_data"] = dict(context["well_data"])
+        if "bhst" in rendered["well_data"]:
+            rendered["well_data"]["bhst"] = _word_temperature(rendered["well_data"]["bhst"])
+    if "fluids_train" in context:
+        rendered["fluids_train"] = _word_fluid_rows(context["fluids_train"])
+        for row in rendered["fluids_train"]:
+            for key, decimals in (("pump_rate", 1), ("density", 1)):
+                if key in row:
+                    row[key] = _word_fluid_number(row[key], decimals, density=key == "density")
+    if rendered.get("fluids_train") and "total_pump_time_hhmm" in context:
+        rendered["total_pump_time_hhmm"] = rendered["fluids_train"][-1].get("cumul_time_str", context["total_pump_time_hhmm"])
     if context.get("has_scavenger"):
         rendered["scavenger"] = _word_program_quantities(context["scavenger"])
     if context.get("has_spacer"):
         spacer = dict(context["standalone_spacer"], lab=dict(context["standalone_spacer"]["lab"]))
+        if "bhct" in spacer["lab"]:
+            spacer["lab"]["bhct"] = _word_temperature(spacer["lab"]["bhct"])
         spacer["lab"]["rheology"] = _word_rheology(spacer["lab"]["rheology"])
         spacer["lab_rows"] = []
         for row in context["standalone_spacer"]["lab_rows"]:
@@ -701,7 +789,7 @@ def _ct_procedure(state):
         record = state["fluid_data"][name]
         planned = "Planned " if name == "Displacement Fluid" else ""
         lines.append(sc.next(f"{planned}Pump {record['volume']:g} bbl {record['material_name']} as {name} "
-            f"({record['density']} pcf) at {record['pump_rate']} bpm; "
+            f"({record['density']} pcf) at {_word_fluid_number(record['pump_rate'], 1)} bpm; "
             f"calculated duration {record['duration_min']:.2f} min."))
     lines += [
         sc.next("Displacement Volume: Calculate at rig site. The Phase IV Displacement Fluid volume and time are planning values; confirm the final field displacement at the rig."),
@@ -847,6 +935,9 @@ def generate_official_procedure(
             else:
                 pf_line = f"Pump {pf_vol:.1f} bbl salt saturated water mix with {wash_amt:.0f} gal chemical wash as preflush." if "13" in job_upper else f"Pump {pf_vol:.1f} bbl salt saturated water mix {wash_amt:.0f} gal chemical wash as preflush.({pf_den} pcf)"
             
+    word_rows = ({row["name"]: row for row in _word_fluid_rows(
+        [dict(fluid_data[name], name=name) for name in active_fluids if name in fluid_data], for_export=False)}
+        if any(name in active_fluids for name in ("Spacer Ahead", "Spacer Behind")) else {})
     spacer_lines = {}
     slurry_lines = {}
     diesel_line = ""
@@ -855,9 +946,9 @@ def generate_official_procedure(
         if name == "Diesel":
             diesel_line = f"Pump {volume} Diesel as pre flush.({density})"
         elif name in {"Spacer Ahead", "Spacer Behind"}:
-            record = fluid_data.get(name, {})
+            record = word_rows.get(name, fluid_data.get(name, {}))
             spacer_lines[name] = (f"Pump {volume} {record.get('material_name', '')} as {name} ({density}) "
-                f"at {record.get('pump_rate', record.get('min_rate', '....'))} bpm; "
+                f"at {_word_fluid_number(record.get('pump_rate', record.get('min_rate', '....')), 1)} bpm; "
                 f"duration {record.get('duration_str', '....')} (HH:MM).")
         elif name == "Spacer":
             spacer_lines[name] = f"Pump {volume} as {name} ({density})."
@@ -887,7 +978,12 @@ def generate_official_procedure(
             for f in active_fluids
             if f in fluid_data and fluid_data[f].get("min_rate") not in (None, "", 0.0)
         ]
-        min_rate_str = f"{min(configured_rates):.0f} bbl/ min." if configured_rates else ".... bbl/ min. [PUMP RATE NOT SET IN PHASE IV]"
+        if configured_rates:
+            rate_display = (_word_fluid_number(min(configured_rates), 1) if job_type == "CMT PLUG"
+                            else f"{min(configured_rates):.0f}")
+            min_rate_str = f"{rate_display} bbl/ min."
+        else:
+            min_rate_str = ".... bbl/ min. [PUMP RATE NOT SET IN PHASE IV]"
         lines = [
             "IX. Cementing Procedure",
             sc.next(f"Clean up {tank_name} and preparing chemicals for mixing fluid."),
@@ -1134,11 +1230,13 @@ def synchronize_report_texts():
     procedure_source = [job, active, fluids, params, additives, preflush, depth, pump_time, placement,
                         {name: state.get(f"cement_calc_{name}") for name in active}]
     if any(name in active for name in ("Spacer Ahead", "Spacer Behind")):
-        procedure_source.append({"operational_spacers_contract": 1})
+        procedure_source.append({"operational_spacers_contract": 1 if job == materials_db.CT_JOB else 2})
+    if job == "CMT PLUG":
+        procedure_source.append({"plug_numeric_display_revision": 2})
     if job == materials_db.CT_JOB:
         from placement import ct_setting_depth
         from ct_stages import ct_stage_projection
-        procedure_source += [ct_setting_depth(hardware), ct_stage_projection(state)]
+        procedure_source += [ct_setting_depth(hardware), ct_stage_projection(state), {"ct_numeric_display_revision": 1}]
     specs = {
         "exec_summary_text": {
             "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement, summary_config or None),
@@ -1150,7 +1248,14 @@ def synchronize_report_texts():
         },
     }
     for key, spec in specs.items():
-        spec["pending"] = sync_report_text(state, key, spec["generated"], spec["signature"])
+        meta = state.get("report_text_state", {}).get(key)
+        if ((job in ("CMT PLUG", materials_db.CT_JOB) or any(name in active for name in ("Spacer Ahead", "Spacer Behind")))
+                and key == "procedure_text" and state.get(key) is not None
+                and (not meta or meta.get("generated") is None or not meta.get("source_signature"))):
+            # Unknown provenance is not proof of auto ownership, even if the text matches.
+            spec["pending"] = True
+        else:
+            spec["pending"] = sync_report_text(state, key, spec["generated"], spec["signature"])
     return specs
 
 
@@ -1221,11 +1326,12 @@ def _load_template_bytes(template_path: str, mtime: float) -> bytes:
 
 
 def document_signature(context, template_path):
+    _word_fluid_rows(context.get("fluids_train", []))
     mtime = os.path.getmtime(template_path) if os.path.exists(template_path) else 0.0
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items()
                                    if k not in ("generated_timestamp", "well_profile_report")},
-                        "template": template_hash})
+                        "template": template_hash, "word_output_revision": "WNF-02"})
 
 
 # BUG-32: the single source of truth for "which bracketed tokens mark an
@@ -1303,6 +1409,7 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
+    _word_fluid_rows([dict(fluid_data[name], name=name) for name in active_fluids if name in fluid_data])
     if calculations_prepared:
         from engineering_tools import require_spacer_material_name
         for fluid in active_fluids:

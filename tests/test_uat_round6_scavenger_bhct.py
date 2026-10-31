@@ -617,7 +617,7 @@ def test_all_five_normal_lab_sections_share_well_conditions_and_exclude_scavenge
         context = report.build_master_context()
     assert [s["name"] for s in context["slurries"]] == ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
     for table in (t for t in doc.tables if t.rows[0].cells[0].text == "Rheology Test"):
-        assert table.rows[1].cells[2].text == table.rows[1].cells[3].text == "Tstart: 150 degF"
+        assert table.rows[1].cells[2].text == table.rows[1].cells[3].text == "Tstart: 150.0 degF"
     Path('/tmp/round6-all-normal.docx').write_bytes(restored.session_state["_compiled_doc_bytes"])
 
 

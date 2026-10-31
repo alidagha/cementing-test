@@ -48,7 +48,7 @@ def test_current_ct_is_admitted_and_dedicated_procedure_uses_sources(valid_ct):
     text=ctx['procedure'] if 'procedure' in ctx else s['procedure_text']
     assert ctx['job_type']==db.CT_JOB
     assert '3527.0 m MD' in text and '3470.0 m' in ctx['executive_summary']
-    for term in ['Coiled Tubing','3000 psi','DAQ','30 m above','Displacement Volume: Calculate at rig site.','0.7-1.2','WOC']:
+    for term in ['Coiled Tubing','3000 psi','DAQ','30 m above','Displacement Volume: Calculate at rig site.','0.7–1.2','WOC']:
         assert term in text,term
     assert stage_note(ct_stage_projection(s)) in text
     assert stage_note(ct_stage_projection(s)) in ctx['slurries'][0]['note_mix']
@@ -62,7 +62,7 @@ def test_current_ct_is_admitted_and_dedicated_procedure_uses_sources(valid_ct):
 def test_actual_ct_docx_uses_existing_section_ii_and_canonical_context(valid_ct,kind,tmp_path):
     s=deepcopy(valid_ct);s['hardware_table']=state(kind)['hardware_table']
     ctx=context(s)
-    doc=DocxTemplate('master_template.docx');doc.render(ctx);buf=BytesIO();doc.save(buf)
+    doc=DocxTemplate('master_template.docx');doc.render(report._word_quantity_context(ctx));buf=BytesIO();doc.save(buf)
     result=well_report.postprocess_well_report(buf.getvalue(),ctx['well_profile_report'],ctx['note_vertical'],ctx['cement_chart_report'],ctx['centralizer_report'],
         pumping_report=__import__('pumping_simulation').prepare_pumping_simulation(s),
         schematic_report=schematic.prepare_schematic(s))
@@ -146,11 +146,17 @@ def test_all_job_operational_procedure_contract(valid_ct,job,selected):
         if name in ('Spacer Ahead','Spacer Behind'):
             record=s['fluid_data'][name]
             line=next(l for l in text.splitlines() if 'as '+name in l)
-            assert record['material_name'] in line and '0.7-1.2' in line
+            assert record['material_name'] in line and '0.7–1.2' in line
             if job == db.CT_JOB:
                 assert f"calculated duration {record['duration_min']:.2f} min." in line and 'HH:MM' not in line
             else:
-                assert record['duration_str'] in line
+                from engineering_tools import format_to_hr_mm
+                index=cfg['active'].index(name)
+                previous=s['fluid_data'][cfg['active'][index-1]]['cumul_time_min'] if index else 0
+                def minute_boundary(value):
+                    h,m=map(int,format_to_hr_mm(value).split(':'));return h*60+m
+                expected=format_to_hr_mm(minute_boundary(record['cumul_time_min'])-minute_boundary(previous))
+                assert f'duration {expected} (HH:MM).' in line
             positions.append((cfg['active'].index(name),text.index(line)))
     pump_main=next(l for l in text.splitlines() if ('as Main' in l or 'Main cement slurry' in l))
     for index,position in positions:
