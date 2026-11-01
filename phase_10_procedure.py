@@ -1409,7 +1409,6 @@ def build_master_context(*, calculations_prepared=False) -> dict:
         raise ValueError("Unreadable numeric volume in Phase IV fluid data — "
                          "open Phase IV to repair it: "
                          + ", ".join(unreadable_volumes))
-    _word_fluid_rows([dict(fluid_data[name], name=name) for name in active_fluids if name in fluid_data])
     if calculations_prepared:
         from engineering_tools import require_spacer_material_name
         for fluid in active_fluids:
@@ -1446,6 +1445,8 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             except ValueError:
                 invalidate_document(st.session_state)
                 raise
+    _word_fluid_rows([dict(fluid_data[name], name=name) for name in active_fluids if name in fluid_data])
+    if calculations_prepared:
         from project_state import refresh_lab_payloads
         issues = refresh_lab_payloads(st.session_state)
         if issues:

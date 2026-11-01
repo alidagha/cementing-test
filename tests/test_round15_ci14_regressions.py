@@ -96,8 +96,29 @@ def test_scalar_tieback_reference_has_verified_sources_repeatable_json_and_real_
     keys = ("hardware_table", "placement_config", "fluids_config", "well_geometry", "cement_params",
             "cement_additives_dfs", "lab_grid_dfs", "lab_qc_params")
     sources = ps.fingerprint({k: state[k] for k in keys})
-    specs = sync(state)
-    assert tuple(specs[k]["signature"] for k in ("exec_summary_text", "procedure_text")) == NO_DIESEL_A42[job]
+    import phase_10_procedure as report
+    captured = []
+    original_fingerprint = report.fingerprint
+    def observe(value):
+        captured.append(deepcopy(value))
+        return original_fingerprint(value)
+    with patch.object(report, "fingerprint", observe):
+        specs = sync(state)
+    expected_summary, expected_procedure = NO_DIESEL_A42[job]
+    assert specs["exec_summary_text"]["signature"] == expected_summary
+    inputs = next(value for value in captured if isinstance(value, list) and len(value) == 2 and value[0] == 1)
+    legacy = deepcopy(inputs[1])
+    revisions = [i for i, value in enumerate(legacy)
+                 if isinstance(value, dict) and "operational_spacers_contract" in value]
+    assert len(revisions) == 1 and legacy[revisions[0]] == {"operational_spacers_contract": 2}
+    # Recover the exact original A42 source, not a new output-matching gold.
+    legacy[revisions[0]] = {"operational_spacers_contract": 1}
+    assert ps.fingerprint([1, legacy]) == expected_procedure
+    assert specs["procedure_text"]["signature"] == ps.fingerprint(inputs)
+    assert specs["procedure_text"]["signature"] != expected_procedure
+    for altered in (inputs[1][:revisions[0]] + inputs[1][revisions[0]+1:],
+                    inputs[1] + [{"unauthorized": 1}]):
+        assert ps.fingerprint([1, altered]) != specs["procedure_text"]["signature"]
     assert specs == sync(state)
     assert sources == ps.fingerprint({k: state[k] for k in keys})
     assert "7\" Tie Back cementing" in specs["exec_summary_text"]["generated"]

@@ -97,7 +97,7 @@ def test_baseline_flc_temperature_already_uses_canonical_bhct():
     case.export(app)
     doc = Document(BytesIO(app.session_state['_compiled_doc_bytes']))
     table = next(t for t in doc.tables if t.rows[0].cells[0].text == 'Free Water Test')
-    assert table.rows[1].cells[3].text == '167 degF'
+    assert table.rows[1].cells[3].text == '167.0 degF'
     assert table.rows[1].cells[1].text == '70 degF'
     assert table.rows[2].cells[1].text == '0.0 ml in 250 ml @ 2hr'
 
@@ -307,7 +307,7 @@ def test_multislurry_archive_reactivation_flc_and_word():
     doc = Document(BytesIO(data))
     flc = [t for t in doc.tables if t.rows[0].cells[0].text == 'Free Water Test']
     tt = [t for t in doc.tables if t.rows[0].cells[0].text == 'Thickening Time Test']
-    assert [t.rows[1].cells[3].text for t in flc] == ['155 degF', '155 degF']
+    assert [t.rows[1].cells[3].text for t in flc] == ['155.0 degF', '155.0 degF']
     assert [t.rows[3].cells[4].text for t in tt] == ['08:20', '24:00']
     assert [t.rows[3].cells[5].text for t in tt] == ['1.25', '-2.5']
     assert all(t.rows[3].cells[8].text == '03:30' for t in tt)

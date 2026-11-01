@@ -125,6 +125,33 @@ def test_m4_required_null_name_cannot_use_an_old_valid_record(reviewed, fluid, p
     assert not any(k in state for k in DOC_KEYS)
 
 
+@pytest.mark.parametrize('fluid', ['Pre Flush', 'Spacer Ahead', 'Spacer Behind'])
+@pytest.mark.parametrize('invalid_name', [None, '', '   ', 'Changed valid name'])
+def test_material_identity_precedes_short_word_time_without_waiving_word_gate(reviewed, fluid, invalid_name):
+    state = deepcopy(reviewed)
+    state['fluids_config']['active'].insert(0, fluid)
+    # Whole-minute Main isolates the optional stage's genuine 0.5 minute.
+    state['fluids_config']['params']['Main'].update(volume=48., pump_rate='4')
+    state['fluids_config']['params'][fluid] = {
+        'volume': 2., 'density': '80', 'pump_rate': '4', 'material_name': 'WATER'}
+    ps.refresh_fluids(state)  # Valid Phase IV; no Word admission monkeypatch.
+    assert state['fluid_data'][fluid]['duration_min'] == .5
+    valid = deepcopy(state)
+    stale(valid)
+    with pytest.raises(ValueError, match='HH:MM.*' + fluid):
+        context(valid, True)
+    assert not any(k in valid for k in DOC_KEYS)
+    assert valid['fluids_config'] == state['fluids_config']
+    assert valid['fluid_data'] == state['fluid_data']
+    state['fluids_config']['params'][fluid]['material_name'] = invalid_name
+    before = deepcopy((state['fluids_config'], state['fluid_data']))
+    stale(state)
+    with pytest.raises(ValueError, match='Phase IV.*' + fluid):
+        context(state, True)
+    assert not any(k in state for k in DOC_KEYS)
+    assert (state['fluids_config'], state['fluid_data']) == before
+
+
 def test_m4_f3_volume_error_precedes_a_simultaneous_name_error(reviewed):
     state = deepcopy(reviewed)
     state['fluids_config']['params']['Main']['material_name'] = None

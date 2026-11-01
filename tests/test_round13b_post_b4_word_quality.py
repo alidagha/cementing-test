@@ -164,6 +164,7 @@ def test_ct_duration_is_one_decimal_minute_projection(valid_ct, volume, rate, di
     line = next(l for l in text.splitlines() if 'as Displacement Fluid' in l)
     assert f'calculated duration {display} min.' in line
     assert 'HH:MM' not in line
-    assert f'at {rate} bpm' in line
+    expected_rate = {'0.7-1.2': '0.7–1.2', '2': '2.0'}[rate]
+    assert f'at {expected_rate} bpm' in line
     assert s['fluid_data'] == before
     assert before['Displacement Fluid']['duration_min'] == volume / float(rate.split('-')[0])
