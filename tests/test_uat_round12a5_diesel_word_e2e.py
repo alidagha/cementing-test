@@ -383,8 +383,29 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     # Preserve the original four-stage source program and exact A-4-2 text
     # snapshots. This is a source-projection test, not a Standalone Word build.
     state = projects(job, active=False, mud=mud, include_standalone_spacer=True)
-    specs = sync(state)
-    assert (specs['exec_summary_text']['signature'], specs['procedure_text']['signature']) == NO_DIESEL_A42[job]
+    captured = []
+    original_fingerprint = report.fingerprint
+    def observe(value):
+        captured.append(deepcopy(value))
+        return original_fingerprint(value)
+    with patch.object(report, 'fingerprint', observe):
+        specs = sync(state)
+    expected_summary, expected_procedure = NO_DIESEL_A42[job]
+    assert specs['exec_summary_text']['signature'] == expected_summary
+    # Original golds remain untouched. Reverse only approved presentation inputs.
+    inputs = next(value for value in captured if isinstance(value,list) and len(value)==2 and value[0]==1)
+    legacy=deepcopy(inputs[1])
+    if job=='CMT PLUG':
+        assert legacy[-1]=={'plug_numeric_display_revision':2}
+        legacy.pop()
+    operational=[i for i,v in enumerate(legacy) if isinstance(v,dict) and 'operational_spacers_contract' in v]
+    assert len(operational)==1 and legacy[operational[0]]=={'operational_spacers_contract':2}
+    legacy[operational[0]]={'operational_spacers_contract':1}
+    assert ps.fingerprint([1,legacy])==expected_procedure
+    assert specs['procedure_text']['signature']==ps.fingerprint(inputs)
+    assert specs['procedure_text']['signature']!=expected_procedure
+    for modified in (inputs[1][:-1], inputs[1]+[{'unauthorized':1}]):
+        assert ps.fingerprint([1,modified])!=specs['procedure_text']['signature']
     assert 'Diesel' not in specs['exec_summary_text']['generated']
     assert 'Diesel' not in specs['procedure_text']['generated']
     ctx = context(state)
@@ -408,3 +429,29 @@ def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(
                                           if name not in ('Diesel', 'Scavenger')]
     ps.refresh_fluids(without)
     assert sync(without)['exec_summary_text'] == after
+
+
+@pytest.mark.parametrize('job', JOBS)
+def test_wnf_plug_only_revision_preserves_other_generated_text_and_sources(projects,job):
+    from test_uat_terminal_precision import wnf_baseline
+    baseline=wnf_baseline.__wrapped__()
+    state=projects(job);old_state=deepcopy(state);new_state=deepcopy(state)
+    with patch.object(report.st,'session_state',old_state):old=baseline['synchronize_report_texts']()
+    new=sync(new_state)
+    assert old['exec_summary_text']==new['exec_summary_text']
+    expected=old['procedure_text']['generated']
+    previous_minutes=0
+    from engineering_tools import format_to_hr_mm
+    for name in state['fluids_config']['active']:
+        row=state['fluid_data'][name]
+        h,m=map(int,format_to_hr_mm(row['cumul_time_min']).split(':'));boundary=h*60+m
+        if name in ('Spacer Ahead','Spacer Behind'):
+            assert row['pump_rate']=='4.0' and row['duration_min']==12.5
+            line=next(l for l in expected.splitlines() if 'as '+name in l)
+            expected=expected.replace(line,line.replace('duration 00:12 (HH:MM).',f'duration {format_to_hr_mm(boundary-previous_minutes)} (HH:MM).'))
+        previous_minutes=boundary
+    if job=='CMT PLUG':expected=expected.replace(', 4 bbl/ min.',', 4.0 bbl/ min.')
+    assert new['procedure_text']['generated']==expected
+    assert old['procedure_text']['signature']!=new['procedure_text']['signature']
+    assert new_state['fluids_config']==old_state['fluids_config']
+    assert new_state['fluid_data']==old_state['fluid_data']

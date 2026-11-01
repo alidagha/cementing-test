@@ -25,17 +25,48 @@ from test_uat_round10c_integration import inspect_word, save_project
 
 
 @pytest.fixture(scope="module")
-def built_state():
+def built_state(tmp_path_factory):
     case = audit.AuditRegressions()
     app = case.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
     case.phase(app, "phase4")
     for fluid in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
-        app.number_input(key="vol_" + fluid).set_value(2.).run()
+        # Synthetic successful-export source: 8 bbl / 4 bpm = 2 whole minutes.
+        app.number_input(key="vol_" + fluid).set_value(8.).run()
+        assert app.session_state["fluid_data"][fluid]["duration_min"] == 2.
+    sources = deepcopy((app.session_state["fluids_config"], app.session_state["fluid_data"]))
     execute_centralizer(app.session_state)
     app, calls = run_build(app.session_state.to_dict())
     assert len(calls) == 1 and not app.error
     inspect_word(app.session_state["_compiled_doc_bytes"])
+    assert (app.session_state["fluids_config"], app.session_state["fluid_data"]) == sources
+    (tmp_path_factory.mktemp("valid-export") / "representable-optional-fluids.docx").write_bytes(
+        app.session_state["_compiled_doc_bytes"])
     return app.session_state.to_dict()
+
+
+def test_original_short_optional_source_stays_valid_but_blocks_word_and_old_download(built_state, tmp_path):
+    import project_state as ps
+    state = deepcopy(built_state)
+    for fluid in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
+        state["fluids_config"]["params"][fluid]["volume"] = 2.
+    ps.refresh_fluids(state)  # Original 2-bbl source remains valid in Phase IV.
+    assert state["fluid_data"]["Pre Flush"]["duration_min"] == .5
+    assert "_compiled_doc_bytes" in state
+    before = deepcopy((state["fluids_config"], state["fluid_data"], state["procedure_text"]))
+    with patch.object(report.st, "session_state", state):
+        with pytest.raises(ValueError, match="HH:MM.*Pre Flush.*00:00") as error:
+            report.build_master_context(calculations_prepared=True)
+    assert not any(key.startswith("_compiled_doc_") for key in state)
+    assert (state["fluids_config"], state["fluid_data"], state["procedure_text"]) == before
+    app = audit.AuditRegressions().app(state)
+    audit.AuditRegressions().phase(app, "phase10")
+    assert any("HH:MM" in item.value and "Pre Flush" in item.value for item in app.error)
+    assert next(b for b in app.button if b.label == "Build Word Document").disabled
+    assert not any("Download Final Document" in b.proto.label for b in app.get("download_button"))
+    (tmp_path / "original-short-plan-block.json").write_text(json.dumps({
+        "error": str(error.value), "original_optional_volumes_bbl": [2., 2., 2.],
+        "raw_preflush_minutes": state["fluid_data"]["Pre Flush"]["duration_min"],
+        "cached_word_retired": True, "build_disabled": True, "no_download": True}, indent=2))
 
 
 @pytest.mark.parametrize("source", ["phase2", "phase4", "phase7", "phase9"])
