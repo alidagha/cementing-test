@@ -298,6 +298,8 @@ def _segments(rows, start, end, label):
         _number(od, f"{label} Hardware Size (in)", positive=True)
         # Hardware ID is numeric in the current schema; a hole diameter is Size.
         inner = _number(row.get("ID (in)"), f"{label} Hardware ID (in)", positive=True)
+        if row["Description"] == "Open Hole Size" and inner != od:
+            raise ValueError("Open Hole Size and ID/Bit Size must be identical.")
         if row["Description"] != "Open Hole Size" and inner >= od:
             raise ValueError(f"{label}: Hardware ID must be less than OD.")
         segments.append({"top_md": top, "bottom_md": bottom, "od_in": od,

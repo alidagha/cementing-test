@@ -301,6 +301,8 @@ def test_chart_capacity_placement_direction_and_conservation_within_one_regime(k
     mask = frame.Description == description
     old = float(frame.loc[mask, field].iloc[0])
     frame.loc[mask, field] = old + .001
+    if description == "Open Hole Size":
+        frame.loc[mask, "ID (in)"] = old + .001
     changed = chart.resolve_chart_geometry(state)
     assert changed["capacity_segments"][-1]["bbl_per_m"] > cap
     assert chart.resolve_cement_placement(state)[0]["top_md"] > baseline["top_md"]
@@ -391,6 +393,7 @@ def test_annular_clearance_exact_boundary_follows_capacity_authority(gap):
     mask = state["hardware_table"].Description == "Open Hole Size"
     state["hardware_table"]["Size (in)"] = state["hardware_table"]["Size (in)"].astype(object)
     state["hardware_table"].loc[mask, "Size (in)"] = 9.625 + gap
+    state["hardware_table"].loc[mask, "ID (in)"] = 9.625 + gap
     if gap <= 0:
         with pytest.raises(ValueError, match="exceed"): chart.resolve_chart_geometry(state)
     else:
