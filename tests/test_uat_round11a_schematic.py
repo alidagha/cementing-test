@@ -75,13 +75,13 @@ def test_radial_nominal_outer_envelopes_share_one_linear_scale(layout, tmp_path,
     assert radii[9.625] < radii[12.25] < radii[13.375] < radii[17.5] < radii[20.]
     for patch in walls:
         assert x0 < patch.get_x() < patch.get_x() + patch.get_width() < x0 + width
-    # Physical depths and all depth labels use the unchanged +200 m axis, not radial width.
-    y = lambda d: (1-engine.layout_geometry()["header_frac"]) * (1-d/2000.)
+    # Physical MDs use the approved proportional axis; radial widths remain independent.
+    y = lambda d: (1-engine.layout_geometry()["header_frac"]) * (1-d/1980.)
     for i, shoe in enumerate((100., 600., 1500.)):
         assert walls[2*i].get_y() == pytest.approx(y(shoe))
         assert walls[2*i].get_height() == pytest.approx(y(0)-y(shoe))
-    assert engine.resolve_depth_axis(engine.validate_schematic_data(deepcopy(payload))) == (2000., [0., 1000., 2000.])
-    assert {"0", "1000", "2000"} <= {t.get_text() for t in artists["texts"]}
+    assert engine.resolve_depth_axis(engine.validate_schematic_data(deepcopy(payload))) == (1980., [0., 990., 1980.])
+    assert {"0", "990", "1980"} <= {t.get_text() for t in artists["texts"]}
     with Image.open(tmp_path / "radial.png") as image:
         assert image.size == (720, 912)
 
@@ -174,6 +174,8 @@ def test_radial_repair_preserves_every_structural_depth_and_label(case, tmp_path
     source = subprocess.check_output(['git', 'show', '47bde4cb55044cae60be3ecc33b164cd0d4e1bb6:well_schematic_engine.py'])
     reference = {"__name__": "radial_depth_reference"}
     exec(compile(source, "baseline_renderer", "exec"), reference)
+    # Isolate the historical radial promise under the separately tested new axis.
+    reference["calculate_dynamic_depth_axis"] = engine.calculate_dynamic_depth_axis
     final = rendered_radial_artists(payload, tmp_path / "final.png", monkeypatch)
     with monkeypatch.context() as patch:
         patch.setattr(engine, "render_well_schematic", reference["render_well_schematic"])
@@ -1303,3 +1305,41 @@ def test_invalid_schematic_depth_blocks_actual_word_and_retires_prior_document(m
     assert next(b for b in app.button if b.label == 'Build Word Document').disabled
     assert any('Well schematic' in error.value and 'operation-wall diameter' in error.value for error in app.error)
     assert not rendered
+
+
+def test_r15a_shallow_axis_is_proportional_without_changing_deep_axis():
+    import well_schematic_engine as engine
+    assert engine.calculate_dynamic_depth_axis(150.) == (165., [0.,82.5,165.])
+    assert engine.calculate_dynamic_depth_axis(3000.) == (3200., [0.,1600.,3200.])
+
+
+@pytest.mark.parametrize('depth,axis,ticks',[(1.,1.1,[0.,.55,1.1]),(150.,165.,[0.,82.5,165.]),
+    (1800.,1980.,[0.,990.,1980.]),(2000.,2200.,[0.,1100.,2200.]),(5000.,5200.,[0.,2600.,5200.])])
+def test_r15a_axis_literal_boundaries_and_rendered_extents(depth,axis,ticks,tmp_path,monkeypatch):
+    import well_schematic_engine as engine
+    payload={'casings':[{'type':'casing','size_in':20.,'id_in':19.,'top_md':0.,'shoe_md':depth}],
+             'open_holes':[{'top_md':0.,'bottom_md':depth,'hole_size_in':26.}],
+             'current_job':{'type':'casing','target_index':0}}
+    assert engine.calculate_dynamic_depth_axis(depth)==(axis,ticks)
+    assert engine.calculate_dynamic_depth_axis(depth,False)==(axis,[0.,axis])
+    artists=rendered_radial_artists(payload,tmp_path/'axis.png',monkeypatch)
+    texts={t.get_text() for t in artists['texts']}
+    assert {f'{v:g}' for v in ticks}<=texts
+    bottom=(1-engine.layout_geometry()['header_frac'])*(1-depth/axis)
+    walls=[p for p in artists['patches'] if p.get_zorder()==3.0]
+    assert walls and all(p.get_y()==pytest.approx(bottom) and p.get_y()>0 for p in walls)
+    again=tmp_path/'again.png';engine.render_well_schematic(payload,str(again),dpi=120)
+    assert again.read_bytes()==(tmp_path/'axis.png').read_bytes()
+    if depth==150.:
+        import subprocess
+        previous={'__name__':'r15a_previous_axis'}
+        exec(compile(subprocess.check_output(['git','show','c7fe7b8965cf3babbd388eb3944b15c4cfc62f33:well_schematic_engine.py']),
+                     'approved_baseline_renderer','exec'),previous)
+        assert previous['calculate_dynamic_depth_axis'](150.)==(350.,[0.,175.,350.])
+        previous['render_well_schematic'](payload,str(tmp_path/'previous-axis.png'),dpi=120)
+
+
+@pytest.mark.parametrize('value',[0.,-1.,float('nan'),float('inf'),True,None])
+def test_r15a_axis_preserves_invalid_depth_rejection(value):
+    import well_schematic_engine as engine
+    with pytest.raises(ValueError):engine.calculate_dynamic_depth_axis(value)

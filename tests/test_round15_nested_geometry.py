@@ -589,3 +589,141 @@ def test_c2_nested_receiver_drawing_is_independent_of_hydraulic_admission(both_h
         pumping_simulation.prepare_pumping_simulation(state)
     assert pumping_simulation.prepare_pumping_simulation(interval)["inputs"]["geometry"].td_m == 4000.
     assert pickle.dumps(state) == before
+
+
+R15A_INITIAL = [('CSG 30"', 30., 36.), ('CSG 24"', 24., 28.),
+                ('CSG 20"', 20., 26.), ('CSG 18 5/8"', 18.625, 22.)]
+
+
+def initial_casing(job, size, hole, previous=False):
+    rows = [('Casing', '150', str(size), size-1.)]
+    if previous:
+        rows.append(('Previous Casing', '50', str(hole+2.), hole+1.))
+    rows.append(('Open Hole Size', '50-150' if previous else '0-150', str(hole), hole))
+    return project(job, hardware(*rows), 150.)
+
+
+@pytest.mark.parametrize('job,size,hole', R15A_INITIAL)
+def test_r15a_first_casing_uses_explicit_surface_hole(job, size, hole):
+    state = initial_casing(job, size, hole)
+    before = pickle.dumps(state)
+    geom = chart.resolve_chart_geometry(state)
+    assert boundary(geom) == [(0., 150., hole)]
+    expected = math.pi/4*(hole**2-size**2)/144/.3048/BBL_TO_CUFT
+    assert geom['capacity_segments'] == [dict(top_md=0.,bottom_md=150.,
+        nominal_bbl_per_m=expected,bbl_per_m=expected,kind='open_hole')]
+    assert chart.interval_volume(geom['capacity_segments'],0.,150.) == pytest.approx(150.*expected)
+    assert pickle.dumps(state) == before
+
+
+@pytest.mark.parametrize('job,size,hole', R15A_INITIAL)
+def test_r15a_initial_casing_retains_physical_previous_path(job, size, hole):
+    state=initial_casing(job,size,hole,previous=True)
+    geometry=chart.resolve_chart_geometry(state)
+    assert boundary(geometry)==[(0.,50.,hole+1.),(50.,150.,hole)]
+    assert [v['kind'] for v in geometry['capacity_segments']]==['cased','open_hole']
+
+
+@pytest.mark.parametrize('fault', ['missing','gap','overlap','undersized','equal','bit','id_missing','duplicate_string'])
+def test_r15a_initial_casing_invalid_hole_or_string_never_fabricates_wall(fault):
+    state=initial_casing('CSG 20"',20.,26.)
+    t=state['hardware_table']
+    if fault=='missing':state['hardware_table']=t.iloc[:1].copy()
+    elif fault in ('gap','overlap'):
+        t.at[1,'MD (m)']='0-70'
+        row=t.iloc[1].to_dict();row['MD (m)']='80-150' if fault=='gap' else '60-150'
+        state['hardware_table']=pd.concat([t,pd.DataFrame([row])],ignore_index=True)
+    elif fault in ('undersized','equal'):
+        t.loc[1,['Size (in)','ID (in)']]=['19' if fault=='undersized' else '20',19. if fault=='undersized' else 20.]
+    elif fault=='bit':t.at[1,'ID (in)']=25.
+    elif fault=='id_missing':t.at[1,'ID (in)']=None
+    else:state['hardware_table']=pd.concat([t,t.iloc[:1]],ignore_index=True)
+    before=pickle.dumps(state)
+    with pytest.raises(ValueError):chart.resolve_chart_geometry(state)
+    assert pickle.dumps(state)==before
+
+
+def test_r15a_initial_measured_sections_excess_and_placement_share_capacity():
+    state=initial_casing('CSG 20"',20.,26.)
+    t=state['hardware_table'];t.at[1,'MD (m)']='0-70'
+    row=t.iloc[1].to_dict();row['MD (m)']='70-150'
+    state['hardware_table']=pd.concat([t,pd.DataFrame([row])],ignore_index=True)
+    state['placement_config'].update(chart_excess_mode='apply',excess_csg_oh_pct=20.)
+    geom=chart.resolve_chart_geometry(state)
+    expected=math.pi/4*(26.**2-20.**2)/144/.3048/BBL_TO_CUFT*1.2
+    assert chart.interval_volume(geom['capacity_segments'],0.,150.)==pytest.approx(expected*150.)
+    state['fluids_config']={'active':['Main'],'params':{'Main':{'volume':geom['shoe_track_bbl']+expected*50.,'density':'118'}}}
+    cement=chart.resolve_cement_placement(state,geom)[0]
+    assert cement['top_md']==pytest.approx(100.)
+    assert cement['in_well_bbl']+cement['shoe_track_bbl']==pytest.approx(cement['entered_bbl'])
+
+
+@pytest.mark.parametrize('kind',['liner','tieback'])
+def test_r15a_measured_hole_cannot_replace_liner_or_tieback_history(kind):
+    if kind=='liner':
+        state=project('LNR 7"',hardware(('Drill Pipes','50','5',4.),('Liner Hanger','50','7',6.),
+            ('Liner','50-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
+    else:
+        state=project('TIE BACK LNR 7"',hardware(('Tie Back','0-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
+    with pytest.raises(ValueError,match='Previous|host|Liner'):chart.resolve_chart_geometry(state)
+
+
+@pytest.fixture(scope='module')
+def r15a_report_source():
+    import test_audit_regressions as audit
+    cache={}
+    def get(job):
+        if job not in cache:
+            cache[job]=audit.round_trip(audit.AuditRegressions().configured_app(job).session_state.to_dict())
+        return deepcopy(cache[job])
+    return get
+
+
+@pytest.mark.parametrize('job,size,hole',R15A_INITIAL)
+@pytest.mark.parametrize('previous',[False,True])
+def test_r15a_actual_first_casing_word_and_json(r15a_report_source,job,size,hole,previous,tmp_path):
+    import json
+    from io import BytesIO
+    from docx import Document
+    import project_state as ps
+    import test_audit_regressions as audit
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as renderer
+    from test_uat_round11a_schematic import schematic_picture
+    case=audit.AuditRegressions()
+    source=r15a_report_source(job)
+    source.update(initial_casing(job,size,hole,previous))
+    source.update(geo_md=150.,geo_tvd=150.)
+    source['hardware_editor_draft']=source['hardware_table'].copy(deep=True)
+    source['fluids_config']['params']['Main']['volume']=1000.  # Synthetic measured large-bore job, above shoe-track volume.
+    ps.refresh_well_derived(source)
+    source=audit.round_trip(source)
+    geom=chart.resolve_chart_geometry(source)
+    assert chart.resolve_cement_placement(source,geom)[0]['shoe_track_bbl']==geom['shoe_track_bbl']
+    app=case.app(source)
+    case.phase(app,'phase7')
+    keep=[b for b in app.button if b.label=='Keep reviewed lab entries']
+    if keep:keep[0].click().run()
+    confirm=[b for b in app.button if b.label=='Confirm measured lab results']
+    for button in confirm:
+        assert not button.disabled
+        app.button(key=button.key).click().run()
+    assert ps.prepare_calculations(app.session_state.to_dict())==[]
+    physical=deepcopy((app.session_state['hardware_table'],app.session_state['well_geometry'],
+                       app.session_state['placement_config'],app.session_state['fluids_config']))
+    case.export(app)
+    data=app.session_state['_compiled_doc_bytes'];doc=Document(BytesIO(data))
+    assert doc._element.xpath('.//wp:docPr[@descr="Static Well Security and Fluid Sequence"]')
+    assert not doc._element.xpath('.//wp:docPr[@descr="Pumping Simulation Charts"]')
+    _,image=schematic_picture(doc)
+    (tmp_path/'initial-casing.docx').write_bytes(data);(tmp_path/'embedded-schematic.png').write_bytes(image)
+    pd.testing.assert_frame_equal(app.session_state['hardware_table'],physical[0])
+    assert ps.fingerprint((app.session_state['well_geometry'],app.session_state['placement_config'],app.session_state['fluids_config']))==ps.fingerprint(physical[1:])
+    saved=audit.round_trip(app.session_state.to_dict())
+    assert chart.resolve_chart_geometry(saved)==geom
+    payload=schematic.prepare_schematic(saved)
+    assert renderer.resolve_depth_axis(payload)==(165.,[0.,82.5,165.])
+    assert payload['casings'][-1]['shoe_md']==150.
+    assert payload['open_holes'][0]['hole_size_in']==hole
+    (tmp_path/'geometry-and-axis.json').write_text(json.dumps({'job':job,'previous':previous,'geometry':geom,
+        'axis':[165.,[0.,82.5,165.]],'payload':payload},indent=2))

@@ -143,9 +143,10 @@ def require_running_fit(sections, running):
 def enclosing_path(rows, strings, active, end, segmenter, *, excluded=(), excluded_below=None, running=None):
     running = active if running is None else running
     installed = [s for s in strings if not any(i in excluded for i in s["indices"])]
-    if not installed:
+    if not installed and (strings or not active or any(s["description"] != "Casing" for s in active)):
         raise ValueError("Resolve Previous Casing / Previous Liner from explicit installed Hardware.")
-    last_shoe = max(s["shoe_md"] for s in installed)
+    # A first surface-origin Casing still needs a complete measured open-hole wall.
+    last_shoe = max((s["shoe_md"] for s in installed), default=0.)
     holes = []
     if last_shoe < end:
         holes = segmenter([r for r in rows if r.get("Description") == "Open Hole Size"],

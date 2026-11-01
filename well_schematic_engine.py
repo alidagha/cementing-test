@@ -127,16 +127,14 @@ def _fmt_depth(d: float) -> str:
 # 2. CURRENT-OPERATION DEPTH RULER (0, Middle, Bottom)
 # =========================================================================================
 def calculate_dynamic_depth_axis(max_depth: float, show_mid: bool = True) -> Tuple[float, List[float]]:
-    """Contract axis: Final Axis is exactly Final Relevant Job Depth + 200 m.
+    """Pad the resolved depth by 10%, capped at the established deep-well 200 m.
 
-    The legacy function name is retained as a public entry point, but percentage margins and
-    clean-interval rounding are intentionally removed. ``max_depth`` is the already-resolved
-    Final Relevant Job Depth, never an inferred deepest string.
+    Only display space changes; the supplied depth remains the explicit job authority.
     """
     if not isinstance(max_depth, (int, float)) or isinstance(max_depth, bool) \
             or not math.isfinite(max_depth) or max_depth <= 0:
         raise ValueError("max_depth must be a finite positive number (metres).")
-    y_max = float(max_depth) + 200.0
+    y_max = float(max_depth) + min(float(max_depth) * 0.10, 200.0)
     return (y_max, [0.0, y_max / 2.0, y_max]) if show_mid else (y_max, [0.0, y_max])
 
 
