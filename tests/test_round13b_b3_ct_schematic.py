@@ -334,13 +334,14 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
 
 
 def assert_authorized_radial_renderer(source):
-    """Only the Owner-approved radial functions differ from the frozen renderer.
+    """Only the Owner-approved radial and axis functions differ from the frozen renderer.
 
     Fixed final-function identities protect depth code inside render too; the rest
     of the module remains byte-identical to the original independent reference.
     """
     import ast
     expected = {
+        'calculate_dynamic_depth_axis': '70ca64564ae510a7c5f2b61e172227edf1d3b5e9b72898eca3d9ac5fff3e38f9',
         '_build_radial_maps': '5bb3e530061079b1092fbc8dc250c4812bd2d4b469ed0c99561e135739231773',
         'render_well_schematic': 'f584e7c575bdce5056969e56056a8a8551639561a7df8afa6db85d40ed5b0801',
     }
@@ -364,7 +365,7 @@ def assert_authorized_radial_renderer(source):
 @pytest.mark.parametrize('old,new', [
     (b'radial_scale = 0.385', b'radial_scale = 0.386'),
     (b'1.0 - float(depth) / y_max', b'1.0 - float(depth) / (y_max + 1)'),
-    (b'y_max = float(max_depth) + 200.0', b'y_max = float(max_depth) + 201.0'),
+    (b'min(float(max_depth) * 0.10, 200.0)', b'min(float(max_depth) * 0.11, 200.0)'),
 ])
 def test_authorized_radial_renderer_identity_rejects_radial_depth_and_module_mutations(old, new):
     original = Path('well_schematic_engine.py').read_bytes()

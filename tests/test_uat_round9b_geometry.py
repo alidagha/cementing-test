@@ -214,9 +214,11 @@ def test_open_hole_variation_cannot_be_averaged_or_replaced_by_caliper():
     first, second = frame.iloc[-1].to_dict(), frame.iloc[-1].to_dict()
     first["MD (m)"] = "700"
     second["Size (in)"] = "12.5"
+    second["ID (in)"] = 12.5
     state["hardware_table"] = pd.DataFrame([*frame.iloc[:-1].to_dict("records"), first, second])
-    with pytest.raises(ValueError, match="open.hole|scalar|diameter"):
+    with pytest.raises(ValueError, match="open.hole|scalar|diameter") as error:
         project(state)
+    assert "one scalar open-hole diameter" in str(error.value)
 
 
 def test_multiple_contiguous_identical_envelope_rows_collapse_exactly():
