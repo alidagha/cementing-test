@@ -2,7 +2,7 @@
 from io import BytesIO
 
 import numpy as np
-from cement_chart_model import chart_job_kind
+from cement_chart_model import chart_job_kind, _linear_pressure
 
 CHART_ANCHOR = "Pressure and fluid sequence charts: Not provided."
 NOT_APPLICABLE = "Pressure and fluid sequence charts: Not applicable for this job type."
@@ -54,6 +54,22 @@ def _draw_static_security(axis, security):
         text.set_gid("security:summary")
 
 
+def _formation_plot_segments(pressure, domain):
+    """Project exposed curves only; canonical formation and analysis stay untouched."""
+    if pressure["kind"] == "markers":
+        return [pressure]  # Tieback's established shoe-only pressure markers.
+    if domain is None:
+        return []
+    segments = []
+    for part in domain["segments"]:
+        depths = [part["top_tvd"]] + [tvd for md, tvd in zip(pressure["md_m"], pressure["tvd_m"], strict=True)
+                   if part["top_md"] < md < part["bottom_md"]] + [part["bottom_tvd"]]
+        segments.append({"tvd_m": depths, **{
+            key: [_linear_pressure(pressure["tvd_m"], pressure[key], tvd) for tvd in depths]
+            for key in ("pore_psi", "frac_psi")}})
+    return segments
+
+
 def build_chart_figure(model):
     """Draw resolved psi/TVD and Hardware MD/diameters; never synthesize values."""
     if model is None:
@@ -76,17 +92,21 @@ def build_chart_figure(model):
         left.grid(color="white", linewidth=1.1)
         left.set_axisbelow(True)
         hydro, pressure = model["hydrostatic"], model["pore_frac"]
+        formation = _formation_plot_segments(pressure, model["static_security"]["domain"])
         for name, values, depths, color in (
                 ("Hydrostatic", hydro["pressure_psi"], hydro["tvd_m"], "#FF0000"),
                 ("Frac", pressure["frac_psi"], pressure["tvd_m"], "#0000FF"),
                 ("Pore", pressure["pore_psi"], pressure["tvd_m"], "#00B040")):
             if not values or len(values) != len(depths) or not np.isfinite([*values, *depths]).all():
                 raise ValueError("Prepared Round 8A pressure arrays must be finite and aligned.")
-            line, = left.plot(np.asarray(values)/1000., depths, color=color, linewidth=3.8,
-                             solid_capstyle="round", label=name)
-            if name != "Hydrostatic" and pressure["kind"] == "markers":
-                line.set_marker("o"); line.set_markersize(8)
-                line.set_markeredgecolor("white"); line.set_markeredgewidth(1.2)
+            key = "frac_psi" if name == "Frac" else "pore_psi"
+            parts = [(values, depths)] if name == "Hydrostatic" else [(part[key], part["tvd_m"]) for part in formation]
+            for index, (part_values, part_depths) in enumerate(parts):
+                line, = left.plot(np.asarray(part_values)/1000., part_depths, color=color, linewidth=3.8,
+                                 solid_capstyle="round", label=name if index == 0 else "_nolegend_")
+                if name != "Hydrostatic" and pressure["kind"] == "markers":
+                    line.set_marker("o"); line.set_markersize(8)
+                    line.set_markeredgecolor("white"); line.set_markeredgewidth(1.2)
         _draw_static_security(left, model["static_security"])
         left.set_ylim(max(hydro["tvd_m"])*1.04, 0)
         left.set_xlim(left=0)

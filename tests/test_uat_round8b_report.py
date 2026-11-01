@@ -88,8 +88,11 @@ def test_render_jobs_consume_prepared_arrays_and_real_geometry(job):
         np.testing.assert_array_equal(lines['Hydrostatic'].get_xdata(), np.array(original['hydrostatic']['pressure_psi'])/1000)
         np.testing.assert_array_equal(lines['Hydrostatic'].get_ydata(), original['hydrostatic']['tvd_m'])
         for label,key in [('Pore','pore_psi'),('Frac','frac_psi')]:
-            np.testing.assert_array_equal(lines[label].get_xdata(), np.array(original['pore_frac'][key])/1000)
-            np.testing.assert_array_equal(lines[label].get_ydata(), original['pore_frac']['tvd_m'])
+            source=original['pore_frac'];domain=original['static_security']['domain']
+            indices=list(range(len(source['md_m']))) if source['kind']=='markers' else [
+                i for i,md in enumerate(source['md_m']) if domain['top_md']<=md<=domain['bottom_md']]
+            np.testing.assert_array_equal(lines[label].get_xdata(), np.array([source[key][i] for i in indices])/1000)
+            np.testing.assert_array_equal(lines[label].get_ydata(), [source['tvd_m'][i] for i in indices])
         assert right.get_ylabel() == 'MD (m)'
         assert not any('NOTE' in t.get_text() for t in [*figure.texts,*left.texts,*right.texts])
         assert original == state['_cement_chart_model']
