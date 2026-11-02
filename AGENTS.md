@@ -172,15 +172,16 @@ During that pass:
 
 # Working Rules for Codex Cloud / Frontier Agents
 
-Before editing:
+Before every work unit (before editing or verification):
 
 1. Read this `AGENTS.md`.
-2. Read `zero_regression_contract.md` when the task falls under its scope.
-3. Read the active owner-approved bug specification or task instructions.
-4. Inspect the relevant implementation and tests.
-5. Trace the real execution/state/report flow end-to-end.
-6. Identify shared callers/helpers before choosing a patch point.
-7. Reproduce the issue when feasible before modifying production code.
+2. Read `zero_regression_contract.md`.
+3. Read `docs/codex_operative_card_v5_4_rev1.md` for every work unit, whether or not the task repeats its path.
+4. Read the active Owner-approved Batch prompt/specification and applicable approved technical specifications.
+5. Inspect the relevant implementation and tests.
+6. Trace the real execution/state/report flow end-to-end.
+7. Identify shared callers/helpers before choosing a patch point.
+8. Reproduce the issue when feasible before modifying production code.
 
 During editing:
 
@@ -215,15 +216,15 @@ The preferred solution is the smallest clear root-cause fix that preserves all r
 
 ---
 
-# Collaboration Charter v5.4 — Batch Pipeline Pointer
+# Repository-Only v5.4 rev1 — Approved Batch Operating Rules
 
-This section only points to the operating rules for owner-approved Batches. It grants no authority by itself; authority comes from the active owner-approved Batch prompt and the Collaboration Charter.
+This section delegates the subordinate operating rules for Owner-approved Batches to `docs/codex_operative_card_v5_4_rev1.md`. Read that self-contained Card at the beginning of every work unit. Scope and permission come only from these repository rules and the active Owner-approved Batch prompt; no external governance document is a required input.
 
-- When a Batch prompt cites v5.4 rev1, follow `docs/codex_operative_card_v5_4_rev1.md` for the execution loop, local verification budget, same-class test/pin alignment, three-shard test registration, GitHub pipeline mode, and STOP conditions.
-- Precedence (more restrictive always prevails; an unresolved conflict is a STOP): (1) this file, `zero_regression_contract.md`, approved Specifications and permanent engineering/UI protections; (2) the active Batch prompt's STOP/permission map; (3) dated Owner Standing Authorizations; (4) the Collaboration Charter v5.4 rev1; (5) the Card. The Card never expands authority.
+- The Card covers the execution loop, local verification budget, same-class test/pin alignment, three-shard test registration, GitHub pipeline mode, and STOP conditions. Its special standing operational permissions apply only when executing an Owner-approved Batch prompt citing v5.4 rev1, under Card §1; reading it is always mandatory.
+- Precedence (more restrictive always prevails; an unresolved conflict is a STOP): (1) this file, `zero_regression_contract.md`, approved Specifications and permanent engineering/UI protections; (2) the active Batch prompt's STOP/permission map; (3) applicable dated Owner decisions traceably provided with the active Batch; (4) the AGENTS-delegated Card. The Card never expands authority.
 - Inside an owner-approved Batch scope, the Ponytail step "Question complex requests" does not apply: do not re-ask whether the approved scope is needed. Raise a question only for a genuine uncovered boundary, as listed in the Card.
 - Tests: prefer adding new tests to an existing registered test module. A new `test_*.py` module must be registered in exactly one regression shard in the same Batch, as described in the Card.
 - Batch completion: when a Batch prompt cites v5.4 rev1, "complete" in the Batch rules above means committed and published according to the Batch's pipeline mode (push, PR, and the allowed Hosted CI run), not only a local commit. Do not begin the next Batch before that, and before the single consolidated report.
-- Commits: the one-commit-per-unit rule in `zero_regression_contract.md` stays in force. The only exception is the Charter §7.2 corrective commit: at most one, only after a failed Hosted PR CI run caused by an in-scope Batch defect (maximum two Hosted CI runs per Batch). It never permits unrelated or blind commits.
+- Commits: the one-commit-per-unit rule in `zero_regression_contract.md` stays in force. The only exception is the Card §4 Mode A, item 3 corrective commit: at most one, only after a failed Hosted PR CI run caused by an in-scope Batch defect (maximum two Hosted CI runs per Batch). It never permits unrelated or blind commits.
 - Real-browser verification of Streamlit UI uses `.codex/skills/streamlit-browser-testing`.
 - Never modify this file, `zero_regression_contract.md`, the Card, or `.github/workflows/` without explicit owner approval naming that file. Never merge to `main` without the Independent Architect's `ACCEPTED` bound to the exact Head SHA and, where required, the recorded Owner approval.
