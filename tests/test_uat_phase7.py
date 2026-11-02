@@ -230,7 +230,7 @@ class Phase7UAT(unittest.TestCase):
         notes = report.build_ordered_notes('CSG 9 5/8"', {}, 40, slurries, True)
         for s, expected in zip(notes["slurries"], ("8", "8.25", "8.123456789", "0", "10")):
             body = s["lab"]["note_thickening"].split(": ", 1)[1]
-            self.assertEqual(body, f"Surface Sample: Hardened Condition Observed After {expected} Hours")
+            self.assertEqual(body, f"The Surface Sample Exhibited Hardening After {expected} Hours")
             self.assertEqual(s["lab"]["thickening_time"], "04:45")
             self.assertEqual(s["lab"]["thickening_endpoint"], "100 Bc")
         numbers = [int(re.match(r"NOTE (\d+):", n)[1]) for n in notes["all_notes"]]
@@ -255,7 +255,7 @@ class Phase7UAT(unittest.TestCase):
                 doc = Document(BytesIO(restored.session_state["_compiled_doc_bytes"]))
                 paragraphs = [''.join(n.text or '' for n in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t')) for p in doc.element.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p')]
                 text = '\n'.join(paragraphs)
-                self.assertIn("Surface Sample: Hardened Condition Observed After 8 Hours", text)
+                self.assertIn("The Surface Sample Exhibited Hardening After 8 Hours", text)
                 self.assertNotIn("Reported thickening time endpoint:", text)
                 self.assertIn("03:30", text)
                 self.assertIn("70 Bc", text)
@@ -274,3 +274,33 @@ class Phase7UAT(unittest.TestCase):
                     ctx = report.build_master_context()
                 self.assertEqual(ctx["slurries"][0]["lab"]["free_water"], 1.5)
                 self.assertEqual(ctx["slurries"][0]["lab"]["free_water_45"], 2.5)
+
+
+def test_r16c_note_change_is_only_approved_body_with_mutation_controls():
+    import ast
+    import subprocess
+    source = subprocess.check_output(["git", "show", "a582f7593efedda2e69d27eb71f3d43e56254019:phase_10_procedure.py"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "build_ordered_notes")
+    namespace = dict(report.__dict__)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "prior_approved_notes", "exec"), namespace)
+    slurries = [{"name": str(i), "lab": {"surface_hardened_hours": hours,
+                 "thickening_time": "04:45", "thickening_endpoint": "100 Bc"}}
+                for i, hours in enumerate((8.0, 8.25, 8.123456789, 0.0, 10.0))]
+    original = deepcopy(slurries)
+    old = namespace["build_ordered_notes"]('CSG 9 5/8"', {}, 40, deepcopy(slurries), True)
+    new = report.build_ordered_notes('CSG 9 5/8"', {}, 40, slurries, True)
+    expected = deepcopy(old)
+    for row, hours in zip(expected["slurries"], ("8", "8.25", "8.123456789", "0", "10")):
+        before = row["lab"]["note_thickening"]
+        after = before.split(": ", 1)[0] + f": The Surface Sample Exhibited Hardening After {hours} Hours"
+        row["lab"]["note_thickening"] = after
+        expected["all_notes"][expected["all_notes"].index(before)] = after
+    assert new == expected  # Includes every other NOTE, order, number and raw lab field.
+    assert [s["lab"]["surface_hardened_hours"] for s in slurries] == [s["lab"]["surface_hardened_hours"] for s in original]
+    for mutation in ("other_note", "hours", "order", "old_body"):
+        changed = deepcopy(new)
+        if mutation == "other_note": changed["all_notes"][0] += " unauthorized"
+        elif mutation == "hours": changed["slurries"][0]["lab"]["surface_hardened_hours"] = 8.1
+        elif mutation == "order": changed["all_notes"][0:2] = reversed(changed["all_notes"][0:2])
+        else: changed["slurries"][0]["lab"]["note_thickening"] = old["slurries"][0]["lab"]["note_thickening"]
+        assert changed != expected, mutation

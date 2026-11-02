@@ -600,3 +600,144 @@ def test_consumed_diesel_bhct_gel_retires_word_without_false_centralizer_stalene
     assert pumping.source_signature(app.session_state) != previous
     data = build(app)
     assert_document(data, app.session_state.to_dict())
+
+
+R16C_DATES = ("date","request_date","prepared_date","checked_date","approved_date","revision_date")
+
+
+@pytest.fixture(scope="module")
+def r16c_document_source():
+    from datetime import date
+    app=CASE.configured_app(CSG)
+    CASE.phase(app,"phase1")
+    for index,field in enumerate(R16C_DATES):
+        key="_w_report_date" if field=="date" else "_w_"+field
+        app.date_input(key=key).set_value(date(2026,10,3+index)).run()
+    for label in ("Request Description","Prepared Phone"):
+        next(w for w in app.text_input if w.label==label).set_value("2026-10-03").run()
+    CASE.phase(app,"phase7")
+    next(w for w in app.number_input if w.label=="Surface Sample Hours - Main").set_value(8.25).run()
+    next(b for b in app.button if b.label=="Confirm measured lab results").click().run()
+    CASE.phase(app,"phase10")
+    return app.session_state.to_dict()
+
+
+def r16c_date_paragraphs(doc):
+    import re
+    from lxml import etree
+    from zipfile import ZipFile
+    w14="{http://schemas.microsoft.com/office/word/2010/wordml}paraId"
+    with ZipFile(report.TEMPLATE_PATH) as source:
+        root=etree.fromstring(source.read("word/document.xml"))
+    result={}
+    for field in R16C_DATES:
+        matches=[p for p in root.iter(qn("w:p")) if re.search(r"{{\s*"+field+r"\s*}}",
+            "".join(t.text or "" for t in p.iter(qn("w:t"))))]
+        assert len(matches)==1
+        identity=matches[0].get(w14)
+        paragraphs=[p for p in doc.element.iter(qn("w:p")) if p.get(w14)==identity]
+        assert len(paragraphs)==1
+        result[field]="".join(t.text or "" for t in paragraphs[0].iter(qn("w:t")))
+    return result
+
+
+@pytest.mark.parametrize("restored",[False,True])
+def test_r16c_real_word_dates_surface_note_restore_and_cache(r16c_document_source,restored,tmp_path):
+    state=deepcopy(r16c_document_source)
+    if restored:state=audit.round_trip(state)
+    app=CASE.app(state)
+    if restored:
+        assert "_centralizer_result" not in state
+        with pytest.raises(ValueError,match="Phase IX"):
+            context(app.session_state.to_dict())
+    execute_centralizer(app.session_state)  # Real Phase IX rebuild, never a restored private receipt.
+    CASE.phase(app,"phase10")
+    ctx=context(app.session_state.to_dict())
+    expected_iso={field:f"2026-10-{3+i:02d}" for i,field in enumerate(R16C_DATES)}
+    assert {field:ctx[field] for field in R16C_DATES}==expected_iso
+    raw=deepcopy(app.session_state["doc_control"])
+    qc=deepcopy(app.session_state["lab_qc_params"])
+    before=signatures(app.session_state)
+    CASE.export(app)
+    data=app.session_state["_compiled_doc_bytes"]
+    (tmp_path/"report.docx").write_bytes(data)
+    doc=Document(BytesIO(data))
+    dates=r16c_date_paragraphs(doc)
+    paragraphs=["".join(t.text or "" for t in p.iter(qn("w:t"))) for p in doc.element.iter(qn("w:p"))]
+    text="\n".join(paragraphs)
+    # Controls are checked before the intended baseline RED assertions.
+    assert app.session_state["doc_control"]==raw
+    assert app.session_state["lab_qc_params"]==qc
+    assert signatures(app.session_state)==before
+    assert raw["date"]=="2026-10-03" and qc["Main"]["surface_hardened_hours"]==8.25
+    assert "2026-10-03" in text  # Actual phone/description bindings are not dates.
+    assert "2026-10-03" not in app.session_state["_compiled_doc_filename"]
+    assert "Cementing_Program_" in app.session_state["_compiled_doc_filename"]
+    (tmp_path/"observed-fields.json").write_text(__import__("json").dumps({
+        "dates":dates,"surface_notes":[p for p in paragraphs if "Hours" in p and "NOTE " in p],
+        "raw_dates":expected_iso,"raw_hours":qc["Main"]["surface_hardened_hours"]},indent=2))
+    errors=[]
+    for index,field in enumerate(R16C_DATES):
+        expected=f"2026/10/{3+index:02d}"
+        if expected not in dates[field] or expected_iso[field] in dates[field]:errors.append((field,dates[field],expected))
+    expected_note="NOTE 10: The Surface Sample Exhibited Hardening After 8.25 Hours"
+    if text.count(expected_note)!=1:errors.append(("surface note",[p for p in paragraphs if "Hard" in p and "NOTE " in p],expected_note))
+    assert not errors,errors
+    notes=[p.strip() for p in paragraphs if p.strip().startswith("NOTE ")]
+    assert notes==[unescape(n) for n in ctx["all_notes"]]
+    signature=app.session_state["_compiled_doc_signature"]
+    CASE.phase(app,"phase10")
+    assert app.session_state["_compiled_doc_signature"]==signature
+    assert report.document_signature(context(app.session_state.to_dict()),report.TEMPLATE_PATH)==signature
+    # An actual baseline signature is obsolete; review/source signatures are untouched.
+    import ast,subprocess
+    source=subprocess.check_output(["git","show","a582f7593efedda2e69d27eb71f3d43e56254019:phase_10_procedure.py"])
+    node=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=="document_signature")
+    namespace=dict(report.__dict__)
+    exec(compile(ast.Module(body=[node],type_ignores=[]),"previous_Word_signature","exec"),namespace)
+    previous=namespace["document_signature"](ctx,report.TEMPLATE_PATH)
+    assert previous!=signature
+    app.session_state["_compiled_doc_signature"]=previous
+    CASE.phase(app,"phase10")
+    no_document(app.session_state)
+    assert app.session_state["doc_control"]==raw and app.session_state["lab_qc_params"]==qc
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2026-10-03", "2026/10/03"), ("2024-02-29", "2024/02/29"),
+    ("0001-01-01", "0001/01/01"), (None, None), ("", ""), ("-", "-"),
+    ("1405/07/11", "1405/07/11"), ("2026/10/03", "2026/10/03"),
+    ("2026-02-29", "2026-02-29"), ("2026-13-03", "2026-13-03"),
+    ("2026-10", "2026-10"), ("20261003", "20261003"),
+    (" 2026-10-03 ", " 2026-10-03 "), ("2026-10-03T12:34:56", "2026-10-03T12:34:56"),
+    ("Phone: 2026-10-03", "Phone: 2026-10-03"), (False, False),
+    ("2026-00-03", "2026-00-03"), ("0000-01-01", "0000-01-01"),
+])
+def test_r16c_terminal_dates_are_explicit_valid_calendar_fields_only(value, expected):
+    original = {key: value for key in R16C_DATES}
+    original.update(phone="2026-10-03", description="2026-10-03", generated="2026-10-03",
+                    filename="Cementing_Program_2026-10-03.docx", doc_control={"date": value})
+    snapshot = deepcopy(original)
+    rendered = report._word_quantity_context(original)
+    assert {key: rendered[key] for key in R16C_DATES} == dict.fromkeys(R16C_DATES, expected)
+    assert original == snapshot
+    for key in ("phone", "description", "generated", "filename", "doc_control"):
+        assert rendered[key] == snapshot[key]
+    assert not any(key in report._word_quantity_context({}) for key in R16C_DATES)
+
+
+@pytest.mark.parametrize("kind", ["date", "datetime"])
+def test_r16c_native_calendar_objects_render_in_actual_template(r16c_document_source, kind, tmp_path):
+    from datetime import date, datetime, timezone, timedelta
+    ctx = context(deepcopy(r16c_document_source))
+    values = {key: date(2026, 10, 3+i) if kind == "date" else
+              datetime(2026, 10, 3+i, 0, 15, tzinfo=timezone(timedelta(hours=3)))
+              for i, key in enumerate(R16C_DATES)}
+    ctx.update(values)
+    doc = report.DocxTemplate(report.TEMPLATE_PATH)
+    doc.render(report._word_quantity_context(ctx))
+    target = tmp_path / (kind + ".docx")
+    doc.save(target)
+    actual = r16c_date_paragraphs(Document(target))
+    assert actual == {key: f"2026/10/{3+i:02d}" for i, key in enumerate(R16C_DATES)}
+    assert {key: ctx[key] for key in R16C_DATES} == values
