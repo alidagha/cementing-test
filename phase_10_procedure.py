@@ -1331,7 +1331,7 @@ def document_signature(context, template_path):
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items()
                                    if k not in ("generated_timestamp", "well_profile_report")},
-                        "template": template_hash, "word_output_revision": "WNF-02"})
+                        "template": template_hash, "word_output_revision": "R15-CD"})
 
 
 # BUG-32: the single source of truth for "which bracketed tokens mark an
@@ -2167,7 +2167,9 @@ def render():
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
                                                               master_context["note_vertical"], master_context["cement_chart_report"],
                                                               master_context["centralizer_report"], pumping_report=pumping,
-                                                              schematic_report=schematic)
+                                                              schematic_report=schematic,
+                                                              section_vi_programs={key: master_context[key]
+                                                                  for key in ("has_preflush", "has_spacer")})
                         st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature

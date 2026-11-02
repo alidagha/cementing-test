@@ -502,3 +502,208 @@ def test_spacing_cardinality_mismatch_stops_before_render(project, count):
     with patch.object(output, "render_chart_png", side_effect=AssertionError("must validate spacing first")):
         with pytest.raises(ValueError, match="exactly six"):
             output.postprocess_well_report(buffer.getvalue(), ctx["well_profile_report"], ctx["note_vertical"])
+
+
+# Existing reviewed Spacer fixture; no new state field, note input or module.
+from test_round13a_a4_spacer_word import source as r15cd_spacer_project
+
+
+def r15cd_section(doc, first="VI. Pre-flush Program", last="VII. Laboratory Report"):
+    body = list(doc._element.body)
+    start = next(i for i, e in enumerate(body) if e.tag == qn("w:p") and
+                 "".join(t.text or "" for t in e.iter(qn("w:t"))).strip() == first)
+    end = next(i for i, e in enumerate(body) if e.tag == qn("w:p") and
+               "".join(t.text or "" for t in e.iter(qn("w:t"))).strip() == last)
+    return body[start+1:end]
+
+
+def r15cd_effective_note(paragraph):
+    # Independent OOXML cascade: paragraph-mark rPr does NOT style text runs.
+    def overlay(target, node):
+        if node is None:
+            return
+        for child in node:
+            if child.tag == qn("w:rPr"):
+                continue
+            name = child.tag.split("}")[-1]
+            if child.attrib:
+                for key, value in child.attrib.items():
+                    target[(name, key.split("}")[-1])] = value
+            else:
+                target[(name, "val")] = "1"
+    styles = paragraph.part.styles.element
+    defaults = styles.find(qn("w:docDefaults"))
+    p, r = {}, {}
+    if defaults is not None:
+        for label, values in (("pPrDefault", p), ("rPrDefault", r)):
+            parent = defaults.find(qn("w:"+label))
+            if parent is not None:
+                overlay(values, parent[0])
+    chain, style = [], paragraph.style
+    while style is not None:
+        chain.append(style); style = style.base_style
+    for style in reversed(chain):
+        overlay(p, style.element.pPr)
+        overlay(r, style.element.rPr)
+    overlay(p, paragraph._p.pPr)
+    runs = []
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        values = dict(r)
+        chain, style = [], run.style
+        while style is not None:
+            chain.append(style); style = style.base_style
+        for style in reversed(chain):
+            overlay(values, style.element.rPr)
+        overlay(values, run._r.rPr)
+        runs.append(values)
+    return p, runs
+
+
+def r15cd_assert_note(doc, note):
+    reference = next(p for p in doc.paragraphs if p.text.strip().endswith(
+        ": The Volume of Displacement Should Be Calculated at Rig Site."))
+    target = next(p for p in doc.paragraphs if p.text == note)
+    expected = r15cd_effective_note(reference)
+    assert expected[1] and expected[1][0][("sz", "val")] == "20"
+    assert expected[1][0][("color", "val")] == "003D83"
+    assert r15cd_effective_note(target) == expected
+
+
+@pytest.mark.parametrize("preflush,spacer", [(False,False),(True,False),(False,True),(True,True)])
+def test_r15cd_actual_program_flags_remove_only_inactive_status_paragraphs(
+        r15cd_spacer_project, preflush, spacer, tmp_path):
+    from lxml import etree
+    from html import unescape
+    from docx.text.paragraph import Paragraph
+    import materials_db
+    import project_state as ps
+    case = audit.AuditRegressions()
+    state = deepcopy(r15cd_spacer_project)
+    if not spacer:
+        state["fluids_config"]["active"].remove("Spacer")
+    if preflush:
+        state["fluids_config"]["active"].insert(0,"Pre Flush")
+        state["fluids_config"]["params"]["Pre Flush"] = dict(volume=20.,density="80",pump_rate="4",
+            material_name=materials_db.DEFAULT_MATERIAL_NAMES["Pre Flush"])
+        state["preflush_config"] = {"type":"Fresh Water Only"}
+        state["centralizer_config"]["aux_rheology"]["Pre Flush"] = dict(zip(
+            ("300","200","100","60","30","6","3"), (168.,116.,64.,41.,24.,8.,6.)))
+    ps.refresh_fluids(state)
+    app = case.app(audit.round_trip(state))
+    case.phase(app,"phase6")
+    case.phase(app,"phase10")  # Normalize the real fresh-project/export lifecycle before comparison.
+    ctx = context(app.session_state.to_dict())
+    assert (ctx["has_preflush"],ctx["has_spacer"]) == (preflush,spacer)
+    raw = rendered(ctx)
+    (tmp_path/"before.docx").write_bytes(raw)
+    before = Document(BytesIO(raw))
+    physical = ps.fingerprint({k:app.session_state[k] for k in
+        ("well_data","fluid_data","fluids_config","lab_qc_params","lab_grid_dfs")})
+    case.export(app)
+    data = app.session_state["_compiled_doc_bytes"]
+    (tmp_path/"after.docx").write_bytes(data)
+    after = Document(BytesIO(data))
+    assert physical == ps.fingerprint({k:app.session_state[k] for k in
+        ("well_data","fluid_data","fluids_config","lab_qc_params","lab_grid_dfs")})
+    old = r15cd_section(before); new = r15cd_section(after)
+    def text(e): return "".join(t.text or "" for t in e.iter(qn("w:t")))
+    statuses = [e for e in old if e.tag==qn("w:p") and text(e)=="Not applicable."]
+    assert len(statuses) == 2-int(preflush)-int(spacer)
+    xml = lambda e: etree.tostring(e,method="c14n")
+    assert [xml(e) for e in new] == [xml(e) for e in old if e not in statuses]
+    assert not any(text(e)=="Not applicable." for e in new)
+    for title,active in (("Pre Flush Data",preflush),("Spacer Additives Data",spacer)):
+        assert sum(e.tag==qn("w:tbl") and text(e).startswith(title) for e in new)==int(active)
+    # Every unrelated status survives; no global text-stripping.
+    outside = lambda doc: [p.text for p in doc.paragraphs if p.text=="Not applicable." and p._p not in r15cd_section(doc)]
+    assert outside(before)==outside(after)
+    assert [p.text.strip() for p in after.paragraphs if p.text.strip().startswith("NOTE ")] == [unescape(n) for n in ctx["all_notes"]]
+    r15cd_assert_note(after,ctx["note_vertical"])
+    ix = lambda doc: next(p._p for p in doc.paragraphs if p.text.strip()=="IX. Centralizer Placement Recommendation")
+    assert xml(ix(before))==xml(ix(after))
+    assert xml(ix(before).getprevious())==xml(ix(after).getprevious())
+    # A repeat Build on unchanged sources retires no valid state and is stable.
+    signature = app.session_state["_compiled_doc_signature"]
+    case.phase(app,"phase10")
+    assert app.session_state["_compiled_doc_signature"]==signature
+    # Compute the real prior renderer signature; never forge review/source state.
+    import ast, subprocess
+    previous = subprocess.check_output(["git","show","02a2a59c64571fbf25f3a58580cb88f3cc05c962:phase_10_procedure.py"]).decode()
+    function = next(n for n in ast.parse(previous).body if isinstance(n,ast.FunctionDef) and n.name=="document_signature")
+    namespace = dict(report.__dict__)
+    exec(compile(ast.Module(body=[function],type_ignores=[]),"approved_previous_document_signature","exec"),namespace)
+    previous_signature = namespace["document_signature"](ctx,report.TEMPLATE_PATH)
+    assert previous_signature != signature
+    app.session_state["_compiled_doc_signature"] = previous_signature
+    case.phase(app,"phase10")
+    assert "_compiled_doc_bytes" not in app.session_state
+    assert "_compiled_doc_signature" not in app.session_state
+
+
+def test_r15cd_real_vertical_note_has_certified_effective_style(project,tmp_path):
+    ctx=context(project)
+    data=compiled(ctx)
+    (tmp_path/"vertical.docx").write_bytes(data)
+    r15cd_assert_note(Document(BytesIO(data)),ctx["note_vertical"])
+
+
+@pytest.mark.parametrize("fault", ["missing_flags","nonbool","wrong_active","duplicate_vi",
+    "missing_status","extra_status","status_page_break","status_data"])
+def test_r15cd_ambiguous_section_vi_rejects_before_render(project,fault):
+    from docx.oxml import OxmlElement
+    ctx=context(project)
+    doc=Document(BytesIO(rendered(ctx)))
+    programs={"has_preflush":ctx["has_preflush"],"has_spacer":ctx["has_spacer"]}
+    assert programs=={"has_preflush":False,"has_spacer":False}
+    elements=r15cd_section(doc)
+    vi=elements[0].getprevious()
+    status=elements[0]
+    if fault=="missing_flags":programs.pop("has_spacer")
+    elif fault=="nonbool":programs["has_preflush"]=0
+    elif fault=="wrong_active":programs["has_preflush"]=True
+    elif fault=="duplicate_vi":vi.addprevious(deepcopy(vi))
+    elif fault=="missing_status":status.getparent().remove(status)
+    elif fault=="extra_status":status.addprevious(deepcopy(status))
+    elif fault=="status_page_break":
+        node=OxmlElement("w:br");node.set(qn("w:type"),"page");status[0].append(node)
+    elif fault=="status_data":
+        node=OxmlElement("w:t");node.text="Keep measured content";status[0].append(node)
+    stream=BytesIO();doc.save(stream)
+    with patch.object(output,"render_chart_png",side_effect=AssertionError("ambiguity checked too late")) as render:
+        with pytest.raises(ValueError,match="Section VI"):
+            output.postprocess_well_report(stream.getvalue(),ctx["well_profile_report"],ctx["note_vertical"],
+                section_vi_programs=programs)
+        render.assert_not_called()
+
+
+def test_r15cd_same_text_outside_vi_survives_and_absence_is_not_inferred(project):
+    ctx=context(project)
+    doc=Document(BytesIO(rendered(ctx)))
+    doc.add_paragraph("Not applicable.")  # Unrelated Section X text, not a program flag.
+    source=BytesIO();doc.save(source)
+    args=(source.getvalue(),ctx["well_profile_report"],ctx["note_vertical"])
+    legacy=Document(BytesIO(output.postprocess_well_report(*args)))
+    assert len([p for p in legacy.paragraphs if p.text=="Not applicable."])==3
+    result=Document(BytesIO(output.postprocess_well_report(*args,
+        section_vi_programs={"has_preflush":False,"has_spacer":False})))
+    assert len([p for p in result.paragraphs if p.text=="Not applicable."])==1
+    assert result.paragraphs[-1].text=="Not applicable."
+
+
+@pytest.mark.parametrize("mutation",["color","size","bold","indent","spacing","alignment"])
+def test_r15cd_effective_style_comparator_detects_mutation(project,mutation):
+    from docx.shared import RGBColor,Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    ctx=context(project)
+    doc=Document(BytesIO(compiled(ctx)))
+    r15cd_assert_note(doc,ctx["note_vertical"])
+    note=next(p for p in doc.paragraphs if p.text==ctx["note_vertical"])
+    if mutation=="color":note.runs[0].font.color.rgb=RGBColor.from_string("FF0000")
+    elif mutation=="size":note.runs[0].font.size=Pt(11)
+    elif mutation=="bold":note.runs[0].font.bold=True
+    elif mutation=="indent":note.paragraph_format.first_line_indent=Pt(20)
+    elif mutation=="spacing":note.paragraph_format.space_after=Pt(9)
+    else:note.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    with pytest.raises(AssertionError):r15cd_assert_note(doc,ctx["note_vertical"])

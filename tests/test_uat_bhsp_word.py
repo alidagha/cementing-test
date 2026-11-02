@@ -46,6 +46,7 @@ def pressure_cells(doc):
 
 @pytest.mark.parametrize("manual,expected", [
     (None, "5467"), ("5467.5", "5468"), ("7300+1000", "7300+1000"),
+    ("232.35600000000002", "232"),
 ])
 def test_normal_review_fresh_restore_direct_export_all_pressure_consumers(manual, expected):
     case = audit.AuditRegressions()
@@ -56,6 +57,7 @@ def test_normal_review_fresh_restore_direct_export_all_pressure_consumers(manual
         case.phase(app, "phase7")
         next(b for b in app.button if b.label == "Sync with Phase V").click().run()
     case.phase(app, "phase7")
+    assert any(f"BHSP: {expected} psi" in caption.value for caption in app.caption)
     next(w for w in app.checkbox if w.label == "UCA - Main").check().run()
     for label in ("CS @ 08:00", "CS @ 12:00", "CS @ 24:00"):
         next(w for w in app.number_input if w.label == label + " - Main").set_value(100.0).run()
@@ -86,3 +88,60 @@ def test_normal_review_fresh_restore_direct_export_all_pressure_consumers(manual
     restored.text_input(key="_w_bhsp").set_value("8000+500").run()
     case.phase(restored, "phase10")
     assert "_compiled_doc_bytes" not in restored.session_state
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (232.35600000000002, "232"), (232.5, "233"), (232.4999, "232"),
+    (-232.5, "-233"), ("232.500", "233"), ("۲۳۲.۵", "233"),
+    (None, None), ("", ""), ("-", "-"), ("7300+1000", "7300+1000"),
+    ("NaN", "NaN"), ("Infinity", "Infinity"), ("bad", "bad"), (True, True),
+])
+def test_r15cd_bhsp_caption_is_only_a_whole_psi_projection(raw, expected):
+    from phase_7_lab import _bhsp_display
+    assert _bhsp_display(raw) == expected
+
+
+@pytest.mark.parametrize("raw",[float("nan"),float("inf"),float("-inf")])
+def test_r15cd_bhsp_nonfinite_marker_is_not_replaced_or_admitted(raw):
+    from phase_7_lab import _bhsp_display
+    assert _bhsp_display(raw) is raw
+
+
+def r15cd_original_lab_source(source):
+    """Undo only the three reviewed caption edits; preserve the ORIGINAL file pin."""
+    helper = b'''def _bhsp_display(value):
+    """Whole-psi caption only; preserve missing/manual-expression markers."""
+    if value is None:
+        return value
+    try:
+        return f"{round_half_up(value, 0):.0f}"
+    except (ValueError, TypeError, OverflowError):
+        return value
+
+
+'''
+    changes = (
+        (b"from engineering_tools import round_half_up, build_lab_rheology", b"from engineering_tools import build_lab_rheology"),
+        (helper, b""),
+        (b"{_bhsp_display(st.session_state.get('well_data', {}).get('bhsp', ''))}",
+         b"{st.session_state.get('well_data', {}).get('bhsp', '')}"),
+    )
+    for after,before in changes:
+        assert source.count(after)==1
+        source=source.replace(after,before,1)
+    return source
+
+
+@pytest.mark.parametrize("old,new", [
+    (b"round_half_up(value, 0)",b"round_half_up(value, 1)"),
+    (b"Pressure = {bhsp} psi",b"Pressure = {_bhsp_display(bhsp)} psi"),
+    (b'"bhsp": well_data.get("bhsp", ""),',b'"bhsp": 0.,'),
+])
+def test_r15cd_caption_source_compatibility_rejects_other_changes(old,new):
+    import hashlib
+    source=Path("phase_7_lab.py").read_bytes()
+    expected="f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f"
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest()==expected
+    assert source.count(old)==1
+    with pytest.raises(AssertionError):
+        assert hashlib.sha256(r15cd_original_lab_source(source.replace(old,new))).hexdigest()==expected
