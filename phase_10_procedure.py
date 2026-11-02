@@ -19,7 +19,7 @@ from placement import (target_depth, top_label, host_label, slurry_intervals, EX
                        resolve_report_excess, summary_config_for_job, hardware_choices,
                        hardware_row_metadata, target_row_metadata, hardware_context_label,
                        HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
-from datetime import datetime
+from datetime import date, datetime
 import materials_db
 import pumping_simulation
 from well_schematic_adapter import prepare_schematic, source_signature as schematic_source_signature
@@ -142,6 +142,18 @@ def _word_temperature(value):
     return f"{round_half_up(number, 1):.1f}" if number is not None else value
 
 
+def _word_date(value):
+    """Project complete Gregorian dates only; leave legacy tokens untouched."""
+    text = value.date().isoformat() if isinstance(value, datetime) else value.isoformat() if isinstance(value, date) else value
+    if isinstance(text, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text):
+        try:
+            date.fromisoformat(text)
+        except ValueError:
+            return value
+        return text.replace("-", "/")
+    return value
+
+
 def _word_quantity_context(context):
     """Format a template-only copy after report arithmetic; retain raw context."""
     slurries = []
@@ -181,6 +193,9 @@ def _word_quantity_context(context):
             row["lab"]["rheology"] = _word_rheology(row["lab"]["rheology"])
         slurries.append(row)
     rendered = dict(context, slurries=slurries)
+    for key in ("date", "request_date", "prepared_date", "checked_date", "approved_date", "revision_date"):
+        if key in context:
+            rendered[key] = _word_date(context[key])
     if "well_data" in context:
         rendered["well_data"] = dict(context["well_data"])
         if "bhst" in rendered["well_data"]:
@@ -380,7 +395,7 @@ def build_ordered_notes(
         lab["note_rheology"] = counter.next("The Result of Rheology Test is based on Bingham Model.")
         hours = require_nonnegative_number(lab.get("surface_hardened_hours"), "Surface Sample Hours")
         hours_text = str(int(hours)) if hours.is_integer() else str(hours)
-        lab["note_thickening"] = counter.next(f"Surface Sample: Hardened Condition Observed After {hours_text} Hours")
+        lab["note_thickening"] = counter.next(f"The Surface Sample Exhibited Hardening After {hours_text} Hours")
 
     notes["note_vertical"] = counter.next("The Well is Considered Vertical") if is_vertical else ""
     notes["note_centralizer"] = counter.next(CENTRALIZER_NOTE_BODY) if centralizer_applicable(job_type) else ""
@@ -1331,7 +1346,7 @@ def document_signature(context, template_path):
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items()
                                    if k not in ("generated_timestamp", "well_profile_report")},
-                        "template": template_hash, "word_output_revision": "R15-CD"})
+                        "template": template_hash, "word_output_revision": "R16-C"})
 
 
 # BUG-32: the single source of truth for "which bracketed tokens mark an

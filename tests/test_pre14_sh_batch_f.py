@@ -310,7 +310,7 @@ def test_m4_m10_null_and_repaired_identity_dates_in_real_word(reviewed, tmp_path
     main = next([c.text for c in r.cells] for t in out.tables for r in t.rows if r.cells[0].text=='Main')
     assert main[1] == 'F1 field & <mix>' and main[3] == '50.0'
     xml = ZipFile(BytesIO(data)).read('word/document.xml').decode()
-    assert '2025-01-02' in xml and 'F1 field &amp; &lt;mix&gt;' in xml
+    assert '2025/01/02' in xml and 'F1 field &amp; &lt;mix&gt;' in xml
     (tmp_path/'f1-repaired.docx').write_bytes(data)
 
 
