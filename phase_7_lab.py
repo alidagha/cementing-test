@@ -6,7 +6,7 @@ import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
 from project_state import invalidate_document
 from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload
-from engineering_tools import build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
+from engineering_tools import round_half_up, build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
 from engineering_tools import (
@@ -24,6 +24,16 @@ from engineering_tools import (
 )
 
 LAB_GRID_COLUMNS = ["Material", "Concentration", "Unit", "Mass", "Lot No"]
+
+
+def _bhsp_display(value):
+    """Whole-psi caption only; preserve missing/manual-expression markers."""
+    if value is None:
+        return value
+    try:
+        return f"{round_half_up(value, 0):.0f}"
+    except (ValueError, TypeError, OverflowError):
+        return value
 
 
 def _commit_lab_qc(slurry: str, field: str, widget_key: str) -> None:
@@ -665,7 +675,7 @@ def render():
             st.markdown("---")
             
             st.markdown("#### Test Basic Data — Well References")
-            st.caption(f"BHST: {bhst} °F | BHCT: {bhct} °F | BHSP: {st.session_state.get('well_data', {}).get('bhsp', '')} psi")
+            st.caption(f"BHST: {bhst} °F | BHCT: {bhct} °F | BHSP: {_bhsp_display(st.session_state.get('well_data', {}).get('bhsp', ''))} psi")
             if full_lab:
                 st.markdown("#### 2. QC & Core Lab Results")
             rheology, rheology_issues = _render_rheology(slurry, qc, load_sig)

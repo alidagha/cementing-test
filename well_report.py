@@ -352,12 +352,55 @@ def render_schematic_png(payload):
         return Path(path).read_bytes()
 
 
-def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None, schematic_report=None):
+def _inactive_section_vi_paragraphs(doc, programs):
+    """Authorize removal by current program flags AND exact structural ownership."""
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    if (not isinstance(programs, dict) or set(programs) != {"has_preflush", "has_spacer"}
+            or any(type(v) is not bool for v in programs.values())):
+        raise ValueError("Section VI requires current Pre Flush and standalone Spacer program flags.")
+    headings = []
+    for title in ("VI. Pre-flush Program", "VII. Laboratory Report"):
+        matches = [p for p in doc.paragraphs if p.text.strip() == title]
+        if len(matches) != 1:
+            raise ValueError("Section VI program boundaries are ambiguous.")
+        headings.append(matches[0]._p)
+    body = list(doc._element.body)
+    if body.index(headings[0]) >= body.index(headings[1]):
+        raise ValueError("Section VI program boundaries are out of order.")
+    cursor, inactive = headings[0].getnext(), []
+    for key, title in (("has_preflush", "Pre Flush Data"), ("has_spacer", "Spacer Additives Data")):
+        if cursor is None or cursor not in body or body.index(cursor) >= body.index(headings[1]):
+            raise ValueError(f"Section VI {title} anchor is missing.")
+        if programs[key]:
+            if cursor.tag != qn("w:tbl") or Table(cursor, doc._body).cell(0, 0).text != title:
+                raise ValueError(f"Section VI {title} does not match the active program.")
+        else:
+            # The certified status is exactly one plain run/text. Never remove
+            # a paragraph containing a break, field, drawing or additional data.
+            if (cursor.tag != qn("w:p") or Paragraph(cursor, doc._body).text != "Not applicable."
+                    or len(cursor) != 1 or cursor[0].tag != qn("w:r")
+                    or len(cursor[0]) != 1 or cursor[0][0].tag != qn("w:t")):
+                raise ValueError(f"Section VI {title} inactive status is ambiguous or contains protected content.")
+            inactive.append(cursor)
+        cursor = cursor.getnext()
+    statuses = [e for e in body[body.index(headings[0])+1:body.index(headings[1])]
+                if e.tag == qn("w:p") and Paragraph(e, doc._body).text == "Not applicable."]
+    if statuses != inactive:
+        raise ValueError("Section VI contains ambiguous additional program statuses.")
+    return inactive
+
+
+def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None, schematic_report=None, section_vi_programs=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
     from docx.text.paragraph import Paragraph
     from docx.oxml.ns import qn
     doc = Document(BytesIO(rendered_bytes))
+    # Context-free legacy/template-only callers cannot authorize deletions.
+    inactive_programs = (_inactive_section_vi_paragraphs(doc, section_vi_programs)
+                         if section_vi_programs is not None else [])
     paragraphs = [Paragraph(element, doc._body) for element in doc._element.body.xpath(".//w:p")]
     schematic_anchor = None
     if schematic_report is not None:
@@ -441,6 +484,16 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             spacers.append(element)
     if len(spacers) != 6:
         raise ValueError("Section VIII requires exactly six empty Heading1 spacer paragraphs.")
+    if payload["type"] == "Vertical":
+        import re
+        references = [p for p in doc.paragraphs if re.fullmatch(
+            r"NOTE \d+: The Volume of Displacement Should Be Calculated at Rig Site\.", p.text)]
+        if len(references) != 1:
+            raise ValueError("The certified displacement NOTE style reference is ambiguous.")
+        reference = references[0]
+        reference_runs = [r for r in reference.runs if r.text.strip()]
+        if len(reference_runs) != 1 or reference_runs[0]._r.rPr is None or reference._p.pPr is None:
+            raise ValueError("The certified displacement NOTE style reference is incomplete.")
     png = render_chart_png(payload)
     chart.clear().add_run().add_picture(BytesIO(png), width=_content_width(doc, chart))
     row_template = deepcopy(table.rows[3]._tr)
@@ -459,11 +512,16 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
                 paragraph._p.remove(run._r)
     survey_anchor = anchors[SURVEY_ANCHOR]
     if payload["type"] == "Vertical":
-        survey_anchor.clear().add_run(vertical_note)
+        run = survey_anchor.clear().add_run(vertical_note)
+        survey_anchor._p.remove(survey_anchor._p.pPr)
+        survey_anchor._p.insert(0, deepcopy(reference._p.pPr))
+        run._r.insert(0, deepcopy(reference_runs[0]._r.rPr))
     else:
         survey_anchor._p.getparent().remove(survey_anchor._p)
     for spacer in spacers:
         doc._element.body.remove(spacer)
+    for paragraph in inactive_programs:
+        doc._element.body.remove(paragraph)
     if cement_anchor is not None:
         from cement_chart_report import render_chart_png as render_cement_png, NOT_APPLICABLE
         if cement_report["kind"] is None:
