@@ -1,4 +1,4 @@
-# Zero-Regression Contract: Cementing Report App
+Zero-Regression Contract: Cementing Report App
 
 **Target System:** Streamlit Cementing Engineering Application  
 **Contract Type:** AI Bug-Fix Execution Guardrail  
@@ -351,6 +351,8 @@ Verify all of the following:
 ### Step 7 — Commit
 
 Use one commit per owner-approved implementation unit. For an explicitly approved batch, one batch commit is allowed.
+
+**Corrective-commit exception (Collaboration Charter v5.4 rev1, §7.2):** When the active Batch prompt cites v5.4 rev1 and its Hosted PR CI run fails because of an in-scope defect introduced by that Batch, **one (1) corrective commit** is permitted after the defect is fixed locally and all mandatory local gates pass. It receives exactly one further Hosted CI run (maximum two Hosted CI runs per Batch). It never permits unrelated, exploratory, or blind commits, and a second failure is a STOP.
 
 Recommended format:
 

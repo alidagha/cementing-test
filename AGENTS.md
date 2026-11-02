@@ -212,3 +212,18 @@ Minimal code is valuable.
 Correct engineering behavior, regression safety, data integrity, and truthful verification are more valuable.
 
 The preferred solution is the smallest clear root-cause fix that preserves all required engineering behavior and satisfies the zero-regression contract.
+
+---
+
+# Collaboration Charter v5.4 — Batch Pipeline Pointer
+
+This section only points to the operating rules for owner-approved Batches. It grants no authority by itself; authority comes from the active owner-approved Batch prompt and the Collaboration Charter.
+
+- When a Batch prompt cites v5.4 rev1, follow `docs/codex_operative_card_v5_4_rev1.md` for the execution loop, local verification budget, same-class test/pin alignment, three-shard test registration, GitHub pipeline mode, and STOP conditions.
+- Precedence (more restrictive always prevails; an unresolved conflict is a STOP): (1) this file, `zero_regression_contract.md`, approved Specifications and permanent engineering/UI protections; (2) the active Batch prompt's STOP/permission map; (3) dated Owner Standing Authorizations; (4) the Collaboration Charter v5.4 rev1; (5) the Card. The Card never expands authority.
+- Inside an owner-approved Batch scope, the Ponytail step "Question complex requests" does not apply: do not re-ask whether the approved scope is needed. Raise a question only for a genuine uncovered boundary, as listed in the Card.
+- Tests: prefer adding new tests to an existing registered test module. A new `test_*.py` module must be registered in exactly one regression shard in the same Batch, as described in the Card.
+- Batch completion: when a Batch prompt cites v5.4 rev1, "complete" in the Batch rules above means committed and published according to the Batch's pipeline mode (push, PR, and the allowed Hosted CI run), not only a local commit. Do not begin the next Batch before that, and before the single consolidated report.
+- Commits: the one-commit-per-unit rule in `zero_regression_contract.md` stays in force. The only exception is the Charter §7.2 corrective commit: at most one, only after a failed Hosted PR CI run caused by an in-scope Batch defect (maximum two Hosted CI runs per Batch). It never permits unrelated or blind commits.
+- Real-browser verification of Streamlit UI uses `.codex/skills/streamlit-browser-testing`.
+- Never modify this file, `zero_regression_contract.md`, the Card, or `.github/workflows/` without explicit owner approval naming that file. Never merge to `main` without the Independent Architect's `ACCEPTED` bound to the exact Head SHA and, where required, the recorded Owner approval.
