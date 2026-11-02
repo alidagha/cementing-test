@@ -80,7 +80,7 @@ def test_direct_counts_consume_exact_frozen_placement(catalog, kind):
 
 
 def test_phase9_is_no_longer_word_advisory():
-    assert "phase9" not in engineering_tools.WORD_ADVISORY_PHASES
+    assert engineering_tools.WORD_ADVISORY_PHASES == frozenset({"phase9"})
 
 
 @pytest.mark.parametrize("condition", ["never", "stale", "failed"])
@@ -99,8 +99,9 @@ def test_direct_context_cannot_bypass_current_result(word_state, catalog, condit
         else:
             with patch.object(adapter, "solve_static", side_effect=ValueError("failed")):
                 with pytest.raises(ValueError): phase9.execute(state, catalog)
-    with pytest.raises(ValueError, match="Phase IX"):
-        context(state)
+    prepared = context(state)["centralizer_report"]
+    assert prepared["current"] is False and prepared["view"] is None
+    assert not phase9.result_is_current(state)
 
 
 @pytest.mark.parametrize("physics", ["static", "dynamic"])
@@ -301,12 +302,12 @@ def test_signature_changes_with_current_result_and_restore_requires_execute(word
     execute_centralizer(state)
     before=report.document_signature(context(state),report.TEMPLATE_PATH)
     state['centralizer_config']['zones'][0]['density']='1/2'
-    with pytest.raises(ValueError,match='Phase IX'):context(state)
+    assert context(state)['centralizer_report']['current'] is False
     phase9.execute(state)
     assert report.document_signature(context(state),report.TEMPLATE_PATH)!=before
     restored=audit.round_trip(state)
     assert not any(k.startswith('_centralizer') for k in restored)
-    with pytest.raises(ValueError,match='Phase IX'):context(restored)
+    assert context(restored)['centralizer_report']['current'] is False
     phase9.execute(restored)
     assert context(restored)['centralizer_report']['applicable']
 
@@ -352,7 +353,8 @@ def test_phase_x_ui_blocks_noncurrent_result_and_keeps_phase9_deep_link(word_sta
         state=audit.round_trip(state)
     case=audit.AuditRegressions();app=case.app(state);case.phase(app,'phase10')
     assert not app.exception
-    assert next(b for b in app.button if b.label=='Build Word Document').disabled
+    assert not next(b for b in app.button if b.label=='Build Word Document').disabled
+    assert engineering_tools.compute_phase_status(app.session_state)['phase9']['level'] == 'warning'
     assert '_compiled_doc_bytes' not in app.session_state
     app.button(key='_rescue_phase9').click().run()
     assert not app.exception and app.radio(key='_app_mode_key').value=='phase9'
@@ -365,7 +367,8 @@ def test_phase_ix_edit_removes_actual_compiled_download(word_state):
     app.session_state['centralizer_config']['zones'][0]['density']='1/2'
     case.phase(app,'phase10')
     assert not app.exception
-    assert next(b for b in app.button if b.label=='Build Word Document').disabled
+    assert not next(b for b in app.button if b.label=='Build Word Document').disabled
+    assert engineering_tools.compute_phase_status(app.session_state)['phase9']['level'] == 'warning'
     assert '_compiled_doc_bytes' not in app.session_state
     assert not app.get('download_button') or all(b.proto.label!='Download Final Document (.docx)' for b in app.get('download_button'))
 
@@ -444,3 +447,125 @@ def test_mixed_official_custom_kinds_bind_by_identity_and_counts(catalog,mode):
     assert [r['kind_display'] for r in view['zone_rows']]==['Spring','Rigid','Rigid']
     assert [z['product_name'] for z in prepared['analysis']['zones']]==[
         f"OFFICIAL-CENT-{spring['nr']}",'CUSTOM-CENT-opaque-one',f"OFFICIAL-CENT-{rigid['nr']}"]
+
+
+@pytest.mark.parametrize('condition', ['never', 'stale', 'failed', 'restored'])
+def test_r16b_never_executed_word_preserves_frame_without_result_data(word_state, tmp_path, condition):
+    state = deepcopy(word_state)
+    if condition == 'never':
+        state.pop('_centralizer_result', None)
+        state.pop('_centralizer_signature', None)
+    elif condition == 'stale':
+        state['centralizer_config']['zones'][0]['density'] = '1/2'
+    elif condition == 'failed':
+        with patch.object(adapter, 'solve_static', side_effect=ValueError('controlled failure')):
+            with pytest.raises(ValueError, match='controlled failure'):
+                phase9.execute(state)
+    else:
+        state = audit.round_trip(state)
+    state.update(_compiled_doc_bytes=b'obsolete current chart', _compiled_doc_signature='old')
+    case = audit.AuditRegressions()
+    app = case.app(state)
+    case.phase(app, 'phase10')
+    assert engineering_tools.compute_phase_status(app.session_state)['phase9']['level'] == 'warning'
+    assert app.button(key='_rescue_phase9')
+    assert '_compiled_doc_bytes' not in app.session_state
+    button = next(b for b in app.button if b.label == 'Build Word Document')
+    assert not button.disabled
+    with patch.object(phase9, 'execute', side_effect=AssertionError('implicit Centralizer execution')):
+        button.click().run(timeout=120)
+    assert not app.error and not app.exception
+    assert not phase9.result_is_current(app.session_state)
+    data = app.session_state['_compiled_doc_bytes']
+    (tmp_path/'centralizer-advisory.docx').write_bytes(data)
+    doc = Document(BytesIO(data))
+    region = ix_region(doc)
+    tables = [t for t in doc.tables if t._tbl in region]
+    assert [len(t.rows) for t in tables] == [4, 4]
+    assert tables[0].cell(0, 0).text == 'Centralizer Data'
+    assert tables[1].cell(0, 0).text.strip() == 'Centralizer Placement'
+    assert [r.cells[0].text for r in tables[0].rows[1:]] == ['Top Cent. MD', 'Bottom Cent. MD', 'Casing Shoe']
+    assert all(r.cells[i].text == '-' for r in tables[0].rows[1:] for i in (1, 3))
+    assert all(c.text == '-' for r in tables[1].rows[2:] for c in r.cells)
+    assert not any(e.xpath('.//w:drawing') for e in region)
+    assert ''.join(t.text or '' for t in region[-1].iter(qn('w:t'))).strip() == '-'
+    assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
+    assert sum(BODY in p.text for p in doc.paragraphs) == 1
+
+
+@pytest.mark.parametrize('change', ['table', 'note', 'drawing', 'header', 'page_break', 'result_payload'])
+def test_r16b_noncurrent_template_and_payload_corruption_fail_closed(word_state, change):
+    state = deepcopy(word_state)
+    state.pop('_centralizer_result', None)
+    ctx = context(state)
+    tpl = DocxTemplate(report.TEMPLATE_PATH)
+    tpl.render(report._word_quantity_context(ctx))
+    buf = BytesIO(); tpl.save(buf)
+    doc = Document(BytesIO(buf.getvalue()))
+    region = ix_region(doc)
+    tables = [t for t in doc.tables if t._tbl in region]
+    note = next(p for p in doc.paragraphs if BODY in p.text)
+    if change == 'table': tables[0]._tbl.getparent().remove(tables[0]._tbl)
+    elif change == 'note': note._p.addnext(deepcopy(note._p))
+    elif change == 'drawing':
+        drawing = region[-1].xpath('.//w:drawing')[0]
+        drawing.getparent().remove(drawing)
+    elif change == 'header': tables[1].cell(1, 0).text = 'Unknown column'
+    elif change == 'page_break':
+        br = region[-1].xpath('.//w:br[@w:type="page"]')[0]
+        br.getparent().remove(br)
+    else: ctx['centralizer_report']['view'] = {'n_cent': 12}
+    with pytest.raises(ValueError):
+        well_report._postprocess_centralizer(doc, ctx['centralizer_report'])
+
+
+@pytest.mark.parametrize('defect', ['lab', 'fluid', 'geometry'])
+def test_r16b_advisory_does_not_bypass_independent_export_gates(word_state, defect):
+    state = deepcopy(word_state)
+    state.pop('_centralizer_result', None)
+    state.update(_compiled_doc_bytes=b'old document', _compiled_doc_signature='old')
+    if defect == 'lab': state['lab_qc_params']['Main']['reviewed'] = False
+    elif defect == 'fluid': state['fluids_config']['params']['Main']['pump_rate'] = 'bad'
+    else:
+        index = state['hardware_table'].index[state['hardware_table']['Description'] == 'Casing'][0]
+        state['hardware_table'].at[index, 'ID (in)'] = 0.
+    case = audit.AuditRegressions(); app = case.app(state); case.phase(app, 'phase10')
+    assert next(b for b in app.button if b.label == 'Build Word Document').disabled
+    assert '_compiled_doc_bytes' not in app.session_state
+    assert not phase9.result_is_current(app.session_state)
+
+
+def test_r16b_current_renderer_and_noncurrent_outside_ix_are_unchanged(word_state, tmp_path):
+    import ast, subprocess
+    from lxml import etree
+    source = subprocess.check_output(['git', 'show', 'cf784a36f270275dcf97268e006ace9ab65f9651:well_report.py'])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == '_postprocess_centralizer')
+    namespace = dict(well_report.__dict__)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), 'approved_current_renderer', 'exec'), namespace)
+    ctx = context(word_state)
+    tpl = DocxTemplate(report.TEMPLATE_PATH); tpl.render(report._word_quantity_context(ctx))
+    buf = BytesIO(); tpl.save(buf); raw = buf.getvalue()
+    old, new = Document(BytesIO(raw)), Document(BytesIO(raw))
+    namespace['_postprocess_centralizer'](old, ctx['centralizer_report'])
+    well_report._postprocess_centralizer(new, ctx['centralizer_report'])
+    assert etree.tostring(old.element) == etree.tostring(new.element)
+    outputs = []
+    for d in (old, new):
+        b = BytesIO(); d.save(b); outputs.append(b.getvalue())
+    with ZipFile(BytesIO(outputs[0])) as a, ZipFile(BytesIO(outputs[1])) as b:
+        assert a.namelist() == b.namelist()
+        assert all(a.read(n) == b.read(n) for n in a.namelist())
+    state = deepcopy(word_state); state.pop('_centralizer_result', None)
+    pending = context(state)['centralizer_report']
+    placeholder = Document(BytesIO(raw))
+    well_report._postprocess_centralizer(placeholder, pending)
+    def outside(d):
+        root = deepcopy(d.element); body = root.find(qn('w:body'))
+        elems = list(body); text = lambda e: ''.join(t.text or '' for t in e.iter(qn('w:t')))
+        start = next(i for i, e in enumerate(elems) if text(e) == IX)
+        end = next(i for i, e in enumerate(elems) if text(e) == X)
+        for e in elems[start+1:end]: body.remove(e)
+        return etree.tostring(root)
+    assert outside(Document(BytesIO(raw))) == outside(placeholder)
+    placeholder.save(tmp_path/'placeholder-comparison.docx')
+    new.save(tmp_path/'current-comparison.docx')

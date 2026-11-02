@@ -341,8 +341,8 @@ def test_reference_real_word_roundtrip_and_stale_admission(tmp_path):
     # leaves the immediate annular boundary and analytical capacities unchanged.
     state["hardware_table"].at[1, "ID (in)"] = 18.729
     assert not phase9.result_is_current(state)
-    with pytest.raises(ValueError, match="Phase IX"):
-        centralizer_report.prepare_report(state)
+    pending = centralizer_report.prepare_report(state)
+    assert pending["current"] is False and pending["analysis"] is None
     project_state.prepare_calculations(state)
     assert "_compiled_doc_bytes" not in state
     restored = audit.round_trip(state)
@@ -357,8 +357,8 @@ def test_reference_real_word_roundtrip_and_stale_admission(tmp_path):
     from unittest.mock import patch
     import phase_10_procedure as report
     with patch.object(report.st, "session_state", unsupported):
-        with pytest.raises(ValueError, match="Phase IX"):
-            report.build_master_context()
+        pending = report.build_master_context()["centralizer_report"]
+        assert pending["current"] is False and pending["analysis"] is None
     assert "_compiled_doc_bytes" not in unsupported
 
 

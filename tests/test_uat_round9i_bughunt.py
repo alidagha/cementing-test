@@ -62,8 +62,8 @@ def test_repeated_restore_execute_failure_repair_cannot_resurrect_success(catalo
         replace_project_state(state, decoded, str(cycle))
         assert not any(key.startswith("_centralizer") for key in state)
         assert not phase9.result_is_current(state, catalog)
-        with pytest.raises(ValueError, match="Phase IX"):
-            bridge.prepare_report(state)
+        pending = bridge.prepare_report(state)
+        assert pending["current"] is False and pending["view"] is None
         phase9.execute(state, catalog)
         state["centralizer_config"]["aux_rheology"].pop("Spacer Ahead")
         with pytest.raises(ValueError, match="MissingRheology"):

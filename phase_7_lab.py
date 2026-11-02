@@ -130,7 +130,7 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
     qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
     data = qc.setdefault("rheology", {})
     initial = new_rheology_dataset()
-    if slurry == "Pre Flush":
+    if slurry in ("Pre Flush", "Diesel"):
         initial.update(gel_10_sec="-", gel_10_min="-")
     row = data.setdefault(dataset, initial)
     if rpm is None:
@@ -154,9 +154,12 @@ def _render_rheology(slurry, qc, load_sig):
     token = get_slurry_key(slurry, "").strip("_")
     for dataset, label in RHEOLOGY_DATASETS:
         initial = new_rheology_dataset()
-        if slurry == "Pre Flush":
+        if slurry in ("Pre Flush", "Diesel"):
             initial.update(gel_10_sec="-", gel_10_min="-")
         row = data.setdefault(dataset, initial)
+        if slurry == "Diesel":
+            for field in ("gel_10_sec", "gel_10_min"):
+                row.setdefault(field, "-")
         prefix = f"_rheo_{token}_{dataset}_"
         key = prefix + "selected_" + load_sig
         if key not in st.session_state:

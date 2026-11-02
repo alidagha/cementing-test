@@ -219,7 +219,8 @@ def test_source_edit_navigation_gate_and_new_actual_docx(projects, change):
     no_document(state)
     if change in ("hardware", "volume", "density", "Diesel rheology"):
         assert not phase9.result_is_current(state)
-        assert next(b for b in app.button if b.label == "Build Word Document").disabled
+        # Only the independent Main lab review (density) still blocks here.
+        assert next(b for b in app.button if b.label == "Build Word Document").disabled == (change == "density")
     else:
         assert phase9.result_is_current(state)
     if change == "density":
@@ -648,8 +649,8 @@ def test_r16c_real_word_dates_surface_note_restore_and_cache(r16c_document_sourc
     app=CASE.app(state)
     if restored:
         assert "_centralizer_result" not in state
-        with pytest.raises(ValueError,match="Phase IX"):
-            context(app.session_state.to_dict())
+        pending = context(app.session_state.to_dict())["centralizer_report"]
+        assert pending["current"] is False and pending["view"] is None
     execute_centralizer(app.session_state)  # Real Phase IX rebuild, never a restored private receipt.
     CASE.phase(app,"phase10")
     ctx=context(app.session_state.to_dict())
