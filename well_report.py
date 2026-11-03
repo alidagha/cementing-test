@@ -284,6 +284,22 @@ def _postprocess_centralizer(doc, prepared):
             table._tbl.getparent().remove(table._tbl)
         replace_text(note, prepared.get("message", NOT_APPLICABLE))
         drawing.getparent().remove(drawing)
+    elif prepared.get("current", True) is False:
+        if (any(prepared.get(key) is not None for key in ("analysis", "view", "source"))
+                or prepared.get("warning") is not True or not prepared.get("note")):
+            raise ValueError("Noncurrent Centralizer presentation must not contain result data.")
+        for row in data.rows[1:]:
+            for cell in (row.cells[1], row.cells[3]):
+                replace_text(cell.paragraphs[0], "-")
+        for row in placement.rows[2:]:
+            for cell in row.cells:
+                replace_text(cell.paragraphs[0], "-")
+        replace_text(note, prepared["note"])
+        from docx.oxml import OxmlElement
+        placeholder = OxmlElement("w:t")
+        placeholder.text = "-"
+        drawing.addprevious(placeholder)
+        drawing.getparent().remove(drawing)
     else:
         view = prepared["view"]
         if not prepared.get("note"):

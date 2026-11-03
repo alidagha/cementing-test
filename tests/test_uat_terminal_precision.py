@@ -266,6 +266,35 @@ def wnf_word(context, formatter=None):
     return stream.getvalue()
 
 
+def align_historical_compressive_cell(original, current):
+    old_literal = "Compressive strength results: Crush Test = 101 psi."
+    new_literal = "24 hour Elapsed Time & Total Compressive Strength is 101 psi (CRUSH TEST)"
+    matches = {}
+    for ti, table in enumerate(original.tables):
+        for ri, row in enumerate(table.rows):
+            for ci, cell in enumerate(row.cells):
+                if cell.text == old_literal:
+                    matches[cell._tc] = (ti, ri, ci, cell)
+    assert len(matches) == 1, "historical result identity changed"
+    ti, ri, ci, old = next(iter(matches.values()))
+    assert current.tables[ti].rows[ri].cells[ci].text == new_literal
+    old.text = new_literal  # Historical comparison only; all other cells still compare exactly.
+
+
+@pytest.mark.parametrize('mutation', ['old_value', 'new_value', 'new_method', 'missing', 'duplicate'])
+def test_r16d_historical_compressive_alignment_rejects_mutation(mutation):
+    old, new = Document(), Document()
+    old.add_table(rows=1, cols=1).cell(0, 0).text = "Compressive strength results: Crush Test = 101 psi."
+    new.add_table(rows=1, cols=1).cell(0, 0).text = "24 hour Elapsed Time & Total Compressive Strength is 101 psi (CRUSH TEST)"
+    if mutation == 'old_value': old.tables[0].cell(0, 0).text = "Compressive strength results: Crush Test = 102 psi."
+    elif mutation == 'new_value': new.tables[0].cell(0, 0).text = "24 hour Elapsed Time & Total Compressive Strength is 102 psi (CRUSH TEST)"
+    elif mutation == 'new_method': new.tables[0].cell(0, 0).text = "24 hour Elapsed Time & Total Compressive Strength is 101 psi (UCA)"
+    elif mutation == 'missing': old.tables[0].cell(0, 0).text = "-"
+    else: old.add_table(rows=1, cols=1).cell(0, 0).text = old.tables[0].cell(0, 0).text
+    with pytest.raises(AssertionError):
+        align_historical_compressive_cell(old, new)
+
+
 @pytest.mark.parametrize('rate,density,w_rate,w_density,minimum', [
     ('5', '118', '5.0', '118.0', 5.),
     ('5.0', '118', '5.0', '118.0', 5.),
@@ -316,6 +345,7 @@ def test_wnf_actual_docx_numeric_cells_preserve_raw_context_and_engine_values(
                 assert value == raw
                 slurry['lab'][key] = expected
     original = Document(BytesIO(wnf_word(comparison, wnf_baseline['_word_quantity_context'])))
+    align_historical_compressive_cell(original, doc)
     old_table = next(t for t in original.tables if t.rows[0].cells[0].text.strip() == 'Fluids')
     for old, new in zip(old_table.rows, table.rows, strict=True):
         assert [c.text for i,c in enumerate(old.cells) if i not in (2,4,5)] == [c.text for i,c in enumerate(new.cells) if i not in (2,4,5)]

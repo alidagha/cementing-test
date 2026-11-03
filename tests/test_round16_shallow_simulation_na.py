@@ -167,8 +167,8 @@ def test_nontarget_recognized_domain_and_old_na_shape_unchanged(job):
         assert tools.compute_phase_status({'job_type': job})['phase9'] == dict(
             level='ok', message='Not applicable (Plug/Squeeze).')
     else:
-        with pytest.raises(ValueError, match='Phase IX'):
-            bridge.prepare_report({'job_type': job})
+        pending = bridge.prepare_report({'job_type': job})
+        assert pending['applicable'] and pending['current'] is False and pending['view'] is None
         with pytest.raises(ValueError, match='Mud'):
             pumping.prepare_pumping_simulation({'job_type': job})
 

@@ -139,8 +139,8 @@ def test_real_project_restore_requires_execute_before_report(catalog, physics, u
     replace_project_state(restored, saved, "round9h-current-project")
     assert not phase9.result_is_current(restored, catalog)
     assert tools.compute_phase_status(restored)["phase9"]["level"] == "warning"
-    with pytest.raises(ValueError, match="Phase IX"):
-        bridge.prepare_report(restored)
+    prepared = bridge.prepare_report(restored)
+    assert prepared["current"] is False and prepared["view"] is None
     phase9.execute(restored, catalog)
     assert restored["centralizer_config"] == saved["centralizer_config"]
     assert tools.compute_phase_status(restored)["phase9"]["level"] == "ok"
@@ -165,8 +165,8 @@ def test_consumed_source_edit_blocks_report_without_implicit_reexecution(catalog
     with patch.object(adapter, "solve_dynamic", side_effect=AssertionError("Implicit re-execution")):
         assert not phase9.result_is_current(state, catalog)
         assert tools.compute_phase_status(state)["phase9"]["level"] == "warning"
-        with pytest.raises(ValueError, match="Phase IX"):
-            bridge.prepare_report(state)
+        prepared = bridge.prepare_report(state)
+        assert prepared["current"] is False and prepared["analysis"] is None
     phase9.execute(state, catalog)
     assert phase9.result_is_current(state, catalog) and bridge.prepare_report(state)["applicable"]
 

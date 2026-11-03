@@ -160,8 +160,8 @@ def test_incomplete_geometry_context_does_not_fabricate_report_data(project, geo
             with patch.object(report.st, "session_state", deepcopy(state)), pytest.raises(ValueError, match="Phase VII"):
                 report.build_master_context(calculations_prepared=prepared)
         from centralizer_report import prepare_report
-        with pytest.raises(ValueError, match="Phase IX"):
-            prepare_report(state)
+        pending = prepare_report(state)
+        assert pending["current"] is False and pending["view"] is None
         renderer.assert_not_called()
 
 

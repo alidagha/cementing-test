@@ -108,7 +108,7 @@ def test_r15cd_bhsp_nonfinite_marker_is_not_replaced_or_admitted(raw):
 
 
 def r15cd_original_lab_source(source):
-    """Undo only the three reviewed caption edits; preserve the ORIGINAL file pin."""
+    """Undo only approved caption/Diesel defaults; preserve the ORIGINAL file pin."""
     helper = b'''def _bhsp_display(value):
     """Whole-psi caption only; preserve missing/manual-expression markers."""
     if value is None:
@@ -121,6 +121,9 @@ def r15cd_original_lab_source(source):
 
 '''
     changes = (
+        (b'\n    if slurry in ("Pre Flush", "Diesel"):', b'\n    if slurry == "Pre Flush":'),
+        (b'\n        if slurry in ("Pre Flush", "Diesel"):', b'\n        if slurry == "Pre Flush":'),
+        (b'        if slurry == "Diesel":\n            for field in ("gel_10_sec", "gel_10_min"):\n                row.setdefault(field, "-")\n', b''),
         (b"from engineering_tools import round_half_up, build_lab_rheology", b"from engineering_tools import build_lab_rheology"),
         (helper, b""),
         (b"{_bhsp_display(st.session_state.get('well_data', {}).get('bhsp', ''))}",
@@ -133,6 +136,8 @@ def r15cd_original_lab_source(source):
 
 
 @pytest.mark.parametrize("old,new", [
+    (b'row.setdefault(field, "-")', b'row.setdefault(field, "0")'),
+    (b'\n    if slurry in ("Pre Flush", "Diesel"):', b'\n    if slurry in ("Pre Flush", "Scavenger"):'),
     (b"round_half_up(value, 0)",b"round_half_up(value, 1)"),
     (b"Pressure = {bhsp} psi",b"Pressure = {_bhsp_display(bhsp)} psi"),
     (b'"bhsp": well_data.get("bhsp", ""),',b'"bhsp": 0.,'),

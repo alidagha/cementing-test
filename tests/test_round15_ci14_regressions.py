@@ -188,14 +188,14 @@ def test_original_two_id_tieback_stays_truthful_and_cannot_reuse_scalar_result(p
     assert pickle.dumps(state) == before
     assert not phase9.result_is_current(state)
     assert tools.compute_phase_status(state)["phase9"]["level"] == "warning"
-    with pytest.raises(ValueError, match="Phase IX"):
-        centralizer_report.prepare_report(state)
+    pending = centralizer_report.prepare_report(state)
+    assert pending["current"] is False and pending["view"] is None
     state.update(_compiled_doc_bytes=b"stale scalar result", _compiled_doc_signature="old")
     ps.prepare_calculations(state)
     assert not any(k.startswith("_compiled_doc_") for k in state)
     with patch.object(report.st, "session_state", state):
-        with pytest.raises(ValueError, match="Phase IX"):
-            report.build_master_context()
+        pending = report.build_master_context()["centralizer_report"]
+        assert pending["current"] is False and pending["view"] is None
     restored = audit.round_trip(state)
     pd.testing.assert_frame_equal(restored["hardware_table"], state["hardware_table"], check_dtype=False)
     assert not phase9.result_is_current(restored)

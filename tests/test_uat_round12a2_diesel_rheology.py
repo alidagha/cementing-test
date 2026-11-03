@@ -323,3 +323,44 @@ def test_malformed_saved_rheology_still_rejects_transactionally(bad):
     with pytest.raises(ValueError):
         replace_project_state(current, decode_project(raw, audit.namespace["deserialize_item"]), "bad")
     assert current == before
+
+
+def test_r16a_fresh_diesel_gels_default_to_dash_in_every_dataset():
+    state = project()
+    state['lab_qc_params'].pop('Diesel')
+    app = CASE.app(state)
+    CASE.phase(app, 'phase7')
+    for dataset, label in rheology.RHEOLOGY_DATASETS:
+        element(app, 'checkbox', f'{label} - Diesel').set_value(True).run()
+        for field, title in (('gel_10_sec', '10 Sec Gel'), ('gel_10_min', '10 Min Gel')):
+            assert element(app, 'text_input', f'{title} - {label} - Diesel').value == '-'
+            assert app.session_state['lab_qc_params']['Diesel']['rheology'][dataset][field] == '-'
+
+
+@pytest.mark.parametrize('value', ['-', '2.75', '0', '', 'bad', 'inf'])
+def test_r16a_existing_gel_text_survives_navigation_restore_and_validation(value):
+    app = CASE.app(project())
+    CASE.phase(app, 'phase7')
+    # Use the live dataset label from the registered renderer, never guessed keys.
+    label = '10 Min Gel - ' + dict(rheology.RHEOLOGY_DATASETS)['bhct_down'] + ' - Diesel'
+    element(app, 'text_input', label).set_value(value).run()
+    assert app.session_state['lab_qc_params']['Diesel']['rheology']['bhct_down']['gel_10_min'] == value
+    CASE.phase(app, 'phase1')
+    if value in ('bad', 'inf'):
+        with pytest.raises(ValueError, match='Rheology readings must be finite'):
+            audit.round_trip(app.session_state.to_dict())
+        CASE.phase(app, 'phase7')
+        assert element(app, 'text_input', label).value == value
+        with pytest.raises(ValueError, match='Rheology readings must be finite'):
+            et.validate_lab_rheology(app.session_state['lab_qc_params']['Diesel'], 'Diesel')
+        return
+    app = CASE.app(audit.round_trip(app.session_state.to_dict()))
+    CASE.phase(app, 'phase7')
+    assert element(app, 'text_input', label).value == value
+    row = app.session_state['lab_qc_params']['Diesel']['rheology']['bhct_down']
+    assert row['gel_10_min'] == value
+    if value in ('-', '2.75', '0'):
+        assert et.validate_lab_rheology(app.session_state['lab_qc_params']['Diesel'], 'Diesel')['bhct_down']['is_valid_bingham']
+    else:
+        with pytest.raises(ValueError, match='Gel'):
+            et.validate_lab_rheology(app.session_state['lab_qc_params']['Diesel'], 'Diesel')

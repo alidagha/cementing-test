@@ -65,7 +65,7 @@ def test_actual_word_measurements_and_result():
     t = table(Document(BytesIO(data)))
     assert [t.rows[3].cells[i].text for i in (1, 2, 3)] == ['08:00', '12:00', '24:00']
     assert [t.rows[4].cells[i].text for i in (1, 2, 3)] == ['100.25', '200.5', '300.125']
-    assert t.rows[5].cells[0].text == 'Compressive strength results: UCA = 300.125 psi; Crush Test = 101 psi.'
+    assert t.rows[5].cells[0].text == '24 hour Elapsed Time & Total Compressive Strength is 300.125 psi (UCA); 24 hour Elapsed Time & Total Compressive Strength is 101 psi (CRUSH TEST)'
 
 from engineering_tools import compressive_inputs, validate_compressive_test
 from project_state import prepare_calculations, purge_inactive_slurries, refresh_fluids, lab_source_signature
@@ -187,8 +187,8 @@ def test_actual_docx_modes_conditions_and_direct_fresh_export(valid_state, uca, 
     for selected, col in ((uca,3),(crush,7)):
         assert t.rows[1].cells[col].text == (bhst if selected else '-')
         assert t.rows[2].cells[col].text == (bhsp if selected else '-')
-    parts = (['UCA = 300.125 psi'] if uca else []) + (['Crush Test = 101 psi'] if crush else [])
-    assert t.rows[5].cells[0].text == 'Compressive strength results: ' + '; '.join(parts) + '.'
+    parts = (['24 hour Elapsed Time & Total Compressive Strength is 300.125 psi (UCA)'] if uca else []) + (['24 hour Elapsed Time & Total Compressive Strength is 101 psi (CRUSH TEST)'] if crush else [])
+    assert t.rows[5].cells[0].text == '; '.join(parts)
     assert app.session_state['lab_qc_params']['Main']['compressive'] == measured(uca, crush)
     assert compute_phase_status(app.session_state)['phase7']['level'] == 'ok'
 
@@ -279,7 +279,7 @@ def test_multislurry_inactive_archive_fresh_restore_and_word(valid_state):
     data=app.session_state['_compiled_doc_bytes'];Path('/tmp/r53-multi.docx').write_bytes(data)
     tables=[t for t in Document(BytesIO(data)).tables if t.rows[0].cells[0].text=='Compressive Strength Test']
     assert [t.rows[5].cells[0].text for t in tables]==[
-        'Compressive strength results: UCA = 300.125 psi.', 'Compressive strength results: Crush Test = 101 psi.']
+        '24 hour Elapsed Time & Total Compressive Strength is 300.125 psi (UCA)', '24 hour Elapsed Time & Total Compressive Strength is 101 psi (CRUSH TEST)']
 
 
 def test_only_compressive_authorized_text_changes_template_package():
@@ -304,3 +304,42 @@ def test_only_compressive_authorized_text_changes_template_package():
         assert rows[:3]==old_rows[:3]
         with zipfile.ZipFile('master_template.docx') as current:
             assert locate(current.read('word/document.xml')).group()==after.group()
+
+
+def test_r16d_real_template_changes_only_compressive_result_text(valid_state, tmp_path):
+    import ast
+    from html import unescape
+    from lxml import etree
+    source = subprocess.check_output(['git', 'show', 'cf784a36f270275dcf97268e006ace9ab65f9651:phase_10_procedure.py'])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == '_word_quantity_context')
+    namespace = dict(report.__dict__)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), 'approved_old_word_copy', 'exec'), namespace)
+    state = deepcopy(valid_state)
+    original_qc = deepcopy(state['lab_qc_params'])
+    with patch.object(report.st, 'session_state', state):
+        ctx = report.build_master_context()
+    assert state['lab_qc_params'] == original_qc
+    before = namespace['_word_quantity_context'](ctx)
+    after = report._word_quantity_context(ctx)
+    replacements = {}
+    normalized = deepcopy(after)
+    for old, new in zip(before['slurries'], normalized['slurries']):
+        replacements[unescape(new['lab']['compressive_result'])] = unescape(old['lab']['compressive_result'])
+        new['lab']['compressive_result'] = old['lab']['compressive_result']
+    assert normalized == before
+    outputs = []
+    for label, view in (('before', before), ('after', after)):
+        doc = report.DocxTemplate(report.TEMPLATE_PATH); doc.render(view)
+        output = BytesIO(); doc.save(output)
+        data = output.getvalue(); outputs.append(data)
+        (tmp_path/(label+'.docx')).write_bytes(data)
+    with zipfile.ZipFile(BytesIO(outputs[0])) as old, zipfile.ZipFile(BytesIO(outputs[1])) as new:
+        assert old.namelist() == new.namelist()
+        assert [n for n in old.namelist() if old.read(n) != new.read(n)] == ['word/document.xml']
+        root = etree.fromstring(new.read('word/document.xml'))
+        count = 0
+        for t in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'):
+            if t.text in replacements:
+                t.text = replacements[t.text]; count += 1
+        assert count == len(before['slurries'])
+        assert etree.tostring(root) == etree.tostring(etree.fromstring(old.read('word/document.xml')))

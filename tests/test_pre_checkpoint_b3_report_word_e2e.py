@@ -24,7 +24,7 @@ from centralizer_fixtures import execute_centralizer
 from test_uat_round10c_integration import build, save_project, restore_project
 from test_uat_round12a5_diesel_word_e2e import numbered_steps
 from test_pre_checkpoint_b2_cross_module_integration import (
-    projects as integrated_projects, JOBS, CSG, LNR, select_target, signatures,
+    projects as integrated_projects, JOBS, CSG, LNR, select_target, signatures, assert_advisory_section, assert_advisory_payload,
 )
 
 
@@ -54,6 +54,25 @@ def blocked(app):
     CASE.phase(app, "phase10")
     assert next(b for b in app.button if b.label == "Build Word Document").disabled
     no_document(app.session_state)
+
+
+def advisory_build(app):
+    # Only valid, revalidated sources may take this advisory path; blocked() stays strict.
+    CASE.phase(app, "phase10")
+    no_document(app.session_state)
+    assert ps.prepare_calculations(app.session_state.to_dict()) == []
+    assert not phase9.result_is_current(app.session_state)
+    assert eng.compute_phase_status(app.session_state)["phase9"]["level"] == "warning"
+    assert app.button(key="_rescue_phase9")
+    assert not next(b for b in app.button if b.label == "Build Word Document").disabled
+    with patch.object(phase9, "execute", side_effect=AssertionError("implicit Centralizer execution")):
+        data = build(app)
+    doc, ctx = assert_document(data, app.session_state.to_dict())
+    assert_advisory_payload(ctx)
+    assert_advisory_section(doc)
+    assert not phase9.result_is_current(app.session_state)
+    assert app.session_state["_compiled_doc_signature"] == report.document_signature(ctx, report.TEMPLATE_PATH)
+    return data
 
 
 def review_main(app, sync=False):
@@ -219,7 +238,8 @@ def test_source_edit_navigation_gate_and_new_actual_docx(projects, change):
     no_document(state)
     if change in ("hardware", "volume", "density", "Diesel rheology"):
         assert not phase9.result_is_current(state)
-        assert next(b for b in app.button if b.label == "Build Word Document").disabled
+        # Only the independent Main lab review (density) still blocks here.
+        assert next(b for b in app.button if b.label == "Build Word Document").disabled == (change == "density")
     else:
         assert phase9.result_is_current(state)
     if change == "density":
@@ -246,9 +266,9 @@ def test_report_override_clear_restore_and_engineering_change_remain_separate(pr
     assert semantics(rebuild(app)) == semantics(overridden)
     # Explicit report overrides remain intentional even as engineering changes.
     app.session_state["fluids_config"]["params"]["Main"]["volume"] = 51.
-    blocked(app)
-    assert not phase9.result_is_current(app.session_state)
-    rebuild(app)
+    updated = advisory_build(app)
+    assert app.session_state["_compiled_doc_signature"] != projects()["_compiled_doc_signature"]
+    assert semantics(updated) != semantics(overridden)
     app.session_state["cement_params"]["Main"].update(top_mode="Not entered", top_depth=None, report_bottom_depth=None)
     data = build(app)
     _, ctx = assert_document(data, app.session_state.to_dict())
@@ -483,10 +503,13 @@ def test_checkpoint_after_edit_before_any_rebuild_exports_new_canonical_truth(pr
     else:
         state["lab_qc_params"]["Main"]["api_fl"] = .5
     app = checkpoint(state)
-    blocked(app)  # Restored results cannot replace explicit Centralizer execution.
     if change in ("Sodium", "Phase VII"):
+        blocked(app)  # Independent lab review remains mandatory after restore.
         review_main(app, sync=change == "Sodium")
-    data = rebuild(app)
+        data = rebuild(app)
+    else:
+        data = advisory_build(app)
+        assert app.session_state["_compiled_doc_signature"] != projects()["_compiled_doc_signature"]
     doc, ctx = assert_document(data, app.session_state.to_dict())
     if change == "hardware":
         assert any(r["Description"] == "Casing" and r["MD (m)"] == "2900.0" for r in ctx["hardware"])
@@ -648,8 +671,8 @@ def test_r16c_real_word_dates_surface_note_restore_and_cache(r16c_document_sourc
     app=CASE.app(state)
     if restored:
         assert "_centralizer_result" not in state
-        with pytest.raises(ValueError,match="Phase IX"):
-            context(app.session_state.to_dict())
+        pending = context(app.session_state.to_dict())["centralizer_report"]
+        assert pending["current"] is False and pending["view"] is None
     execute_centralizer(app.session_state)  # Real Phase IX rebuild, never a restored private receipt.
     CASE.phase(app,"phase10")
     ctx=context(app.session_state.to_dict())

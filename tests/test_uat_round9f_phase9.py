@@ -182,7 +182,8 @@ def test_phase9_required_readiness_deep_link_and_current_word_retention():
     assert any("Phase IX" in item.value for item in app.warning), "Advisory Phase IX is missing from readiness"
     deep_link = next((button for button in app.button if button.label == "→ Phase IX"), None)
     assert deep_link is not None, "Phase IX readiness deep-link is missing"
-    assert next(button for button in app.button if button.label == "Build Word Document").disabled
+    from test_pre_checkpoint_b3_report_word_e2e import advisory_build
+    advisory_build(app)
     app.button(key="_rescue_phase9").click().run()
     assert not app.exception and app.radio(key="_app_mode_key").value == "phase9"
     audit.ensure_current_centralizer(app.session_state)

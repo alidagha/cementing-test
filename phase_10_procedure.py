@@ -175,7 +175,7 @@ def _word_quantity_context(context):
             results = []
             for test, title, fields in (
                 ("uca", "UCA", ("cs_8", "cs_12", "cs_24")),
-                ("crush", "Crush Test", tuple(f"force_{i}" for i in range(1, 5))),
+                ("crush", "CRUSH TEST", tuple(f"force_{i}" for i in range(1, 5))),
             ):
                 source = data.get(test, {})
                 selected = source.get("selected", False)
@@ -183,8 +183,8 @@ def _word_quantity_context(context):
                     value = source.get(field)
                     row["lab"][f"{test}_{field}"] = str(value) if selected and value is not None else "-"
                 if selected:
-                    results.append(f"{title} = {source['result']} psi")
-            row["lab"]["compressive_result"] = "Compressive strength results: " + "; ".join(results) + "."
+                    results.append(f"24 hour Elapsed Time & Total Compressive Strength is {source['result']} psi ({title})")
+            row["lab"]["compressive_result"] = _escape_xml_special_chars("; ".join(results))
         if "thickening_cell" in row["lab"]:
             cell = row["lab"]["thickening_cell"]
             row["lab"]["thickening_cell"] = str(cell) if isinstance(cell, (int, float)) else "-"
@@ -1346,7 +1346,7 @@ def document_signature(context, template_path):
     template_hash = hashlib.sha256(_load_template_bytes(str(template_path), mtime)).hexdigest()
     return fingerprint({"context": {k: v for k, v in context.items()
                                    if k not in ("generated_timestamp", "well_profile_report")},
-                        "template": template_hash, "word_output_revision": "R16-C"})
+                        "template": template_hash, "word_output_revision": "R16-ABD"})
 
 
 # BUG-32: the single source of truth for "which bracketed tokens mark an
@@ -1994,7 +1994,7 @@ def render():
             else:
                 st.markdown(line)
 
-    # Phase IX retains its repair deep-link and now participates in Word prerequisites.
+    # Phase IX retains its warning and repair deep-link without blocking Word alone.
     if _status["phase9"]["level"] != "ok":
         st.button("→ Phase IX", on_click=_go_to_phase, args=("phase9",), key="_rescue_phase9")
 

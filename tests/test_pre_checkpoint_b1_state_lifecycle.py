@@ -415,7 +415,12 @@ def test_real_built_document_is_retired_on_last_upstream_edit(compiled_project):
     CASE.phase(app, "phase10")
     no_document(app.session_state)
     assert not phase9.result_is_current(app.session_state)
-    assert next(b for b in app.button if b.label == "Build Word Document").disabled
+    from test_pre_checkpoint_b3_report_word_e2e import advisory_build, assert_document
+    data = advisory_build(app)
+    assert app.session_state["_compiled_doc_signature"] != compiled_project["_compiled_doc_signature"]
+    assert data != compiled_project["_compiled_doc_bytes"]
+    _, ctx = assert_document(data, app.session_state.to_dict())
+    assert next(r for r in ctx["fluids_train"] if r["name"] == "Main")["volume"] == 51.0
 
 
 def test_job_family_switches_keep_source_drafts_but_retire_old_placement_and_document(compiled_project):

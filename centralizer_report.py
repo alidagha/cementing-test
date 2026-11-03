@@ -34,8 +34,11 @@ def prepare_report(state):
     if job in adapter.SHALLOW_CASING_JOBS:
         return {"applicable": False, "analysis": None, "view": None, "source": None, "warning": False,
                 "message": adapter.SHALLOW_CASING_NOT_APPLICABLE}
-    if not adapter.centralizer_applicable(job) or not result_is_current(state):
+    if not adapter.centralizer_applicable(job):
         raise ValueError("Phase IX: Execute a current successful Centralizer calculation before Word export.")
+    if not result_is_current(state):
+        return {"applicable": True, "current": False, "analysis": None,
+                "view": None, "source": None, "warning": True}
     result = state["_centralizer_result"]
     if (not isinstance(result, dict) or result.get("mode") not in ("direct", "optimize") or
             not isinstance(result.get("profile"), dict) or not isinstance(result.get("zones"), list)

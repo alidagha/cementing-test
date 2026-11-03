@@ -163,7 +163,8 @@ def test_save_fresh_restore_real_execute_and_build_are_deterministic(built_proje
     before = pumping.fcm.plt.get_fignums()
     with observe_solver(records):
         case.phase(restored, "phase10")
-        assert next(b for b in restored.button if b.label == "Build Word Document").disabled
+        assert not next(b for b in restored.button if b.label == "Build Word Document").disabled
+        assert not phase9.result_is_current(restored.session_state)
         assert not records
         case.phase(restored, "phase9")
         restored.button(key="_centralizer_execute").click().run()

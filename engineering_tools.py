@@ -849,8 +849,8 @@ def calculate_slurry_from_components(
     }
 
 
-# Round 9G: all applicable phases, including current Phase IX, are Word prerequisites.
-WORD_ADVISORY_PHASES = frozenset()
+# R16-B: Phase IX remains a warning; independent Word prerequisites still block.
+WORD_ADVISORY_PHASES = frozenset({"phase9"})
 
 
 def compute_phase_status(ss) -> dict:
