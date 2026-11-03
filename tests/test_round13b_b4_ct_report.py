@@ -122,8 +122,9 @@ def test_explicit_nonapplicable_centralizer_contract(job):
 @pytest.mark.parametrize('job',['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
 def test_applicable_jobs_still_require_executed_centralizer(job):
     import centralizer_report as bridge
-    with pytest.raises(ValueError,match='Execute a current successful Centralizer'):
-        bridge.prepare_report({'job_type':job})
+    assert bridge.prepare_report({'job_type':job}) == {
+        'applicable':True, 'current':False, 'analysis':None,
+        'view':None, 'source':None, 'warning':True}
 
 COMBINATIONS=[(),('Spacer Ahead',),('Spacer Behind',),('Spacer Ahead','Spacer Behind'),('Pre Flush',),('Pre Flush','Spacer Ahead')]
 

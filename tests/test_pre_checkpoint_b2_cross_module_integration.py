@@ -20,6 +20,7 @@ import pumping_simulation as pumping
 import well_schematic_adapter as schematic
 import well_schematic_engine as schematic_engine
 import project_state as ps
+import engineering_tools as eng
 import phase_5_cement as phase5
 import phase_10_procedure as report
 from centralizer_fixtures import execute_centralizer
@@ -37,6 +38,50 @@ JOBS = (CSG, LNR, 'LNR 5"', 'LNR 7"', 'TIE BACK LNR 5"', 'TIE BACK LNR 7"', 'CMT
 def context(state):
     with patch.object(report.st, "session_state", state):
         return report.build_master_context()
+
+
+def assert_advisory_section(doc):
+    from test_uat_round9g_centralizer_word import ix_region
+    region = ix_region(doc)
+    tables = [t for t in doc.tables if t._tbl in region]
+    assert [len(t.rows) for t in tables] == [4, 4]
+    assert tables[0].cell(0, 0).text == "Centralizer Data"
+    assert tables[1].cell(0, 0).text.strip() == "Centralizer Placement"
+    assert [r.cells[0].text for r in tables[0].rows[1:]] == ["Top Cent. MD", "Bottom Cent. MD", "Casing Shoe"]
+    assert all(r.cells[i].text == "-" for r in tables[0].rows[1:] for i in (1, 3))
+    assert all(c.text == "-" for r in tables[1].rows[2:] for c in r.cells)
+    assert not any(e.xpath('.//w:drawing') for e in region)
+    assert "".join(region[-1].xpath(".//w:t/text()")).strip() == "-"
+    assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
+
+
+def assert_advisory_payload(ctx):
+    import re
+    payload = dict(ctx["centralizer_report"])
+    note = payload.pop("note")
+    assert re.fullmatch(r"NOTE [1-9][0-9]*: Recommended Centralizer Performance Data is Based on API 10D Specifications\.", note)
+    assert ctx["all_notes"].count(note) == 1
+    assert payload == {"applicable": True, "current": False,
+        "analysis": None, "view": None, "source": None, "warning": True}
+
+
+def assert_advisory_context(state):
+    assert ps.prepare_calculations(state) == []
+    assert not any(k in state for k in ("_compiled_doc_bytes", "_compiled_doc_signature", "_compiled_doc_filename"))
+    assert not phase9.result_is_current(state)
+    assert eng.compute_phase_status(state)["phase9"]["level"] == "warning"
+    source = sources(state)
+    ctx = context(state)
+    assert_advisory_payload(ctx)
+    doc = word(ctx, postprocess=True)
+    assert_advisory_section(doc)
+    rows = sequence_table(doc).rows
+    for source_row in ctx["fluids_train"]:
+        row = next(r for r in rows if r.cells[0].text == source_row["name"])
+        assert row.cells[3].text == f'{source_row["volume"]:.1f}'
+    assert sources(state) == source
+    assert not phase9.result_is_current(state)
+    return ctx
 
 
 def sources(state):
@@ -176,8 +221,8 @@ def test_valid_hardware_edit_after_execution_reaches_every_consumer(projects, fi
     assert (schematic.source_signature(state) != before_drawing) == physical_dimension
     assert ps.prepare_calculations(state) == []
     assert "_compiled_doc_bytes" not in state
-    with pytest.raises(ValueError):
-        context(state)  # Stale Centralizer cannot silently reach Word.
+    advisory = assert_advisory_context(state)
+    assert_shared_geometry(state, advisory)
     execute_centralizer(state, physics="dynamic")
     assert_shared_geometry(state, context(state))
 
@@ -306,8 +351,8 @@ def test_source_to_consumer_relevance_matrix_after_execution(projects, change, e
     else:
         assert state["_compiled_doc_bytes"].startswith(b"PK")
     if expected[1]:
-        with pytest.raises(ValueError):
-            context(state)
+        advisory = assert_advisory_context(state)
+        assert report.document_signature(advisory, report.TEMPLATE_PATH) != old_document
         execute_centralizer(state, physics="dynamic")
     ctx = context(state)
     assert (report.document_signature(ctx, report.TEMPLATE_PATH) != old_document) == word_changes
@@ -504,8 +549,7 @@ def test_save_after_source_change_before_rebuild_then_different_consumer_first(p
     drawing = schematic.prepare_schematic(restored)
     assert sources(restored) == expected
     assert prepared["inputs"]["geometry"].track_depth_m == drawing["casings"][drawing["current_job"]["target_index"]]["shoe_md"]
-    with pytest.raises(ValueError):
-        context(restored)
+    assert_shared_geometry(restored, assert_advisory_context(restored))
     execute_centralizer(restored, physics="dynamic")
     assert_shared_geometry(restored, context(restored))
 

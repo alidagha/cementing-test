@@ -18,7 +18,7 @@ import test_audit_regressions as audit
 import phase_9_centralizer as phase9
 from centralizer_fixtures import execute_centralizer
 from test_uat_round10c_integration import save_project, restore_project, build
-from test_pre_checkpoint_b2_cross_module_integration import projects as integrated_projects
+from test_pre_checkpoint_b2_cross_module_integration import projects as integrated_projects, assert_advisory_context
 from test_pre_checkpoint_b3_report_word_e2e import review_main, blocked, sequence_table
 import cement_chart_model as chart
 
@@ -343,7 +343,20 @@ def test_saveable_unfinished_numeric_drafts_reopen_without_fabricated_readiness(
         # BHCT completion belongs to Phase VII, not hardware readiness.
         assert eng.compute_phase_status(app.session_state)[phase]["level"] != "ok"
     CASE.phase(app, "phase10")
-    assert next(b for b in app.button if b.label == "Build Word Document").disabled
+    if draft == "large finite fluid":
+        assert ps.prepare_calculations(app.session_state.to_dict()) == []
+        # Render the real Word context/Section IX without executing an unbounded
+        # 1e12-bbl pumping simulation; that engine has no admitted volume ceiling.
+        assert not next(b for b in app.button if b.label == "Build Word Document").disabled
+        ctx = assert_advisory_context(app.session_state.to_dict())
+        row = next(r for r in ctx["fluids_train"] if r["name"] == "Main")
+        assert row["volume"] == 1e12
+        assert row["duration_min"] == 1e12 / row["min_rate"]
+        import phase_10_procedure as report
+        assert report.document_signature(ctx, report.TEMPLATE_PATH) != project["_compiled_doc_signature"]
+        assert "_compiled_doc_bytes" not in app.session_state
+    else:
+        blocked(app)
 
 
 def test_duplicate_order_and_transient_widgets_do_not_become_restored_authority(project):
