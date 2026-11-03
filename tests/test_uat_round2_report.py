@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 from docx import Document
 from docx.oxml.ns import qn
 from docxtpl import DocxTemplate
@@ -221,3 +222,166 @@ class Round2ReportUAT(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@pytest.fixture(scope='module')
+def r17_lab_context():
+    # Reuse the genuine formulation → measured synthetic QC → explicit review
+    # sequence above; no signatures or successful receipts are fabricated.
+    Round2ReportUAT.setUpClass()
+    case = audit.AuditRegressions()
+    app = case.app(deepcopy(Round2ReportUAT.state))
+    for i,name in enumerate(ORDER):
+        frame = app.session_state['cement_additives_dfs'][name]
+        frame.loc[0,'User Input'] = 5. + i*1.25
+        frame.loc[2,'User Input'] = .15 + i*.05
+    case.phase(app,'phase5'); case.phase(app,'phase7')
+    for button in list(app.button):
+        if button.label == 'Sync with Phase V':
+            app.button(key=button.key).click().run()
+    for _ in ORDER:
+        next(b for b in app.button if b.label == 'Confirm measured lab results').click().run()
+    case.healthy(app)
+    return Round2ReportUAT().context(app.session_state.to_dict())
+
+
+def r17_lab_word(context, processor=None):
+    import well_report
+    tpl = DocxTemplate(report.TEMPLATE_PATH)
+    tpl.render(report._word_quantity_context(context))
+    stream = BytesIO(); tpl.save(stream)
+    processor = processor or well_report.postprocess_well_report
+    return processor(stream.getvalue(), context['well_profile_report'],
+        context['note_vertical'], context['cement_chart_report'], context['centralizer_report'],
+        section_vi_programs={key:context[key] for key in ('has_preflush','has_spacer')})
+
+
+def test_r17_lab_totals_are_attached_only_under_mass_column(r17_lab_context, tmp_path):
+    context = deepcopy(r17_lab_context)
+    original = deepcopy([(s['lab_conventional'],s['lab_additives']) for s in context['slurries']])
+    data = r17_lab_word(context)
+    (tmp_path/'lab-totals.docx').write_bytes(data)
+    doc = Document(BytesIO(data))
+    tables = [t for t in doc.tables if t.cell(0,0).text == 'Conventional']
+    assert len(tables) == len(ORDER) == 5
+    for key in ('lab_conventional','lab_additives'):
+        assert len({s[key][-1]['Mass'] for s in context['slurries']}) == 5
+    for table, slurry in zip(tables, context['slurries']):
+        assert len(table._tbl.tblGrid.gridCol_lst) == 6
+        labels = [i for i,r in enumerate(table.rows) if r.cells[0].text in ('Conventional','Additives')]
+        assert len(labels) == 2
+        for start,end,key in ((labels[0],labels[1],'lab_conventional'),(labels[1],len(table.rows),'lab_additives')):
+            rows = table.rows[start+2:end]
+            totals = [r for r in rows if not any(c.text for c in r.cells[:5]) and r.cells[5].text]
+            assert len(totals) == 1
+            total = totals[0]
+            assert total.cells[5].text == slurry[key][-1]['Mass']
+            assert total._tr.getparent() is table._tbl
+            assert len(total._tr.tc_lst) == 6
+            for cell in total.cells[:5]:
+                for edge in ('top','left','bottom','right'):
+                    borders = cell._tc.tcPr.find(qn('w:tcBorders'))
+                    assert borders is not None
+                    border = borders.find(qn('w:'+edge))
+                    assert border is not None and border.get(qn('w:val')) == 'nil'
+            last = total.cells[5]._tc.tcPr.find(qn('w:tcBorders'))
+            for edge in ('left','bottom','right'):
+                assert last.find(qn('w:'+edge)).get(qn('w:val')) == 'single'
+    assert [(s['lab_conventional'],s['lab_additives']) for s in context['slurries']] == original
+
+
+@pytest.fixture(scope='module')
+def r17_lab_pair(r17_lab_context):
+    import ast, subprocess, well_report
+    parent = subprocess.check_output(['git','show',
+        '47e9650b93fbad85ca5be56cfb7a0f3615c629a4:well_report.py'])
+    node = next(n for n in ast.parse(parent).body if isinstance(n,ast.FunctionDef)
+                and n.name == 'postprocess_well_report')
+    namespace = dict(well_report.__dict__)
+    exec(compile(ast.Module(body=[node],type_ignores=[]),'approved_parent_processor','exec'),namespace)
+    return (r17_lab_word(r17_lab_context,namespace['postprocess_well_report']),
+            r17_lab_word(r17_lab_context))
+
+
+def r17_restore_allowed_border_delta(before, after):
+    """Independent comparator: only total-cell border changes are eligible."""
+    from lxml import etree
+    old = Document(BytesIO(before));new = Document(BytesIO(after))
+    targets = 0
+    for a,b in zip(old.tables,new.tables):
+        if a.cell(0,0).text != 'Conventional':
+            continue
+        assert len(a.rows) == len(b.rows)
+        for aa,bb in zip(a.rows,b.rows):
+            if any(c.text for c in aa.cells[:5]) or not aa.cells[5].text:
+                continue
+            targets += 1
+            for index,(left,right) in enumerate(zip(aa.cells,bb.cells)):
+                old_border = left._tc.tcPr.find(qn('w:tcBorders'))
+                new_border = right._tc.tcPr.find(qn('w:tcBorders'))
+                if index == 5:
+                    expected = deepcopy(aa.cells[4]._tc.tcPr.find(qn('w:tcBorders')).find(qn('w:right')))
+                    expected.tag = qn('w:left')
+                    actual = new_border.find(qn('w:left'))
+                    assert actual.tag == expected.tag and dict(actual.attrib) == dict(expected.attrib)
+                    assert len(actual) == len(expected) == 0
+                    new_border.replace(new_border.find(qn('w:left')),deepcopy(old_border.find(qn('w:left'))))
+                else:
+                    right._tc.tcPr.replace(new_border,deepcopy(old_border))
+    assert targets == 10
+    return etree.tostring(old.element),etree.tostring(new.element)
+
+
+def test_r17_only_total_borders_change_and_other_tables_are_protected(r17_lab_pair, tmp_path):
+    from zipfile import ZipFile
+    before,after = r17_lab_pair
+    (tmp_path/'before.docx').write_bytes(before);(tmp_path/'after.docx').write_bytes(after)
+    with ZipFile(BytesIO(before)) as a, ZipFile(BytesIO(after)) as b:
+        assert a.namelist() == b.namelist()
+        assert all(a.read(n)==b.read(n) for n in a.namelist() if n!='word/document.xml')
+    old,new = r17_restore_allowed_border_delta(before,after)
+    assert old == new
+    other = Document(BytesIO(after))
+    table = next(t for t in other.tables if 'Cement Slurry Additives Data' in t.cell(0,0).text)
+    table.cell(1,0).text = 'MUTATION'
+    stream = BytesIO();other.save(stream)
+    old,new = r17_restore_allowed_border_delta(before,stream.getvalue())
+    assert old != new  # A change in another Additives table cannot hide in the allowlist.
+
+
+@pytest.mark.parametrize('fault',['section','header','duplicate','grid','total_merge','second_total'])
+def test_r17_ambiguous_or_changed_lab_layout_fails_closed(r17_lab_pair, fault):
+    import well_report
+    doc = Document(BytesIO(r17_lab_pair[0]))
+    table = next(t for t in doc.tables if t.cell(0,0).text == 'Conventional')
+    total = next(r for r in table.rows if not any(c.text for c in r.cells[:5]) and r.cells[5].text)
+    if fault == 'section':
+        next(p for p in doc.paragraphs if p.text=='VII. Laboratory Report').text='Changed laboratory section'
+    elif fault == 'header': table.cell(1,5).text='Changed mass units'
+    elif fault == 'duplicate': table._tbl.addnext(deepcopy(table._tbl))
+    elif fault == 'grid': table._tbl.tblGrid.remove(table._tbl.tblGrid.gridCol_lst[-1])
+    elif fault == 'total_merge': total.cells[0].merge(total.cells[1])
+    else: total._tr.addprevious(deepcopy(total._tr))
+    with pytest.raises(ValueError,match='Lab Report.*six-column'):
+        well_report._attach_lab_total_cells(doc)
+
+
+def test_r17_no_total_rows_are_neither_invented_nor_reformatted(r17_lab_pair):
+    import well_report
+    from lxml import etree
+    # Projection-only missing/zero mass cases; these are not claimed to be
+    # independently admissible, reviewed Phase VII engineering projects.
+    for mass in ('-','0'):
+        frame = pd.DataFrame([{'Material':'Cement','Mass':mass,'Unit':'BWOB'},
+                              {'Material':'Base Water','Mass':mass,'Unit':'BWOW'}])
+        conv,adds = report.separate_lab_tables(frame)
+        assert len(conv)==len(adds)==1
+    doc = Document(BytesIO(r17_lab_pair[0]))
+    for table in doc.tables:
+        if table.cell(0,0).text == 'Conventional':
+            for row in list(table.rows):
+                if not any(c.text for c in row.cells[:5]) and row.cells[5].text:
+                    table._tbl.remove(row._tr)
+    before = etree.tostring(doc.element)
+    well_report._attach_lab_total_cells(doc)
+    assert etree.tostring(doc.element)==before
