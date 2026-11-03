@@ -126,6 +126,7 @@ def r15cd_original_lab_source(source):
         (b'        if slurry == "Diesel":\n            for field in ("gel_10_sec", "gel_10_min"):\n                row.setdefault(field, "-")\n', b''),
         (b"from engineering_tools import round_half_up, build_lab_rheology", b"from engineering_tools import build_lab_rheology"),
         (helper, b""),
+        (b"Pressure = {_bhsp_display(bhsp)} psi", b"Pressure = {bhsp} psi"),
         (b"{_bhsp_display(st.session_state.get('well_data', {}).get('bhsp', ''))}",
          b"{st.session_state.get('well_data', {}).get('bhsp', '')}"),
     )
@@ -139,7 +140,7 @@ def r15cd_original_lab_source(source):
     (b'row.setdefault(field, "-")', b'row.setdefault(field, "0")'),
     (b'\n    if slurry in ("Pre Flush", "Diesel"):', b'\n    if slurry in ("Pre Flush", "Scavenger"):'),
     (b"round_half_up(value, 0)",b"round_half_up(value, 1)"),
-    (b"Pressure = {bhsp} psi",b"Pressure = {_bhsp_display(bhsp)} psi"),
+    (b"Pressure = {_bhsp_display(bhsp)} psi",b"Pressure = {bhsp} psi"),
     (b'"bhsp": well_data.get("bhsp", ""),',b'"bhsp": 0.,'),
 ])
 def test_r15cd_caption_source_compatibility_rejects_other_changes(old,new):
