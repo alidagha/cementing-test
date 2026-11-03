@@ -23,7 +23,8 @@ JOB_TYPES = [
     CT_JOB,
     "CMT SQUEEZE", 
     'TIE BACK LNR 7"', 
-    'TIE BACK LNR 5"'
+    'TIE BACK LNR 5"',
+    'TIE BACK LNR 4 1/2"'
 ]
 
 AVAILABLE_TANKS = [
@@ -54,7 +55,8 @@ DEFAULT_HOLE_SIZES = {
     "CMT PLUG": "Inside Casing / OH",
     "CMT SQUEEZE": "Perforations / Squeeze Zone",
     'TIE BACK LNR 7"': '8 1/2"',
-    'TIE BACK LNR 5"': '6"'
+    'TIE BACK LNR 5"': '6"',
+    'TIE BACK LNR 4 1/2"': '6"'
 }
 
 # Roles are distinct: Scavenger is formulated and tested, never placed.
@@ -287,6 +289,7 @@ TANK_OPTIONS_BY_JOB = {
     "CMT SQUEEZE":      ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'TIE BACK LNR 7"': ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'TIE BACK LNR 5"': ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
+    'TIE BACK LNR 4 1/2"': ["Mud Reserve Tanks", "Batch Mixer Tanks", "Cement Unit Tanks"],
     'CSG 30"':         ["Mud Reserve Tanks"],
     'CSG 24"':         ["Mud Reserve Tanks"],
     'CSG 18 5/8"':     ["Mud Reserve Tanks"],

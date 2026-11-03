@@ -280,7 +280,7 @@ def test_liner_actual_id_and_hanger_depth_after_execution_drive_shared_geometry(
     execute_centralizer(state, physics="dynamic")
     assert_shared_geometry(state, context(state))
     assert db.DEFAULT_HOLE_SIZES[LNR] == '6"'
-    assert 'TIE BACK LNR 4 1/2"' not in db.JOB_TYPES
+    assert 'TIE BACK LNR 4 1/2"' in db.JOB_TYPES
 
 
 def signatures(state):

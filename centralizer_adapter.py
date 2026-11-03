@@ -192,7 +192,7 @@ def to_engine_geometry(state):
     """Project canonical geometry/survey to v1.2.9, or None for an N/A job.
 
     The frozen engine supports one uniform active string and one scalar
-    diameter on each side of the previous shoe. Reject richer geometry;
+    diameter on each side of the previous shoe within the active span. Reject richer geometry;
     never approximate it or calculate a replacement trajectory.
     """
     job = state.get("job_type")
@@ -237,7 +237,12 @@ def to_engine_geometry(state):
         if _number(value, f"casing.{field}") <= 0:
             raise ValueError(f"casing.{field} must be greater than zero after SI conversion.")
 
-    outer = geometry["enclosing_string"]
+    # The resolver has already validated the complete measured running path.
+    # Only the active mechanical body enters the frozen scalar force model;
+    # build_fluid_snapshot retains the full original path for fluid volumes.
+    top = active[0]["top_md"]
+    outer = [{**s, "top_md": max(top, s["top_md"]), "bottom_md": min(shoe, s["bottom_md"])}
+             for s in geometry["enclosing_string"] if s["top_md"] < shoe and s["bottom_md"] > top]
     cased = [s for s in outer if s["description"] != "Open Hole Size"]
     holes = [s for s in outer if s["description"] == "Open Hole Size"]
     if not cased or len({s["id_in"] for s in cased}) != 1:

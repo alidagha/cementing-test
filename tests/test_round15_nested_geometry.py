@@ -727,3 +727,313 @@ def test_r15a_actual_first_casing_word_and_json(r15a_report_source,job,size,hole
     assert payload['open_holes'][0]['hole_size_in']==hole
     (tmp_path/'geometry-and-axis.json').write_text(json.dumps({'job':job,'previous':previous,'geometry':geom,
         'axis':[165.,[0.,82.5,165.]],'payload':payload},indent=2))
+
+
+# BUG-01: measured geometry and explicitly synthetic solver/report prerequisites.
+def bug01_dq19():
+    rows = [
+        ('Previous Casing', '253.0', '18 5/8', 17.755, 87.5),
+        ('Previous Casing', '2190', '13 3/8', 12.347, 72.),
+        ('Previous Casing', '2800', '9 5/8', 8.535, 53.5),
+        ('Previous Liner Hanger', '2650', '7', 6.094, 32.),
+        ('Previous Liner', '3839', '7', 6.094, 32.),
+        ('Drill Pipes', '3419', '3 1/2', 2.764, 18.),
+        ('Liner Hanger', '3419', '5', 4.276, 18.),
+        ('Liner', '4500', '5', 4.276, 18.),
+        ('Open Hole Size', '4550', '6', 6., 0.),
+    ]
+    frame = pd.DataFrame([{'Description': desc, 'MD (m)': md, 'Size (in)': size,
+        'ID (in)': inner, 'Joint (m)': 0. if desc == 'Open Hole Size' else 12.2,
+        'Weight (ppf)': weight, 'Grade': '-', 'Collapse (psi)': 0., 'Burst (psi)': 0.}
+        for desc, md, size, inner, weight in rows])
+    state = project('LNR 5"', frame, 4550.)
+    assert state['placement_config']['target_row'] == '0f925f04a60228e7d2a10b2f1473a6d997896c578e2de2d05b5a96366d0f3ab6'
+    state['centralizer_config'] = {'version': 1, 'physics_mode': 'static', 'placement_mode': 'optimize',
+        'custom_products': [], 'aux_rheology': {}, 'zones': [
+            {'top_md': top, 'bottom_md': bottom, 'density': '1/4', 'target_standoff_pct': 67.,
+             'product_nr': None, 'custom_product_id': None} for top, bottom in ((3419., 3839.), (3839., 4500.))]}
+    return state
+
+
+def bug01_geometry_case(job):
+    if job == 'LNR 5"':
+        return bug01_dq19()
+    if job in ('CSG 13 3/8"', 'CSG 9 5/8"'):
+        od, inner, host, host_id, hole = ((13.375, 12.25, 20., 18.73, 17.5)
+            if job == 'CSG 13 3/8"' else (9.625, 8.535, 13.375, 12.347, 12.25))
+        return project(job, hardware(('Previous Casing', '400', str(host), host_id),
+            ('Casing', '1200', str(od), inner), ('Open Hole Size', '400-1200', str(hole), hole)), 1200.)
+    if job == 'LNR 7"':
+        return project(job, hardware(('Previous Casing', '700', '9 5/8', 8.535),
+            ('Drill Pipes', '400', '3 1/2', 2.764), ('Liner Hanger', '400', '7', 6.094),
+            ('Liner', '1200', '7', 6.094), ('Open Hole Size', '700-1200', '8.5', 8.5)), 1200.)
+    if job == 'LNR 4 1/2"':
+        return project(job, hardware(('Previous Casing', '300', '9 5/8', 8.535),
+            ('Previous Liner', '200-700', '7', 6.094), ('Drill Pipes', '400', '3 1/2', 2.764),
+            ('Liner Hanger', '400', '4 1/2', 4.), ('Liner', '1200', '4 1/2', 4.),
+            ('Open Hole Size', '700-1200', '6', 6.)), 1200.)
+    od, inner = {'TIE BACK LNR 7"': ('7', 6.094), 'TIE BACK LNR 5"': ('5', 4.276),
+                 'TIE BACK LNR 4 1/2"': ('4 1/2', 4.)}[job]
+    rows = [('Previous Casing', '1100' if od == '7' else '300', '9 5/8', 8.535)]
+    if od != '7':
+        rows.append(('Previous Liner', '100-1100', '7', 6.094))
+    host_index = len(rows)-1
+    rows += [('Previous Liner', '700-1200', od, inner), ('Drill Pipes', '200', '3 1/2', 2.764),
+             ('Tie Back', '200-700', od, inner),
+             ('Open Hole Size', '1100-1200', '8.5' if od == '7' else '6', 8.5 if od == '7' else 6.)]
+    state = project(job, hardware(*rows), 1200.)
+    state['placement_config']['host_row'] = next(iter(hardware_choices(
+        state['hardware_table'].iloc[[host_index]], {'Previous Casing', 'Previous Liner'})))
+    return state
+
+
+def test_bug01_dq19_active_wall_ignores_only_upstream_cased_ids():
+    state = bug01_dq19()
+    before = pickle.dumps(state)
+    assert boundary(chart.resolve_chart_geometry(state)) == [
+        (0., 2650., 8.535), (2650., 3839., 6.094), (3839., 4500., 6.)]
+    result = centralizer_adapter.to_engine_geometry(state)
+    assert result['wellbore'] == {'prev_casing_id': 6.094*.0254, 'hole_size': 6.*.0254,
+        'prev_shoe_depth': 3839., 'open_hole_top': 3839., 'open_hole_bottom': 4500.,
+        'string_top': 3419., 'string_shoe': 4500.}
+    assert (result['wellbore']['prev_casing_id']-result['casing']['od'])/2/.0254 == pytest.approx(.547)
+    assert (result['wellbore']['hole_size']-result['casing']['od'])/2/.0254 == pytest.approx(.5)
+    assert pickle.dumps(state) == before
+
+
+def test_bug01_tieback_four_half_is_an_explicit_new_capability():
+    import materials_db as db
+    job = 'TIE BACK LNR 4 1/2"'
+    assert job in db.JOB_TYPES
+    assert chart.chart_job_kind(job) == 'tieback'
+    result = centralizer_adapter.to_engine_geometry(bug01_geometry_case(job))
+    assert result['casing']['od'] == 4.5*.0254
+    assert result['wellbore']['prev_casing_id'] == result['wellbore']['hole_size'] == 6.094*.0254
+    assert result['wellbore']['prev_shoe_depth'] == result['wellbore']['string_shoe'] == 700.
+
+
+BUG01_JOBS = ('CSG 13 3/8"', 'CSG 9 5/8"', 'LNR 7"', 'LNR 5"', 'LNR 4 1/2"',
+              'TIE BACK LNR 7"', 'TIE BACK LNR 5"', 'TIE BACK LNR 4 1/2"')
+
+
+def bug01_solver_state(job):
+    import materials_db as db
+    import phase_9_centralizer as phase9
+    import project_state as ps
+    import test_audit_regressions as audit
+    state = bug01_geometry_case(job)
+    # All fluid, rheology and product prerequisites here are explicitly synthetic;
+    # only bug01_dq19's Hardware/target are the sanitized owner measurements.
+    state.update(mud_density='80', plastic_viscosity='16', yield_point='10',
+        well_data={'mud_density': '80', 'plastic_viscosity': '16', 'yield_point': '10'},
+        fluids_config={'active': ['Main', 'Displacement Fluid'], 'params': {
+            name: {'volume': 8., 'density': '118' if name == 'Main' else '80',
+                   'pump_rate': '4', 'material_name': db.DEFAULT_MATERIAL_NAMES[name]}
+            for name in ('Main', 'Displacement Fluid')}},
+        lab_qc_params={'Main': {'rheology': audit.valid_export_rheology_fixture()}})
+    ps.refresh_fluids(state)
+    geometry = centralizer_adapter.to_engine_geometry(state)
+    od = geometry['casing']['od']/.0254
+    catalog = centralizer_adapter.load_official_catalog()
+    product = next(p for p in centralizer_adapter.filter_official_products(catalog, od)
+                   if p['kind'] == 'rigid' and od < p['max_od_in'] <= min(
+                       geometry['wellbore']['prev_casing_id'], geometry['wellbore']['hole_size'])/.0254)
+    top, shoe, seat = (geometry['wellbore'][k] for k in ('string_top','string_shoe','prev_shoe_depth'))
+    bounds = [top, seat, shoe] if top < seat < shoe else [top, shoe]
+    config = phase9.new_config()
+    config['zones'] = [{'top_md': a, 'bottom_md': b, 'density': '1/4', 'target_standoff_pct': 67.,
+                       'product_nr': product['nr'], 'custom_product_id': None} for a,b in zip(bounds,bounds[1:])]
+    state['centralizer_config'] = config
+    return state
+
+
+@pytest.mark.parametrize('job', BUG01_JOBS)
+@pytest.mark.parametrize('physics,mode', [('static','direct'),('static','optimize'),('dynamic','direct'),('dynamic','optimize')])
+def test_bug01_eight_hardware_resolved_jobs_execute_all_frozen_modes(job, physics, mode):
+    import hashlib
+    from pathlib import Path
+    import phase_9_centralizer as phase9
+    import centralizer_optimizer_engine as engine
+    import centralizer_report
+    state = bug01_solver_state(job)
+    state['centralizer_config'].update(physics_mode=physics, placement_mode=mode)
+    geometry = chart.resolve_chart_geometry(state)
+    source = pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')})
+    snapshot = centralizer_adapter.build_fluid_snapshot(state)
+    assert snapshot['capacity_bbl']['inside'] == pytest.approx(sum(
+        (s['bottom_md']-s['top_md'])*chart._capacity(s['id_in']) for s in geometry['active_string']), rel=1e-14)
+    assert snapshot['capacity_bbl']['annulus'] == chart.interval_volume(geometry['capacity_segments'], 0., geometry['shoe_md'])
+    result = phase9.execute(state)
+    assert result['mode'] == mode and result['profile']['centralizer_md']
+    assert phase9.result_is_current(state)
+    assert centralizer_report.prepare_report(state)['analysis'] is not None
+    assert pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')}) == source
+    payload = (centralizer_adapter.build_static_payload(state,state['centralizer_config']['zones'],centralizer_adapter.load_official_catalog())
+        if physics == 'static' else centralizer_adapter.build_dynamic_payload(state,state['centralizer_config']['zones'],centralizer_adapter.load_official_catalog())['payload'])
+    frozen = engine.compute_standoff_profile(payload) if mode == 'direct' else engine.optimize_placement(payload)
+    assert result['profile'] == frozen
+    assert hashlib.sha256(Path(engine.__file__).read_bytes()).hexdigest() == 'b7c439d027a65345751c5baa612cd19ce7512f745659f1db9ca630ca48468bf9'
+    if 'TIE BACK' in job:
+        assert all(s['description'] != 'Open Hole Size' for s in geometry['enclosing_string']
+                   if s['bottom_md'] > 200.)
+        assert payload['wellbore']['prev_shoe_depth'] == payload['wellbore']['string_shoe']
+        assert payload['wellbore']['hole_size'] == payload['wellbore']['prev_casing_id']
+        zones = phase9.auto_populate(state)
+        assert zones and all(z['bottom_md'] <= 700. and z['product_nr'] is None for z in zones)
+    # A source edit retires currentness even when it only changes upstream flow.
+    previous = deepcopy(state)
+    state['hardware_table'].loc[state['hardware_table']['Description']=='Previous Casing','ID (in)'] -= .001
+    assert not phase9.result_is_current(state)
+    assert centralizer_report.prepare_report(state)['current'] is False
+    assert phase9.result_is_current(previous)
+
+
+def test_bug01_dq19_null_products_stay_incomplete_after_geometry_fix():
+    import phase_9_centralizer as phase9
+    state = bug01_dq19()
+    # No fabricated lab/product is needed to demonstrate the next real prerequisite.
+    with pytest.raises(ValueError, match='select exactly one Official or Custom'):
+        centralizer_adapter.build_static_payload(state,state['centralizer_config']['zones'],centralizer_adapter.load_official_catalog())
+    assert not phase9.result_is_current(state)
+
+
+@pytest.mark.parametrize('job', ['LNR 4 1/2"','LNR 5"','TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'])
+def test_bug01_upstream_restrictions_still_reject_deeper_body(job):
+    state = bug01_geometry_case(job)
+    # This restriction is above the active Top, yet the deeper OD must pass it.
+    row = state['hardware_table'].index[state['hardware_table']['Description']=='Previous Casing'][0]
+    state['hardware_table'].at[row,'ID (in)'] = 4.4
+    with pytest.raises(ValueError, match='clearance|restriction|host|pass'):
+        centralizer_adapter.to_engine_geometry(state)
+
+
+@pytest.mark.parametrize('fault', ['missing_host','stale_host','short_host','receiver_missing','receiver_ambiguous','target','top','gap','duplicate','clearance'])
+def test_bug01_tieback_new_job_physical_negatives_are_not_bypassed(fault):
+    state = bug01_geometry_case('TIE BACK LNR 4 1/2"')
+    if fault == 'receiver_missing':
+        # Removing the inner receiver alone leaves the measured 7-inch liner
+        # as a lawful receiver. Use a cased-host fixture with NO liner instead.
+        state = bug01_geometry_case('TIE BACK LNR 7"')
+    table = state['hardware_table']
+    if fault == 'missing_host': state['placement_config'].pop('host_row')
+    elif fault == 'stale_host': state['placement_config']['host_row'] = 'stale-token'
+    elif fault == 'short_host': table.at[1,'MD (m)'] = '100-600'
+    elif fault == 'receiver_missing': state['hardware_table'] = table.drop(index=1)
+    elif fault == 'receiver_ambiguous': state['hardware_table'] = pd.concat([table,table.iloc[[2]]],ignore_index=True)
+    elif fault == 'target': state['placement_config']['target_row'] = 'stale-token'
+    elif fault == 'top': table.at[4,'MD (m)'] = '700'
+    elif fault == 'gap': table.at[3,'MD (m)'] = '190'
+    elif fault == 'duplicate': state['hardware_table'] = pd.concat([table,table.iloc[[1]]],ignore_index=True)
+    else: table.at[1,'ID (in)'] = 4.5
+    with pytest.raises(ValueError, match='host|Host|Top|target|Target|Previous|Liner|clearance|overlap|missing|continuous|receiving|restriction|pass|ambiguous'):
+        centralizer_adapter.to_engine_geometry(state)
+
+
+@pytest.fixture(scope='module')
+def bug01_reviewed_report_base():
+    import test_audit_regressions as audit
+    # Real existing UI sequence: formulation, measured Fann/QC and explicit review.
+    return audit.AuditRegressions().configured_app('CSG 9 5/8"').session_state.to_dict()
+
+
+@pytest.mark.parametrize('job', BUG01_JOBS)
+def test_bug01_actual_ui_restore_pumping_schematic_and_current_word(bug01_reviewed_report_base, job, tmp_path):
+    import test_audit_regressions as audit
+    import project_state as ps
+    import phase_9_centralizer as phase9
+    import phase_10_procedure as report
+    import materials_db as db
+    import well_schematic_adapter as schematic
+    from test_uat_round10c_integration import save_project, restore_project, build
+    from test_uat_round9g_centralizer_word import ix_region
+    from docx import Document
+    from io import BytesIO
+    case = audit.AuditRegressions()
+    app = case.app(deepcopy(bug01_reviewed_report_base))
+    case.phase(app,'phase1')
+    assert job in app.selectbox(key='_w_job_type').options
+    app.selectbox(key='_w_job_type').set_value(job).run()
+    case.healthy(app)
+    assert app.session_state['doc_control']['request_description'] == ps.request_description_for_job(job)
+    measured = bug01_geometry_case(job)
+    for key in ('hardware_table','well_geometry','placement_config'):
+        app.session_state[key] = deepcopy(measured[key])
+    for name in ('Main','Displacement Fluid'):
+        app.session_state['fluids_config']['params'][name]['volume'] = 8.
+    app.session_state['cement_params']['Main'].update(top_mode='Not entered',top_depth=None,report_bottom_depth=None)
+    case.phase(app,'phase2_3')
+    case.phase(app,'phase5')
+    case.phase(app,'phase7')
+    sync = next((b for b in app.button if (b.key or '').startswith('_sync_btn_main_')),None)
+    if sync is not None: sync.click().run()
+    confirm = next(b for b in app.button if (b.key or '').startswith('_confirm_lab_btn_main_'))
+    assert not confirm.disabled
+    confirm.click().run()
+    state = app.session_state.to_dict()
+    assert ps.prepare_calculations(state) == []
+    # Supply an explicit real catalog selection, not a fabricated current receipt.
+    prerequisites = bug01_solver_state(job)
+    state['centralizer_config'] = deepcopy(prerequisites['centralizer_config'])
+    state['centralizer_config'].update(physics_mode='dynamic',placement_mode='direct')
+    phase9.execute(state)
+    assert phase9.result_is_current(state)
+    source = pickle.dumps(state['hardware_table'])
+    restored = restore_project(save_project(type('Project',(),{'session_state':state})()))
+    assert restored.session_state['job_type'] == job
+    pd.testing.assert_frame_equal(restored.session_state['hardware_table'],state['hardware_table'],check_dtype=False)
+    assert not phase9.result_is_current(restored.session_state)
+    assert not any(k.startswith('_compiled_doc_') for k in restored.session_state.to_dict())
+    case.phase(restored,'phase9')
+    restored.button(key='_centralizer_execute').click().run()
+    case.healthy(restored)
+    assert phase9.result_is_current(restored.session_state)
+    assert [z['product_nr'] for z in restored.session_state['centralizer_config']['zones']] == [z['product_nr'] for z in state['centralizer_config']['zones']]
+    drawing = schematic.prepare_schematic(restored.session_state)
+    assert drawing['current_job']['type'] == chart.chart_job_kind(job)
+    prepared = pumping_simulation.prepare_pumping_simulation(restored.session_state)
+    assert prepared['applicable'] and prepared['inputs']['geometry'].track_depth_m == chart.resolve_chart_geometry(state)['shoe_md']
+    if 'TIE BACK' in job:
+        # The genuine hydraulic continuation goes below tie-in; it is not a
+        # fabricated open-hole section in the active force solve.
+        assert prepared['inputs']['geometry'].td_m == 1200.
+        assert centralizer_adapter.to_engine_geometry(state)['wellbore']['prev_shoe_depth'] == 700.
+    data = build(restored)
+    assert phase9.result_is_current(restored.session_state)
+    doc = Document(BytesIO(data));region = ix_region(doc)
+    tables = [t for t in doc.tables if t._tbl in region]
+    assert [len(t.rows) for t in tables] == [4,2+len(state['centralizer_config']['zones'])]
+    assert tables[0].cell(3,1).text == f"{chart.resolve_chart_geometry(state)['shoe_md']:.1f} m"
+    assert any(e.xpath('.//w:drawing') for e in region)
+    assert any(c.text.strip() not in ('','-') for row in tables[1].rows[2:] for c in row.cells)
+    assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
+    assert restored.session_state['_compiled_doc_signature'] != ''
+    assert pickle.dumps(state['hardware_table']) == source
+    (tmp_path/'current-centralizer-report.docx').write_bytes(data)
+    (tmp_path/'canonical-hardware.json').write_text(state['hardware_table'].to_json(orient='records'))
+    if job == 'TIE BACK LNR 4 1/2"':
+        assert restored.session_state['hole_size'] == db.DEFAULT_HOLE_SIZES[job] == '6"'
+        assert 4.5 == prepared['inputs']['geometry'].pipe_sections[0].od_in or any(
+            s.od_in == 4.5 for s in prepared['inputs']['geometry'].pipe_sections)
+        (tmp_path/'source-project.json').write_bytes(save_project(restored))
+
+
+@pytest.mark.parametrize('change', ['host_id','host_md','host_token','top','receiver','od','zone','product','fluid'])
+def test_bug01_new_tieback_sources_retire_current_results(change):
+    import phase_9_centralizer as phase9
+    import centralizer_report
+    state = bug01_solver_state('TIE BACK LNR 4 1/2"')
+    phase9.execute(state)
+    assert phase9.result_is_current(state)
+    table = state['hardware_table']
+    if change == 'host_id': table.at[1,'ID (in)'] = 6.095
+    elif change == 'host_md': table.at[1,'MD (m)'] = '100-1099'
+    elif change == 'host_token': state['placement_config']['host_row'] = 'retired-host'
+    elif change == 'top': table.at[4,'MD (m)'] = '201-700'
+    elif change == 'receiver': table.at[2,'ID (in)'] = 3.99
+    elif change == 'od': table.at[4,'Size (in)'] = '4.6'
+    elif change == 'zone': state['centralizer_config']['zones'][0]['density'] = '1/3'
+    elif change == 'product': state['centralizer_config']['zones'][0]['product_nr'] = None
+    else: state['fluids_config']['params']['Displacement Fluid']['volume'] = 9.
+    assert not phase9.result_is_current(state)
+    report = centralizer_report.prepare_report(state)
+    assert report['current'] is False and report['analysis'] is None
