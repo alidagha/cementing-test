@@ -296,8 +296,9 @@ def test_original_taxonomy_and_hardware_options_are_preserved():
     original = ['CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"', 'CSG 13 3/8"',
                 'CSG 9 5/8"', 'CSG 7"', 'LNR 7"', 'LNR 5"', 'LNR 4 1/2"',
                 'CMT PLUG', 'CMT SQUEEZE', 'TIE BACK LNR 7"', 'TIE BACK LNR 5"']
-    assert [job for job in db.JOB_TYPES if job != JOB] == original
-    assert len(db.JOB_TYPES) == 15
+    assert [job for job in db.JOB_TYPES if job not in (JOB, 'TIE BACK LNR 4 1/2"')] == original
+    assert db.JOB_TYPES[-1] == 'TIE BACK LNR 4 1/2"'
+    assert len(db.JOB_TYPES) == 16
     assert "Drill Pipes" in db.HARDWARE_DESCRIPTIONS
     assert "CT" not in db.HARDWARE_DESCRIPTIONS
     for alias in ("CMT PLUG CT", "CT PLUG", "CMT PLUG with CT"):

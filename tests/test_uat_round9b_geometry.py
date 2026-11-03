@@ -204,8 +204,16 @@ def test_cased_envelope_id_variation_cannot_be_averaged(kind):
     first["MD (m)"] = "200"
     second["ID (in)"] -= .1
     state["hardware_table"] = pd.concat([frame.drop(index), pd.DataFrame([first, second])], ignore_index=True)
-    with pytest.raises(ValueError, match="enclosing|scalar|diameter|ID"):
-        project(state)
+    if kind == "casing":
+        with pytest.raises(ValueError, match="enclosing|scalar|diameter|ID"):
+            project(state)
+    else:
+        # The first ID ends above the 400-m hanger; only 8.435 is active.
+        assert project(state)["wellbore"]["prev_casing_id"] == 8.435*.0254
+        state["hardware_table"].iloc[-2, state["hardware_table"].columns.get_loc("MD (m)")] = "450"
+        # Moving that same real step inside the active body still rejects.
+        with pytest.raises(ValueError, match="enclosing.*scalar ID"):
+            project(state)
 
 
 def test_open_hole_variation_cannot_be_averaged_or_replaced_by_caliper():

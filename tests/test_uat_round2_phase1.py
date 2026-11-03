@@ -48,6 +48,7 @@ class Round2Phase1UAT(unittest.TestCase):
             'CMT SQUEEZE': 'CMT SQUEEZE Cementing',
             'TIE BACK LNR 7"': '7" TIE BACK LNR Cementing',
             'TIE BACK LNR 5"': '5" TIE BACK LNR Cementing',
+            'TIE BACK LNR 4 1/2"': '4 1/2" TIE BACK LNR Cementing',
         }
         self.assertEqual(list(expected), materials_db.JOB_TYPES)
         for job, description in expected.items():

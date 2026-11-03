@@ -82,7 +82,7 @@ def register_roots(monkeypatch):
 def test_exact_taxonomy_and_position():
     assert JOB in db.JOB_TYPES
     assert db.JOB_TYPES[db.JOB_TYPES.index('LNR 5"') + 1] == JOB
-    assert 'TIE BACK LNR 4 1/2"' not in db.JOB_TYPES
+    assert 'TIE BACK LNR 4 1/2"' in db.JOB_TYPES
 
 
 def test_default_hole():
@@ -175,7 +175,7 @@ def test_real_downstream_contracts_need_only_root_registration(monkeypatch):
     assert any(row['size_in'] == 4.5 for row in drawing['casings'])
 
 
-@pytest.mark.parametrize('alias', ['LNR 4.5"', 'LNR 4-1/2"', 'LNR 4½"', 'TIE BACK LNR 4 1/2"'])
+@pytest.mark.parametrize('alias', ['LNR 4.5"', 'LNR 4-1/2"', 'LNR 4½"', 'TIE BACK LNR 4.5"'])
 def test_only_exact_canonical_job_is_admitted(alias):
     assert alias not in db.JOB_TYPES
     with pytest.raises(ValueError, match='not supported'):

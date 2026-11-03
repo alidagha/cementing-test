@@ -66,7 +66,8 @@ def chart_fixture(job, target=3000.0):
         'CSG 9 5/8"': (9.625, 8.535, 13.375, 12.25), 'CSG 7"': (7., 6.276, 9.625, 8.535),
     }
     liner = {'LNR 7"': (7., 6.276), 'LNR 5"': (5., 4.276), 'LNR 4 1/2"': (4.5, 4.)}
-    tieback = {'TIE BACK LNR 7"': (7., 6.276), 'TIE BACK LNR 5"': (5., 4.276)}
+    tieback = {'TIE BACK LNR 7"': (7., 6.276), 'TIE BACK LNR 5"': (5., 4.276),
+               'TIE BACK LNR 4 1/2"': (4.5, 4.)}
     extent = max(3300., target)
     if job in casing:
         od, inner, outer_od, outer_id = casing[job]
@@ -81,6 +82,12 @@ def chart_fixture(job, target=3000.0):
         rows = [("Previous Casing", 1500., 13.375, 12.25),
                 ("Liner", extent, od, inner), ("Open Hole Size", extent, 12.25, 12.25),
                 ("Liner Hanger", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
+    elif job == 'TIE BACK LNR 4 1/2"':
+        # New-job synthetic prerequisite: measured 7-inch all-cased host and
+        # explicit 4.5-inch receiver at the tie-in, not production host defaults.
+        extent = max(extent, target + 300.)
+        rows = [("Previous Casing", extent, 7., 6.276), ("Tie Back", f"0-{target}", 4.5, 4.),
+                ("Previous Liner", f"{target}-{extent}", 4.5, 4.)]
     elif job in tieback:
         # Synthetic scalar-certification well: receiver starts at the tie-in.
         # It is NOT equivalent to the old 2500-m Top / two-ID receiving liner.
