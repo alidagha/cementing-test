@@ -32,6 +32,98 @@ CASE = audit.AuditRegressions()
 
 
 @pytest.fixture(scope="module")
+def r17_filename_source():
+    app = CASE.configured_app(CSG, include_standalone_spacer=False)
+    return app.session_state.to_dict()
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({"well_location": "South Pars", "well_name": "SP-101", "rig_name": "Rig-28",
+      "proposal_number": "1457", "revision_no": "2"},
+     "Cementing Program - CSG 9.625 - South Pars - SP-101 - Rig-28 - PR #1457 - R #2.docx"),
+    ({"well_location": " ", "well_name": "SP-101", "rig_name": "",
+      "proposal_number": "", "revision_no": " "},
+     "Cementing Program - CSG 9.625 - SP-101.docx"),
+])
+def test_r17_download_filename_real_build_and_navigation(r17_filename_source, fields, expected, tmp_path):
+    from streamlit.elements.widgets import button as buttons
+    app = CASE.app(deepcopy(r17_filename_source))
+    CASE.phase(app, "phase1")
+    for field, value in fields.items():
+        app.text_input(key="_w_" + field).set_value(value).run()
+    CASE.phase(app, "phase10")
+    raw = deepcopy(app.session_state["doc_control"])
+    qc = deepcopy(app.session_state["lab_qc_params"])
+    ctx = context(app.session_state.to_dict())
+    signature = report.document_signature(ctx, report.TEMPLATE_PATH)
+    source_signatures = signatures(app.session_state)
+    with patch.object(buttons, "marshall_file", wraps=buttons.marshall_file) as served:
+        data = build(app)
+    downloads = [call.args for call in served.call_args_list
+                 if call.args[2].label == "Download Final Document (.docx)"]
+    assert downloads and downloads[-1][1] == data and downloads[-1][4] == expected
+    (tmp_path / "actual.docx").write_bytes(data)
+    (tmp_path / "filename.txt").write_text(app.session_state["_compiled_doc_filename"])
+    assert app.session_state["doc_control"] == raw
+    assert app.session_state["lab_qc_params"] == qc
+    assert signatures(app.session_state) == source_signatures
+    assert app.session_state["_compiled_doc_signature"] == signature
+    assert app.session_state["_compiled_doc_filename"] == expected
+    assert app.get("download_button")[-1].proto.label == "Download Final Document (.docx)"
+    CASE.phase(app, "phase1")
+    CASE.phase(app, "phase10")
+    assert app.session_state["_compiled_doc_bytes"] == data
+    assert app.session_state["_compiled_doc_signature"] == signature
+    assert app.session_state["_compiled_doc_filename"] == expected
+    if fields["rig_name"]:
+        CASE.phase(app, "phase1")
+        app.text_input(key="_w_rig_name").set_value("Rig-29").run()
+        CASE.phase(app, "phase10")
+        no_document(app.session_state)
+        updated = build(app)
+        assert app.session_state["_compiled_doc_filename"] == expected.replace("Rig-28", "Rig-29")
+        assert app.session_state["_compiled_doc_signature"] != signature
+        assert "Rig-29" in [t.text for t in Document(BytesIO(updated)).element.iter(qn("w:t"))]
+
+
+@pytest.mark.parametrize("metadata,expected", [
+    ({}, "Cementing Program.docx"),
+    (dict.fromkeys(("job_type", "well_location", "well_name", "rig_name", "proposal_number", "revision_no")),
+     "Cementing Program.docx"),
+    ({"job_type": " ", "well_location": "\t", "well_name": "\n", "revision_no": " "},
+     "Cementing Program.docx"),
+    ({"well_location": "South Pars", "revision_no": 0}, "Cementing Program - South Pars - R #0.docx"),
+    ({"proposal_number": 1457, "revision_no": 2}, "Cementing Program - PR #1457 - R #2.docx"),
+    ({"proposal_number": " PR #1457 ", "revision_no": "R #2"}, "Cementing Program - PR #1457 - R #2.docx"),
+    ({"proposal_number": "pr#PR #1457", "revision_no": "r#R #0"}, "Cementing Program - PR #1457 - R #0.docx"),
+    ({"proposal_number": "PR # ", "revision_no": "R#"}, "Cementing Program.docx"),
+    ({"job_type": 'CSG 13 3/8"'}, "Cementing Program - CSG 13.375.docx"),
+    ({"job_type": 'LNR 4 1/2"'}, "Cementing Program - LNR 4.5.docx"),
+    ({"job_type": 'TIE BACK LNR 4 1/2"'}, "Cementing Program - TIE BACK LNR 4.5.docx"),
+    ({"job_type": 'CSG 18 5/8"'}, "Cementing Program - CSG 18.625.docx"),
+    ({"job_type": 'CSG 20"'}, "Cementing Program - CSG 20.docx"),
+    ({"job_type": 'CSG 9.625"'}, "Cementing Program - CSG 9.625.docx"),
+    ({"job_type": 'CSG 9 63/64"'}, "Cementing Program - CSG 9.984375.docx"),
+    ({"job_type": "CMT PLUG WITH CT"}, "Cementing Program - CMT PLUG WITH CT.docx"),
+    ({"job_type": 'CSG 9 8/8"'}, "Cementing Program - CSG 9 8 8.docx"),
+    ({"job_type": 'CSG 9 5/0"'}, "Cementing Program - CSG 9 5 0.docx"),
+    ({"job_type": 'CSG 9+5/8"'}, "Cementing Program - CSG 9+5 8.docx"),
+    ({"job_type": 'Unknown 9 5/8"'}, "Cementing Program - Unknown 9 5 8.docx"),
+    ({"well_name": "SP-101 9 5/8", "well_location": "2026-11-04", "rig_name": "Rig-28"},
+     "Cementing Program - 2026-11-04 - SP-101 9 5 8 - Rig-28.docx"),
+    ({"well_name": '  SP/101\\West: <a>|?*\x00\n..  ', "rig_name": '"Rig-28". '},
+     "Cementing Program - SP 101 West a - Rig-28.docx"),
+    ({"well_name": "../..\\", "proposal_number": "\x00<>"}, "Cementing Program.docx"),
+    ({"well_name": "چاه ۱۰۱", "rig_name": "CON"}, "Cementing Program - چاه ۱۰۱ - CON.docx"),
+])
+def test_r17_download_filename_is_a_pure_metadata_projection(metadata, expected):
+    original = deepcopy(metadata)
+    assert report._word_download_filename(metadata) == expected
+    assert metadata == original
+    assert not re.search(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', expected)
+
+
+@pytest.fixture(scope="module")
 def projects():
     return integrated_projects.__wrapped__()
 
@@ -695,7 +787,7 @@ def test_r16c_real_word_dates_surface_note_restore_and_cache(r16c_document_sourc
     assert raw["date"]=="2026-10-03" and qc["Main"]["surface_hardened_hours"]==8.25
     assert "2026-10-03" in text  # Actual phone/description bindings are not dates.
     assert "2026-10-03" not in app.session_state["_compiled_doc_filename"]
-    assert "Cementing_Program_" in app.session_state["_compiled_doc_filename"]
+    assert app.session_state["_compiled_doc_filename"].startswith("Cementing Program - ")
     (tmp_path/"observed-fields.json").write_text(__import__("json").dumps({
         "dates":dates,"surface_notes":[p for p in paragraphs if "Hours" in p and "NOTE " in p],
         "raw_dates":expected_iso,"raw_hours":qc["Main"]["surface_hardened_hours"]},indent=2))

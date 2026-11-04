@@ -42,6 +42,30 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
 SLURRY_ARCHETYPES = materials_db.PLACEMENT_SLURRIES
 REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
 
+def _word_download_filename(doc_control):
+    """Filename-only view of Phase I metadata; never edit the report or sources."""
+    parts = ["Cementing Program"]
+    for field in ("job_type", "well_location", "well_name", "rig_name", "proposal_number", "revision_no"):
+        value = doc_control.get(field)
+        text = "" if value is None else str(value).strip()
+        if field == "job_type":
+            size = re.fullmatch(r'(CSG|LNR|TIE BACK LNR)\s+(\d{1,3}(?:\.\d{1,6})?)'
+                                r'(?:\s+(\d{1,2})/(2|4|8|16|32|64))?\s*["″”]?', text)
+            if size and (size[3] is None or int(size[3]) < int(size[4])):
+                inches = Decimal(size[2])
+                if size[3] is not None:
+                    inches += Decimal(size[3]) / Decimal(size[4])
+                text = f"{size[1]} {format(inches.normalize(), 'f')}"
+        marker = {"proposal_number": "PR", "revision_no": "R"}.get(field)
+        if marker:
+            text = re.sub(rf"^(?:{marker}\s*#\s*)+", "", text, flags=re.IGNORECASE)
+        text = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', " ", text)
+        text = " ".join(text.split()).rstrip(". ")
+        if text:
+            parts.append(f"{marker} #{text}" if marker else text)
+    return " - ".join(parts) + ".docx"
+
+
 def _word_program_quantities(row):
     row = dict(row)
     for key, decimals in (("yield_cuft_sk", 3), ("solution", 1),
@@ -2193,9 +2217,7 @@ def render():
                         doc.save(doc_io)
                         doc_io.seek(0)
                         
-                        well_label = str(st.session_state.get("well_name", "Well")).strip()
-                        safe_label = "".join(c for c in well_label if c.isalnum() or c in ("-", "_")).strip() or "Untitled"
-                        filename = f"Cementing_Program_{safe_label}_{datetime.today().strftime('%Y%m%d_%H%M')}.docx"
+                        filename = _word_download_filename(st.session_state.get("doc_control", {}))
                         
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
                                                               master_context["note_vertical"], master_context["cement_chart_report"],
