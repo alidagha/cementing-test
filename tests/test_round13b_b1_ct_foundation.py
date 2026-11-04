@@ -337,10 +337,24 @@ def test_optional_size_default_zero_never_becomes_measured_geometry(size):
     assert placement.ct_setting_depth(hardware(**{"Size (in)": size, "ID (in)": 0.})) == 3527.
 
 
+def r17_original_placement_source(source):
+    """Reverse only the Owner-approved report-metadata validator delta."""
+    text = source.decode()
+    for current, original in (
+        ('"squeeze_context_row", "tie_back_origin", "per_slurry", "volume_basis"}',
+         '"squeeze_context_row", "tie_back_origin", "per_slurry"}'),
+        ('for field, options in (("volume_basis", ("client_request", "excess")), ("squeeze_scope", SQUEEZE_SCOPES), ("tie_back_origin", TIE_BACK_ORIGINS)):',
+         'for field, options in (("squeeze_scope", SQUEEZE_SCOPES), ("tie_back_origin", TIE_BACK_ORIGINS)):'),
+    ):
+        assert text.count(current) == 1
+        text = text.replace(current, original, 1)
+    return text.encode()
+
+
 def legacy_placement_source(source):
     """Exclude only B1's explicit CT extension; retain every original source byte."""
     import ast
-    text = source.decode()
+    text = r17_original_placement_source(source).decode()
     tree = ast.parse(text)
     added = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "ct_setting_depth"]
     if not added:
@@ -365,7 +379,8 @@ def legacy_placement_source(source):
     return text.replace(controlled_target, '    target = target_depth(table, job_type, config)\n', 1).encode()
 
 
-@pytest.mark.parametrize("change", ["depth_parser", "legacy_top", "ct_guard", "ct_handler", "import_side_effect", "formatting"])
+@pytest.mark.parametrize("change", ["depth_parser", "legacy_top", "ct_guard", "ct_handler", "import_side_effect", "formatting",
+                                  "report_field", "report_options", "report_validation"])
 def test_legacy_placement_integrity_rejects_changes_outside_ct_allowlist(change):
     import subprocess
     from pathlib import Path
@@ -379,6 +394,9 @@ def test_legacy_placement_integrity_rejects_changes_outside_ct_allowlist(change)
         "ct_handler": (b'"issue": str(exc)} for name in active_slurries}', b'"issue": "ignored"} for name in active_slurries}'),
         "import_side_effect": (b'import math\n', b'import math\nmath.pi = 3.0\n'),
         "formatting": (b'HOST_DESCRIPTIONS =', b'HOST_DESCRIPTIONS  ='),
+        "report_field": (b'"per_slurry", "volume_basis"}', b'"per_slurry"}'),
+        "report_options": (b'("volume_basis", ("client_request", "excess"))', b'("volume_basis", ("client_request", "auto"))'),
+        "report_validation": (b'config[field] not in options', b'False'),
     }
     old, new = mutations[change]
     assert old in source

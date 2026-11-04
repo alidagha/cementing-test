@@ -18,7 +18,7 @@ from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, top_label, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
                        hardware_row_metadata, target_row_metadata, hardware_context_label,
-                       HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
+                       HOST_DESCRIPTIONS, SUMMARY_VERSION, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
 from datetime import date, datetime
 import materials_db
 import pumping_simulation
@@ -634,7 +634,7 @@ def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_c
         if slurry not in active_slurries:
             continue
         record = config.get("per_slurry", {}).get(slurry, {})
-        basis = record.get("volume_basis", "auto")
+        basis = config.get("volume_basis", record.get("volume_basis", "auto"))
         try:
             excess = resolve_report_excess(job_type, placement_config, config or None, slurry)
         except ValueError:
@@ -1981,7 +1981,6 @@ def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
                 continue
             record = config.get("per_slurry", {}).get(slurry, {})
             st.markdown(f"**{slurry} report details**")
-            widget("volume_basis", f"Volume basis — {slurry}", record, slurry, options=VOLUME_BASES)
             for field, label, _ in EXCESS_FIELDS:
                 widget(field, f"{label} override — {slurry}", record, slurry, number=True)
             if "LNR" in job_type:

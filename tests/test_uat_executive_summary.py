@@ -15,7 +15,7 @@ import phase_10_procedure as report
 from placement import (hardware_choices, hardware_context_label, target_row_metadata,
                        slurry_intervals, resolve_report_excess,
                        summary_config_for_job)
-from project_state import accept_report_text, restore_previous_text
+from project_state import accept_report_text, restore_previous_text, fingerprint
 from engineering_tools import compute_phase_status, BBL_TO_CUFT
 
 JOB = 'CSG 9 5/8"'
@@ -94,6 +94,38 @@ def generate(job=JOB, active=('Lead', 'Tail'), metadata=None, adds=None, excess=
 
 
 class ExecutiveSummaryReferences(unittest.TestCase):
+    def test_r17_global_basis_precedes_hidden_slurry_basis_and_keeps_existing_prose(self):
+        for job in (JOB, 'LNR 7"'):
+            for active in (('Main',), ('Lead', 'Tail'), ('Lead', 'Tail', 'Main')):
+                for basis in ('client_request', 'excess'):
+                    with self.subTest(job=job, active=active, basis=basis):
+                        records = {name: {'volume_basis': 'direct' if basis == 'client_request' else 'client_request',
+                                         'excess_csg_oh_pct': 25. + i * 25., 'wet_stands': i + 1.}
+                                   for i, name in enumerate(active[:2])}
+                        cfg = config(job, records, volume_basis=basis)
+                        snapshot = deepcopy(cfg)
+                        text = generate(job, active, cfg)
+                        self.assertEqual(cfg, snapshot)
+                        self.assertEqual(text.split('The calculated cement volume')[0],
+                                         generate(job, active, config(job, records)).split('The calculated cement volume')[0])
+                        volume_text = text.split('The calculated cement volume', 1)[1]
+                        if basis == 'client_request':
+                            self.assertIn('is based on client request', volume_text)
+                            self.assertNotIn('% excess', volume_text)
+                        else:
+                            self.assertNotIn('client request', volume_text)
+                            for i, name in enumerate(active[:2]):
+                                self.assertIn(f'{25 + i * 25}% excess for OH-CSG', volume_text)
+                        for name in active:
+                            self.assertIn(('79.0' if name == 'Tail' else '731.0') + f' bbl for {name.lower()} slurry', volume_text)
+                        self.assertIn('with 1 stands wet', volume_text)
+        cfg = config(volume_basis='excess')
+        self.assertIn('The calculated cement volume is 731.0 bbl.',
+                      generate(active=('Main',), metadata=cfg, excess=False))
+        self.assertNotIn('client request', generate(active=('Main',), excess=False))
+        self.assertEqual(generate('LNR 7"', ('Main',), config(volume_basis='client_request')),
+                         generate('LNR 7"', ('Main',)))
+
     def test_locked_paragraphs_and_sga043(self):
         text = generate(adds={'Lead': DRY})
         capacity = math.pi/4*(12.25**2-9.625**2)/144/.3048/BBL_TO_CUFT
@@ -270,7 +302,11 @@ class ExecutiveSummaryReferences(unittest.TestCase):
         valid = config(records={'Main': {'volume_basis': 'auto', 'wet_stands': None, 'excess_csg_oh_pct': 0., 'liner_lap_host_row': 'stale'}})
         self.assertEqual(audit.round_trip({'job_type': JOB, 'executive_summary_config': valid})['executive_summary_config'], valid)
         self.assertNotIn('executive_summary_config', audit.round_trip({'job_type': JOB}))
+        for basis in ('client_request', 'excess'):
+            selected = config(volume_basis=basis)
+            self.assertEqual(audit.round_trip({'job_type': JOB, 'executive_summary_config': selected})['executive_summary_config'], selected)
         for malformed in (None, [], {'version': 2, 'job_type': JOB}, config(squeeze_scope='Unknown'),
+                          *(config(volume_basis=value) for value in (None, '', 'auto', 'unspecified', 'direct', True, 2, [])),
                           config(squeeze_scope=2), config(placement_context_rows=[2]), config(squeeze_context_row=2),
                           config(per_slurry=[]), config(records={'Main': []}),
                           config(records={'Main': {'volume_basis': 'guess'}}),
@@ -295,6 +331,26 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
         cls.case.export(app)
         cls.state = audit.round_trip(app.session_state.to_dict())
         audit.ensure_current_centralizer(cls.state)
+
+    def test_r17_volume_basis_selector_location_and_unselected_state(self):
+        app = self.case.app(deepcopy(self.state))
+        self.case.phase(app, 'phase2_3')
+        choices = [w for w in app.selectbox if w.label == 'Volume Basis']
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0].options, ['Client Request', 'Actual Calculation'])
+        self.assertIsNone(choices[0].value)
+        self.assertNotIn('volume_basis', app.session_state.get('executive_summary_config', {}))
+        self.assertTrue(any(w.label == 'Target shoe / treatment depth source' for w in app.selectbox))
+        for label in ('Excess CSG-OH %', 'Excess CSG-CSG %'):
+            self.assertTrue(any(w.label == label for w in app.number_input))
+        self.assertTrue(any(w.label == 'Chart Capacity Excess Mode' for w in app.selectbox))
+
+    def test_r17_phase_x_volume_basis_widgets_are_removed(self):
+        app = self.case.app(deepcopy(self.state))
+        self.case.phase(app, 'phase10')
+        self.assertFalse([w.label for w in app.selectbox if w.label.startswith('Volume basis — ')])
+        self.assertTrue(any(w.label == 'Excess CSG-OH % override — Main' for w in app.number_input))
+        self.assertTrue(any(w.label == 'Excess CSG-CSG % override — Main' for w in app.number_input))
 
     def test_summary_metadata_changes_only_summary_source_and_document(self):
         state = deepcopy(self.state)
@@ -333,12 +389,15 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
             self.assertEqual(status, compute_phase_status(state))
 
     def test_metadata_first_edit_navigation_and_fresh_json_restore(self):
-        app = self.case.app(deepcopy(self.state)); self.case.phase(app, 'phase10')
-        next(w for w in app.selectbox if w.label == 'Volume basis — Main').set_value('client_request').run()
+        app = self.case.app(deepcopy(self.state)); self.case.phase(app, 'phase2_3')
+        next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
         self.case.healthy(app)
+        self.case.phase(app, 'phase10')
         self.assertIn('based on client request', app.session_state['exec_summary_text'])
-        self.case.phase(app, 'phase4'); self.case.phase(app, 'phase10')
-        self.assertEqual(next(w for w in app.selectbox if w.label == 'Volume basis — Main').value, 'client_request')
+        self.case.phase(app, 'phase4'); self.case.phase(app, 'phase2_3')
+        self.assertEqual(next(w for w in app.selectbox if w.label == 'Volume Basis').value, 'client_request')
+        self.assertEqual(app.session_state['executive_summary_config']['volume_basis'], 'client_request')
+        self.case.phase(app, 'phase10')
         next(w for w in app.number_input if w.label == 'Excess CSG-OH % override — Main').set_value(25.).run()
         self.assertEqual(app.session_state['executive_summary_config']['per_slurry']['Main']['excess_csg_oh_pct'], 25.)
         saved = audit.round_trip(app.session_state.to_dict())
@@ -346,6 +405,84 @@ class ExecutiveSummaryStateAndWord(unittest.TestCase):
         fresh = self.case.app(saved); self.case.phase(fresh, 'phase10')
         self.assertEqual(fresh.session_state['executive_summary_config'], saved['executive_summary_config'])
         self.assertEqual(next(w for w in fresh.number_input if w.label == 'Excess CSG-OH % override — Main').value, 25.)
+        self.case.phase(fresh, 'phase2_3')
+        self.assertEqual(next(w for w in fresh.selectbox if w.label == 'Volume Basis').value, 'client_request')
+
+    def test_r17_selection_is_report_only_and_manual_review_actions_stay_authoritative(self):
+        from test_pre_checkpoint_b2_cross_module_integration import signatures
+        import project_state as ps
+        import phase_9_centralizer as phase9
+        app = self.case.app(deepcopy(self.state))
+        self.case.phase(app, 'phase2_3')
+        before = signatures(app.session_state)
+        canonical_keys = ('hardware_table', 'placement_config', 'cement_params', 'fluids_config',
+                          'fluid_data', 'well_data', 'lab_qc_params')
+        canonical = ps.fingerprint({k: app.session_state[k] for k in canonical_keys})
+        intervals = slurry_intervals(app.session_state['hardware_table'], JOB, app.session_state['placement_config'],
+                                     ['Main'], app.session_state['cement_params'], app.session_state['fluid_data'])
+        for basis in ('client_request', 'excess', None):
+            next(w for w in app.selectbox if w.label == 'Volume Basis').set_value(basis)
+            self.case.phase(app, 'phase10')  # First edit commits before navigation unmounts the widget.
+            self.assertEqual(app.session_state['executive_summary_config'].get('volume_basis'), basis)
+            self.assertEqual(signatures(app.session_state), before)
+            self.assertEqual(ps.fingerprint({k: app.session_state[k] for k in canonical_keys}), canonical)
+            self.assertEqual(slurry_intervals(app.session_state['hardware_table'], JOB, app.session_state['placement_config'],
+                                             ['Main'], app.session_state['cement_params'], app.session_state['fluid_data']), intervals)
+            self.assertTrue(phase9.result_is_current(app.session_state))
+            self.assertEqual('based on client request' in app.session_state['exec_summary_text'], basis == 'client_request')
+            self.case.phase(app, 'phase2_3')
+            for label in ('Excess CSG-OH %', 'Excess CSG-CSG %'):
+                self.assertTrue(any(w.label == label for w in app.number_input))
+            self.assertEqual(next(w for w in app.selectbox if w.label == 'Chart Capacity Excess Mode').value,
+                             app.session_state['placement_config']['chart_excess_mode'])
+        self.case.export(app)
+        original_procedure = app.session_state['procedure_text']
+        manual = 'Owner-reviewed Executive Summary.'
+        next(w for w in app.text_area if w.label == 'Executive Summary Text (Official NIDC Format):').set_value(manual).run()
+        self.case.phase(app, 'phase2_3')
+        next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
+        self.assertNotIn('_compiled_doc_bytes', app.session_state)
+        self.case.phase(app, 'phase10')
+        self.assertEqual(app.session_state['exec_summary_text'], manual)
+        self.assertTrue(any(b.key == '_keep_exec_summary_text' for b in app.button))
+        app.button(key='_keep_exec_summary_text').click().run()
+        self.assertEqual(app.session_state['exec_summary_text'], manual)
+        self.assertFalse(any(b.key == '_keep_exec_summary_text' for b in app.button))
+        app.button(key='_regenerate_exec_summary_text').click().run()
+        self.assertIn('based on client request', app.session_state['exec_summary_text'])
+        app.button(key='_restore_exec_summary_text').click().run()
+        self.assertEqual(app.session_state['exec_summary_text'], manual)
+        self.assertTrue(any(b.key == '_keep_exec_summary_text' for b in app.button))
+        self.assertEqual(app.session_state['procedure_text'], original_procedure)
+
+    def test_r17_job_and_project_scoping_and_late_events(self):
+        from test_uat_round10c_integration import save_project, restore_project
+        import phase_2_3_well_data as well
+        app = self.case.app(deepcopy(self.state)); self.case.phase(app, 'phase2_3')
+        next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
+        old_key = next(w for w in app.selectbox if w.label == 'Volume Basis').key
+        restored = restore_project(save_project(app))
+        self.case.phase(restored, 'phase2_3')
+        new_widget = next(w for w in restored.selectbox if w.label == 'Volume Basis')
+        self.assertNotEqual(new_widget.key, old_key)
+        self.assertEqual(new_widget.value, 'client_request')
+        self.case.phase(app, 'phase1')
+        app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+        self.case.phase(app, 'phase2_3')
+        self.assertIsNone(next(w for w in app.selectbox if w.label == 'Volume Basis').value)
+        next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('excess').run()
+        self.assertEqual(app.session_state['executive_summary_config'],
+                         {'version': 1, 'job_type': 'LNR 7"', 'volume_basis': 'excess'})
+        self.case.phase(app, 'phase1')
+        app.selectbox(key='_w_job_type').set_value(JOB).run()
+        self.case.phase(app, 'phase2_3')
+        self.assertIsNone(next(w for w in app.selectbox if w.label == 'Volume Basis').value)
+        state = app.session_state.to_dict(); state['_late_basis'] = 'client_request'
+        snapshot = deepcopy(state)
+        with patch.object(well.st, 'session_state', state):
+            well._commit_volume_basis('_late_basis', 'LNR 7"', str(state.get('last_loaded_hash', 'default_project')))
+            well._commit_volume_basis('_late_basis', JOB, 'another-project')
+        self.assertEqual(fingerprint(state), fingerprint(snapshot))
 
     def test_context_callback_commits_first_edit_before_navigation(self):
         app = self.case.app(deepcopy(self.state)); self.case.phase(app, 'phase10')
