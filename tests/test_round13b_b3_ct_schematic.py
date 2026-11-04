@@ -385,7 +385,11 @@ def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3a30e2a0d42316b34d0c15b88ef7f2c539e8c1b38b48bd8a0ed614e6704469de'
             continue
         reference='184cc888552f54df6a1d02fd0bdca16b77e358a4'
-        assert Path(name).read_bytes()==subprocess.check_output(['git','show',f'{reference}:{name}'])
+        source = Path(name).read_bytes()
+        if name == 'placement.py':
+            from test_round13b_b1_ct_foundation import r17_original_placement_source
+            source = r17_original_placement_source(source)
+        assert source==subprocess.check_output(['git','show',f'{reference}:{name}'])
     from test_round13b_post_b4_word_quality import test_template_changes_only_approved_sample_text_payloads
     test_template_changes_only_approved_sample_text_payloads()
 

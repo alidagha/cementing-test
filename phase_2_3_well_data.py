@@ -3,7 +3,8 @@ import streamlit as st
 import pandas as pd
 import math
 import materials_db
-from placement import hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS
+from placement import (hardware_choices, target_descriptions, HOST_DESCRIPTIONS, measured_depth, EXCESS_FIELDS,
+                       SUMMARY_VERSION, summary_config_for_job)
 from bhct_helper import M_TO_FT, suggest_bhct
 from project_state import (fingerprint, WELL_DATA_DEFAULTS, refresh_well_derived,
                            invalidate_document, reconcile_fluid_applicability, hardware_draft_pending)
@@ -86,6 +87,21 @@ def _excess_widget_key(field):
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     revision = st.session_state.get("_placement_excess_revision", 0)
     return f"_placement_{field}_{load_sig}_{revision}"
+
+
+def _commit_volume_basis(widget_key, job_type, load_sig):
+    state = st.session_state
+    if (state.get("job_type"), str(state.get("last_loaded_hash", "default_project"))) != (job_type, load_sig):
+        return  # Ignore a late event from another job or loaded project.
+    stored = state.get("executive_summary_config")
+    config = dict(stored) if stored and stored.get("job_type") == job_type else {"version": SUMMARY_VERSION, "job_type": job_type}
+    value = state[widget_key]
+    if value is None:
+        config.pop("volume_basis", None)
+    else:
+        config["volume_basis"] = value
+    state["executive_summary_config"] = config
+    invalidate_document(state)
 
 
 def _commit_placement(field, widget_key):
@@ -553,6 +569,12 @@ def render():
         placement["job_type"] = job_type
         st.session_state["_placement_excess_revision"] = st.session_state.get("_placement_excess_revision", 0) + 1
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
+    summary = summary_config_for_job(st.session_state.get("executive_summary_config"), job_type, [])
+    basis_key = f"_summary_volume_basis_{fingerprint(job_type)[:10]}_{load_sig}"
+    st.session_state[basis_key] = summary.get("volume_basis")
+    st.selectbox("Volume Basis", ["client_request", "excess"], index=None,
+                 format_func=lambda value: "Client Request" if value == "client_request" else "Actual Calculation",
+                 key=basis_key, on_change=_commit_volume_basis, args=(basis_key, job_type, load_sig))
     choice_key = f"_placement_target_{fingerprint(job_type)[:10]}_{load_sig}"
     if job_type == materials_db.CT_JOB:
         from placement import ct_setting_depth

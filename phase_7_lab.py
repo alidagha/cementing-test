@@ -105,7 +105,7 @@ def _render_compressive(slurry, qc, load_sig, bhst, bhsp):
                     args=(slurry, test, "selected", key))
         if not row["selected"]:
             continue
-        st.caption(f"{title}: Temp = {bhst} °F (BHST); Pressure = {bhsp} psi (BHSP)")
+        st.caption(f"{title}: Temp = {bhst} °F (BHST); Pressure = {_bhsp_display(bhsp)} psi (BHSP)")
         columns = st.columns(len(COMPRESSIVE_TEST_FIELDS[test]))
         for column, (field, label) in zip(columns, COMPRESSIVE_TEST_FIELDS[test]):
             key = prefix + field + "_" + load_sig

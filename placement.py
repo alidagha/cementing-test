@@ -198,14 +198,14 @@ def validate_executive_summary_config(config):
     if not isinstance(config, dict):
         raise ValueError("executive_summary_config must be a record.")
     allowed = {"version", "job_type", "placement_context_rows", "squeeze_scope",
-               "squeeze_context_row", "tie_back_origin", "per_slurry"}
+               "squeeze_context_row", "tie_back_origin", "per_slurry", "volume_basis"}
     if set(config) - allowed:
         raise ValueError("executive_summary_config contains unsupported fields.")
     if type(config.get("version")) is not int or config["version"] != SUMMARY_VERSION:
         raise ValueError("executive_summary_config has an unsupported version.")
     if config.get("job_type") not in materials_db.JOB_TYPES:
         raise ValueError("executive_summary_config.job_type is not supported.")
-    for field, options in (("squeeze_scope", SQUEEZE_SCOPES), ("tie_back_origin", TIE_BACK_ORIGINS)):
+    for field, options in (("volume_basis", ("client_request", "excess")), ("squeeze_scope", SQUEEZE_SCOPES), ("tie_back_origin", TIE_BACK_ORIGINS)):
         if field in config and (not isinstance(config[field], str) or config[field] not in options):
             raise ValueError(f"executive_summary_config.{field} is not supported.")
     contexts = config.get("placement_context_rows", [])

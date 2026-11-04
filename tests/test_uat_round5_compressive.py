@@ -343,3 +343,76 @@ def test_r16d_real_template_changes_only_compressive_result_text(valid_state, tm
                 t.text = replacements[t.text]; count += 1
         assert count == len(before['slurries'])
         assert etree.tostring(root) == etree.tostring(etree.fromstring(old.read('word/document.xml')))
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('5632.0000000001','5632'), ('232.5','233'),
+    ('232.4999','232'), ('7300+1000','7300+1000'),
+])
+def test_r17_compressive_captions_share_basic_pressure_without_state_drift(valid_state, raw, expected, tmp_path):
+    import json
+    import phase_9_centralizer as phase9
+    case = audit.AuditRegressions()
+    app = case.app(deepcopy(valid_state))
+    case.phase(app,'phase2_3')
+    app.text_input(key='_w_bhsp').set_value(raw).run()
+    case.phase(app,'phase7')
+    next(b for b in app.button if b.label=='Sync with Phase V').click().run()
+    confirm = next(b for b in app.button if b.label=='Confirm measured lab results')
+    assert not confirm.disabled
+    confirm.click().run()
+    # A real compiled report/currentness receipt, never a seeded success marker.
+    case.export(app)
+    case.phase(app,'phase7')
+    before = app.session_state.to_dict()
+    snapshot = {k:deepcopy(before.get(k)) for k in ('well_data','bhsp','lab_qc_params',
+        '_compiled_doc_bytes','_compiled_doc_signature','_centralizer_signature')}
+    payload = deepcopy(before['lab_payload_Main'])
+    grid = payload.pop('grid')
+    current = phase9.result_is_current(before)
+    for label in ('initial','rerun','navigation'):
+        if label=='rerun': app.run()
+        elif label=='navigation': case.phase(app,'phase1');case.phase(app,'phase7')
+        case.healthy(app)
+        captions = [c.value for c in app.caption]
+        (tmp_path/f'{label}-captions.json').write_text(json.dumps(captions,indent=2))
+        assert any(f'BHSP: {expected} psi' in c for c in captions)
+        bhst = app.session_state['well_data']['bhst']
+        for title in ('UCA','Crush Test'):
+            assert f'{title}: Temp = {bhst} °F (BHST); Pressure = {expected} psi (BHSP)' in captions
+        state = app.session_state.to_dict()
+        assert {k:state.get(k) for k in snapshot} == snapshot
+        current_payload = dict(state['lab_payload_Main'])
+        import pandas as pd
+        pd.testing.assert_frame_equal(current_payload.pop('grid'),grid)
+        assert current_payload == payload
+        assert state['well_data']['bhsp'] == state['lab_payload_Main']['bhsp'] == raw
+        assert phase9.result_is_current(state) == current
+        assert compute_phase_status(state)['phase7']['level']=='ok'
+    restored = audit.round_trip(app.session_state.to_dict())
+    assert restored['well_data']['bhsp']==raw
+    assert restored['lab_qc_params']==snapshot['lab_qc_params']
+
+
+@pytest.mark.parametrize('raw,expected', [(5632.0000000001,'5632'),(None,'None'),('', ''),('-', '-'),('xxxx+xxxx','xxxx+xxxx')])
+@pytest.mark.parametrize('uca,crush',[(True,False),(False,True),(True,True),(False,False)])
+def test_r17_compressive_caption_missing_markers_and_selection_are_display_only(raw, expected, uca, crush):
+    from streamlit.testing.v1 import AppTest
+    source = '''import streamlit as st
+import phase_7_lab
+phase_7_lab._render_compressive('Main', st.session_state['lab_qc_params']['Main'],
+    'caption-unit', 200., st.session_state['well_data']['bhsp'])
+'''
+    app = AppTest.from_string(source)
+    qc = {'compressive':measured(uca,crush)}
+    app.session_state['well_data']={'bhsp':raw}
+    app.session_state['lab_qc_params']={'Main':deepcopy(qc)}
+    for _ in range(2):
+        app.run();assert not app.exception
+        captions=[c.value for c in app.caption]
+        for selected,title in ((uca,'UCA'),(crush,'Crush Test')):
+            text=f'{title}: Temp = 200.0 °F (BHST); Pressure = {expected} psi (BHSP)'
+            assert (text in captions)==selected
+            assert any(c.startswith(title+': Temp = ') for c in captions)==selected
+        assert app.session_state['well_data']['bhsp']==raw
+        assert app.session_state['lab_qc_params']['Main']==qc

@@ -18,7 +18,7 @@ from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 from placement import (target_depth, top_label, host_label, slurry_intervals, EXCESS_FIELDS,
                        resolve_report_excess, summary_config_for_job, hardware_choices,
                        hardware_row_metadata, target_row_metadata, hardware_context_label,
-                       HOST_DESCRIPTIONS, SUMMARY_VERSION, VOLUME_BASES, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
+                       HOST_DESCRIPTIONS, SUMMARY_VERSION, TIE_BACK_ORIGINS, SQUEEZE_SCOPES)
 from datetime import date, datetime
 import materials_db
 import pumping_simulation
@@ -41,6 +41,30 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "master_template.docx"
 
 SLURRY_ARCHETYPES = materials_db.PLACEMENT_SLURRIES
 REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
+
+def _word_download_filename(doc_control):
+    """Filename-only view of Phase I metadata; never edit the report or sources."""
+    parts = ["Cementing Program"]
+    for field in ("job_type", "well_location", "well_name", "rig_name", "proposal_number", "revision_no"):
+        value = doc_control.get(field)
+        text = "" if value is None else str(value).strip()
+        if field == "job_type":
+            size = re.fullmatch(r'(CSG|LNR|TIE BACK LNR)\s+(\d{1,3}(?:\.\d{1,6})?)'
+                                r'(?:\s+(\d{1,2})/(2|4|8|16|32|64))?\s*["″”]?', text)
+            if size and (size[3] is None or int(size[3]) < int(size[4])):
+                inches = Decimal(size[2])
+                if size[3] is not None:
+                    inches += Decimal(size[3]) / Decimal(size[4])
+                text = f"{size[1]} {format(inches.normalize(), 'f')}"
+        marker = {"proposal_number": "PR", "revision_no": "R"}.get(field)
+        if marker:
+            text = re.sub(rf"^(?:{marker}\s*#\s*)+", "", text, flags=re.IGNORECASE)
+        text = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', " ", text)
+        text = " ".join(text.split()).rstrip(". ")
+        if text:
+            parts.append(f"{marker} #{text}" if marker else text)
+    return " - ".join(parts) + ".docx"
+
 
 def _word_program_quantities(row):
     row = dict(row)
@@ -428,6 +452,22 @@ def _placement_excess_values(config, job_type, summary_config=None, slurry=None)
             for key, value in values.items()}
 
 
+def _summary_placement_intervals(placements, cement_params, job_type, target):
+    """Copy planned narrative boundaries; leave calculated placement untouched."""
+    chained = job_type.startswith("CSG ") or job_type.startswith("LNR ")
+    projected, previous_planned_top = {}, None
+    for slurry, interval in placements.items():
+        row = dict(interval)
+        label, depth = top_label((cement_params or {}).get(slurry, {}), job_type, target)
+        if depth is not None:
+            row.update(top=label, top_depth=depth)
+            if chained and previous_planned_top is not None:
+                row.update(bottom_depth=previous_planned_top, bottom=f"{previous_planned_top:.1f} m MD")
+        projected[slurry] = row
+        previous_planned_top = depth
+    return projected
+
+
 def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None, summary_config=None):
     """Use shared intervals and resolved report-only excess values in Word."""
     if interval is None:
@@ -594,7 +634,7 @@ def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_c
         if slurry not in active_slurries:
             continue
         record = config.get("per_slurry", {}).get(slurry, {})
-        basis = record.get("volume_basis", "auto")
+        basis = config.get("volume_basis", record.get("volume_basis", "auto"))
         try:
             excess = resolve_report_excess(job_type, placement_config, config or None, slurry)
         except ValueError:
@@ -667,6 +707,7 @@ def generate_executive_summary(
     target = target_depth(hw_df, job_type, placement_config)
     target_text = f"{target:.1f} m MD" if target is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
     placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {}, fluid_data)
+    placements = _summary_placement_intervals(placements, cement_params, job_type, target)
     # Classification is per slurry: wet additives do not turn a dry design into two designs.
     dry_designs = []
     for slurry in active_slurries:
@@ -716,7 +757,8 @@ def generate_executive_summary(
         subject = f"{density} {slurry.lower()} cement slurry will be cemented"
         bottom = f'{interval["bottom_depth"]:.1f} m' if interval["bottom_depth"] is not None else interval["bottom"]
         if "SQUEEZE" in job:
-            chain.append(f"{subject} at {target_text}")
+            chain.append(f"{subject} at {target_text}" +
+                         (f", with top of cement at {interval['top']}" if interval["top_depth"] is not None else ""))
             continue
         if index == 0 and ("CSG" in job or ("LNR" in job and "TIE BACK" not in job)):
             bottom = "the shoe at " + bottom
@@ -1939,7 +1981,6 @@ def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
                 continue
             record = config.get("per_slurry", {}).get(slurry, {})
             st.markdown(f"**{slurry} report details**")
-            widget("volume_basis", f"Volume basis — {slurry}", record, slurry, options=VOLUME_BASES)
             for field, label, _ in EXCESS_FIELDS:
                 widget(field, f"{label} override — {slurry}", record, slurry, number=True)
             if "LNR" in job_type:
@@ -2175,9 +2216,7 @@ def render():
                         doc.save(doc_io)
                         doc_io.seek(0)
                         
-                        well_label = str(st.session_state.get("well_name", "Well")).strip()
-                        safe_label = "".join(c for c in well_label if c.isalnum() or c in ("-", "_")).strip() or "Untitled"
-                        filename = f"Cementing_Program_{safe_label}_{datetime.today().strftime('%Y%m%d_%H%M')}.docx"
+                        filename = _word_download_filename(st.session_state.get("doc_control", {}))
                         
                         final_bytes = postprocess_well_report(doc_io.getvalue(), master_context["well_profile_report"],
                                                               master_context["note_vertical"], master_context["cement_chart_report"],

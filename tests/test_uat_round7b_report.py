@@ -413,11 +413,80 @@ def test_missing_renderer_is_controlled_and_import_is_lazy(project):
             output.render_chart_png(ctx["well_profile_report"])
 
 
+
+def _r17_restore_exact_lab_total_border_delta(before, after):
+    """Validate and reverse ONLY BUG-01's approved total-row border delta.
+
+    The original Round 7B full XML comparisons remain authoritative for all
+    other structure. This rejects unexpected new edges, attributes, and cells.
+    """
+    from lxml import etree
+    from docx.oxml import OxmlElement
+    canon = lambda el: etree.tostring(el, method="c14n", exclusive=True)
+    old_tables = [t for t in before.tables if t.rows and t.rows[0].cells[0].text == "Conventional"]
+    new_tables = [t for t in after.tables if t.rows and t.rows[0].cells[0].text == "Conventional"]
+    assert len(old_tables) == len(new_tables) == 1  # Main-only Round 7B fixture.
+    totals = 0
+    for original, actual in zip(old_tables, new_tables):
+        assert len(original.rows) == len(actual.rows)
+        assert len(original._tbl.tblGrid.gridCol_lst) == len(actual._tbl.tblGrid.gridCol_lst) == 6
+        for old_row, new_row in zip(original.rows, actual.rows):
+            texts = [c.text for c in old_row.cells]
+            if len(old_row._tr.tc_lst) != 6 or texts[:5] != [""] * 5 or not texts[5]:
+                continue
+            totals += 1
+            assert len(new_row._tr.tc_lst) == 6
+            assert [c.text for c in new_row.cells] == texts
+            old_borders = [c._tc.tcPr.find(qn("w:tcBorders")) for c in old_row.cells]
+            new_borders = [c._tc.tcPr.find(qn("w:tcBorders")) for c in new_row.cells]
+            assert all(edge is not None for edge in old_borders + new_borders)
+            for index in range(5):
+                expected = deepcopy(old_borders[index])
+                for side in ("top", "left", "bottom", "right"):
+                    edge = expected.find(qn("w:" + side))
+                    if edge is None:
+                        edge = OxmlElement("w:" + side)
+                        expected.append(edge)
+                    edge.set(qn("w:val"), "nil")
+                assert canon(new_borders[index]) == canon(expected)
+                new_row.cells[index]._tc.tcPr.replace(new_borders[index], deepcopy(old_borders[index]))
+            expected_mass = deepcopy(old_borders[5])
+            left = expected_mass.find(qn("w:left"))
+            if left is None or left.get(qn("w:val")) in ("nil", "none"):
+                shared = old_borders[4].find(qn("w:right"))
+                assert shared is not None and shared.get(qn("w:val")) not in ("nil", "none")
+                edge = deepcopy(shared)
+                edge.tag = qn("w:left")
+                if left is None:
+                    expected_mass.insert(0, edge)
+                else:
+                    expected_mass.replace(left, edge)
+            assert canon(new_borders[5]) == canon(expected_mass)
+            new_row.cells[5]._tc.tcPr.replace(new_borders[5], deepcopy(old_borders[5]))
+    assert totals == 2  # Exactly two Main-slurry totals: Conventional and Additives.
+
+
+def test_r17_lab_border_compatibility_rejects_unapproved_mutations(project):
+    ctx = context(project)
+    source = rendered(ctx)
+    output_bytes = output.postprocess_well_report(source, ctx["well_profile_report"], ctx["note_vertical"])
+    before = Document(BytesIO(source))
+    for index, side in ((0, "right"), (5, "left")):
+        after = Document(BytesIO(output_bytes))
+        table = next(t for t in after.tables if t.rows[0].cells[0].text == "Conventional")
+        row = next(r for r in table.rows if not any(c.text for c in r.cells[:5]) and r.cells[5].text)
+        edge = row.cells[index]._tc.tcPr.find(qn("w:tcBorders")).find(qn("w:" + side))
+        assert edge is not None
+        edge.set(qn("w:color"), "FF0000")
+        with pytest.raises(AssertionError):
+            _r17_restore_exact_lab_total_border_delta(before, after)
+
 def test_unrelated_xml_package_and_survey_cell_properties_are_preserved(project):
     ctx = context(project)
     before = rendered(ctx)
     after = output.postprocess_well_report(before, ctx["well_profile_report"], ctx["note_vertical"])
     old, new = Document(BytesIO(before)), Document(BytesIO(after))
+    _r17_restore_exact_lab_total_border_delta(old, new)
     def xml(element):
         from lxml import etree
         return None if element is None else etree.tostring(element, method="c14n")
@@ -473,6 +542,7 @@ def test_only_six_authorized_spacers_removed_break_and_ix_unchanged(project, kin
     def xml(element):
         return etree.tostring(element, method="c14n")
     after = Document(BytesIO(output.postprocess_well_report(before, ctx["well_profile_report"], ctx["note_vertical"])))
+    _r17_restore_exact_lab_total_border_delta(old, after)
     new_ix = next(p._p for p in after.paragraphs if p.text.strip() == "IX. Centralizer Placement Recommendation")
     assert xml(new_ix) == xml(ix)
     assert xml(new_ix.getprevious()) == xml(page_break)

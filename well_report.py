@@ -408,6 +408,92 @@ def _inactive_section_vi_paragraphs(doc, programs):
     return inactive
 
 
+def _attach_lab_total_cells(doc):
+    """Hide only the five empty cells beside each slurry Lab mass total."""
+    from docx.table import Table
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    elements = list(doc.element.body)
+    text = lambda e: ''.join(t.text or '' for t in e.iter(qn('w:t'))).strip()
+    starts = [i for i,e in enumerate(elements) if text(e) == 'VII. Laboratory Report']
+    ends = [i for i,e in enumerate(elements) if text(e) == 'VIII. Directional Well Survey Data']
+    error = 'Lab Report total-cell formatting requires the approved six-column slurry table structure.'
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ValueError(error)
+    header = ['Material Type', 'Code', 'Lot Number', 'Concentration', 'Design Unit', 'Mass (g/600 mL)']
+    slurry, seen, formatted = None, set(), set()
+    totals = []
+    for element in elements[starts[0]+1:ends[0]]:
+        if element.tag == qn('w:p') and text(element).endswith(' Cement Slurry Results'):
+            slurry = text(element)
+            if slurry in seen:
+                raise ValueError(error)
+            seen.add(slurry)
+        if element.tag != qn('w:tbl'):
+            continue
+        table = Table(element, doc._body)
+        rows = table.rows
+        if not rows or rows[0].cells[0].text != 'Conventional':
+            continue
+        labels = [i for i,r in enumerate(rows) if text(r._tr) == 'Additives']
+        if (slurry is None or slurry in formatted or len(table._tbl.tblGrid.gridCol_lst) != 6 or
+                len(labels) != 1 or rows[0].cells[0].text != 'Conventional'):
+            raise ValueError(error)
+        formatted.add(slurry)
+        for start,end in ((0,labels[0]),(labels[0],len(rows))):
+            if (start+1 >= end or len(rows[start]._tr.tc_lst) != 1 or
+                    rows[start]._tr.tc_lst[0].grid_span != 6 or
+                    [c.text for c in rows[start+1].cells] != header):
+                raise ValueError(error)
+            material_rows = rows[start+2:end]
+            candidates = []
+            for row in material_rows:
+                if (len(row._tr.tc_lst) != 6 or row._tr.xpath('.//w:fldChar | .//w:drawing')):
+                    raise ValueError(error)
+                if not text(row._tr):
+                    # Preserve the template's empty separator, including its
+                    # existing vertical continuations; it is not a total row.
+                    if start != 0 or row._tr is not material_rows[-1]._tr:
+                        raise ValueError(error)
+                    continue
+                if row._tr.xpath('.//w:gridSpan | .//w:vMerge'):
+                    raise ValueError(error)
+                if not any(c.text for c in row.cells[:5]) and row.cells[5].text:
+                    candidates.append(row)
+            populated = [r for r in material_rows if text(r._tr)]
+            if len(candidates) > 1 or (candidates and candidates[0]._tr is not populated[-1]._tr):
+                raise ValueError(error)
+            totals.extend(candidates)
+    if formatted != seen:
+        raise ValueError(error)
+    # Validate the whole target region before applying any presentation change.
+    for row in totals:
+        cells = row.cells
+        borders = cells[5]._tc.get_or_add_tcPr().find(qn('w:tcBorders'))
+        left = borders.find(qn('w:left')) if borders is not None else None
+        if left is None or left.get(qn('w:val')) in ('nil', 'none'):
+            shared = cells[4]._tc.tcPr.find(qn('w:tcBorders'))
+            shared = shared.find(qn('w:right')) if shared is not None else None
+            if borders is None or shared is None or shared.get(qn('w:val')) in ('nil','none'):
+                raise ValueError(error)
+            edge = deepcopy(shared); edge.tag = qn('w:left')
+            if left is not None:
+                borders.replace(left, edge)
+            else:
+                borders.insert(0, edge)
+        for cell in cells[:5]:
+            properties = cell._tc.get_or_add_tcPr()
+            borders = properties.find(qn('w:tcBorders'))
+            if borders is None:
+                borders = OxmlElement('w:tcBorders'); properties.append(borders)
+            for side in ('top','left','bottom','right'):
+                edge = borders.find(qn('w:'+side))
+                if edge is None:
+                    edge = OxmlElement('w:'+side); borders.append(edge)
+                edge.set(qn('w:val'), 'nil')
+
+
 def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_report=None, centralizer_report=None, *, pumping_report=None, schematic_report=None, section_vi_programs=None):
     """Modify only exact anchors in a rendered, trusted template copy."""
     from docx import Document
@@ -582,6 +668,7 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             picture = run.add_picture(BytesIO(render_schematic_png(schematic_report)),
                                       width=_content_width(doc, schematic_anchor))
             picture._inline.docPr.set("descr", "Well Schematic")
+    _attach_lab_total_cells(doc)
     result = BytesIO()
     doc.save(result)
     return result.getvalue()
