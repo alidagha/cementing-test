@@ -24,7 +24,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.16'
       - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt pytest==9.1.1
       - name: Fast gate
@@ -45,7 +45,7 @@ jobs:
       - run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.16'
       - run: python -m pip install -r requirements.txt pytest==9.1.1
       - name: Collect the complete original tree without executing tests
         shell: bash
@@ -91,7 +91,7 @@ jobs:
       - run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.16'
       - run: python -m pip install -r requirements.txt pytest==9.1.1
       - uses: actions/download-artifact@v4
         with:
@@ -140,7 +140,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$SHADOW_EXPECTED_SHA"
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.16'
       - name: Fail-closed dependency gate
         run: python -B tools/round17_shadow.py gate --event "$GITHUB_EVENT_NAME"
       - name: Install pinned dependencies for PR evidence certification
