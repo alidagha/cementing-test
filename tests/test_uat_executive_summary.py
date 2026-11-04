@@ -101,13 +101,25 @@ class ExecutiveSummaryReferences(unittest.TestCase):
         tail_top = 3030.-(79.-track)/capacity
         self.assertLess(tail_top-731./capacity, 0.)  # Official Lead volume fills the annulus and returns at Surface.
         self.assertEqual(text.split('\n\n')[:2], [P1, P2])
-        self.assertEqual(text.split('\n\n')[2],
+        historical = (
             '9 5/8" Casing will be set and cemented at 3030.0 m MD. '
             'Dry blend and neat cement design will be used to cement this casing; '
             f'123 pcf tail cement slurry will be cemented from the shoe at 3030.0 m to {tail_top:.1f} m '
             f'and 152 pcf lead cement slurry will be cemented from {tail_top:.1f} m to surface. '
             'The calculated cement volume is based on 100% excess for OH-CSG and 20% excess for CSG-CSG, '
             'giving 731.0 bbl for lead slurry and 79.0 bbl for tail slurry.')
+        import ast, subprocess
+        parent = ast.parse(subprocess.check_output(['git','show',
+            '8133dc03cd57743ead434b9a39d876410eab8b33:phase_10_procedure.py']))
+        namespace = dict(report.__dict__)
+        exec(compile(ast.Module(body=[n for n in parent.body if isinstance(n,ast.FunctionDef)
+            and n.name=='generate_executive_summary'],type_ignores=[]),'original_summary_reference','exec'),namespace)
+        with patch.object(report,'generate_executive_summary',namespace['generate_executive_summary']):
+            self.assertEqual(generate(adds={'Lead':DRY}).split('\n\n')[2],historical)
+        planned = historical.replace(f'to {tail_top:.1f} m','to 2830.0 m').replace(
+            f'from {tail_top:.1f} m','from 2830.0 m')
+        self.assertNotEqual(historical,planned)  # Returning the calculated narrative cannot pass.
+        self.assertEqual(text.split('\n\n')[2],planned)
 
     def test_all_current_jobs_safe_and_taxonomy_unchanged(self):
         self.assertEqual(len(materials_db.JOB_TYPES), 16)

@@ -428,6 +428,22 @@ def _placement_excess_values(config, job_type, summary_config=None, slurry=None)
             for key, value in values.items()}
 
 
+def _summary_placement_intervals(placements, cement_params, job_type, target):
+    """Copy planned narrative boundaries; leave calculated placement untouched."""
+    chained = job_type.startswith("CSG ") or job_type.startswith("LNR ")
+    projected, previous_planned_top = {}, None
+    for slurry, interval in placements.items():
+        row = dict(interval)
+        label, depth = top_label((cement_params or {}).get(slurry, {}), job_type, target)
+        if depth is not None:
+            row.update(top=label, top_depth=depth)
+            if chained and previous_planned_top is not None:
+                row.update(bottom_depth=previous_planned_top, bottom=f"{previous_planned_top:.1f} m MD")
+        projected[slurry] = row
+        previous_planned_top = depth
+    return projected
+
+
 def _attach_placement_fields(payload, slurry_params, hw_df, job_type, placement_config, interval=None, summary_config=None):
     """Use shared intervals and resolved report-only excess values in Word."""
     if interval is None:
@@ -667,6 +683,7 @@ def generate_executive_summary(
     target = target_depth(hw_df, job_type, placement_config)
     target_text = f"{target:.1f} m MD" if target is not None else ".... m MD [TARGET DEPTH NOT SELECTED IN PHASE II/III]"
     placements = slurry_intervals(hw_df, job_type, placement_config, active_slurries, cement_params or {}, fluid_data)
+    placements = _summary_placement_intervals(placements, cement_params, job_type, target)
     # Classification is per slurry: wet additives do not turn a dry design into two designs.
     dry_designs = []
     for slurry in active_slurries:
@@ -716,7 +733,8 @@ def generate_executive_summary(
         subject = f"{density} {slurry.lower()} cement slurry will be cemented"
         bottom = f'{interval["bottom_depth"]:.1f} m' if interval["bottom_depth"] is not None else interval["bottom"]
         if "SQUEEZE" in job:
-            chain.append(f"{subject} at {target_text}")
+            chain.append(f"{subject} at {target_text}" +
+                         (f", with top of cement at {interval['top']}" if interval["top_depth"] is not None else ""))
             continue
         if index == 0 and ("CSG" in job or ("LNR" in job and "TIE BACK" not in job)):
             bottom = "the shoe at " + bottom
