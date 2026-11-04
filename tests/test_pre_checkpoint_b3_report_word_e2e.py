@@ -32,6 +32,247 @@ CASE = audit.AuditRegressions()
 
 
 @pytest.fixture(scope="module")
+def r17b2_sources(r17_filename_source):
+    """Synthetic repository prerequisites; measured lab is confirmed through its UI."""
+    cache = {CSG: deepcopy(r17_filename_source)}
+
+    def get(job):
+        if job not in cache:
+            if job == db.CT_JOB:
+                from test_round13b_b4_ct_report import valid_ct
+                state = valid_ct.__wrapped__()
+            else:
+                state = CASE.configured_app(job, include_standalone_spacer=False).session_state.to_dict()
+            if job == 'LNR 7"':
+                state['fluids_config']['active'] = ['Lead', 'Tail', 'Displacement Fluid']
+                for name in ('Lead', 'Tail'):
+                    state['fluids_config']['params'][name] = deepcopy(state['fluids_config']['params']['Main'])
+                    state['cement_params'][name] = dict(state['cement_params']['Main'], top_mode='Not entered', top_depth=None)
+                    state['cement_additives_dfs'][name] = state['cement_additives_dfs']['Main'].copy()
+                    state['lab_qc_params'][name] = dict(state['lab_qc_params']['Main'], reviewed=False)
+                app = CASE.app(audit.round_trip(state))
+                for phase in ('phase4', 'phase5', 'phase7'):
+                    CASE.phase(app, phase)
+                for key in [b.key for b in app.button if b.label == 'Sync with Phase V']:
+                    app.button(key=key).click().run()
+                for _ in ('Lead', 'Tail'):
+                    next(b for b in app.button if b.label == 'Confirm measured lab results' and not b.disabled).click().run()
+                execute_centralizer(app.session_state)
+                state = app.session_state.to_dict()
+            cache[job] = state
+        return deepcopy(cache[job])
+    return get
+
+
+def r17b2_engineering(state):
+    from placement import slurry_intervals
+    import well_schematic_adapter as schematic
+    names = report.active_slurry_names(state['fluids_config']['active'])
+    keys = ('hardware_table', 'well_data', 'well_geometry', 'placement_config', 'fluid_data',
+            'fluids_config', 'cement_params', 'lab_qc_params')
+    values = {k: state.get(k) for k in keys}
+    values.update({k: v for k, v in state.items() if k.startswith(('cement_calc_', 'cement_raw_calc_', 'lab_payload_'))})
+    return (ps.fingerprint(values), ps.fingerprint(chart.build_chart_model(state)),
+            phase9.source_signature(state), pumping.source_signature(state), schematic.source_signature(state),
+            tuple((n, ps.lab_source_signature(state, n)) for n in names),
+            slurry_intervals(state['hardware_table'], state['job_type'], state['placement_config'], names,
+                             state['cement_params'], state['fluid_data']),
+            {k: v for k, v in eng.compute_phase_status(state).items() if k != 'phase10'})
+
+
+def r17b2_build(app, sentence, path):
+    from streamlit.elements.widgets import button as buttons
+    with patch.object(buttons, 'marshall_file', wraps=buttons.marshall_file) as served:
+        data = build(app)
+    matches = [c.args for c in served.call_args_list if c.args[2].label == 'Download Final Document (.docx)']
+    assert matches and matches[-1][1] == data
+    expected_name = ('Cementing Program - CSG 9.625 - Regression Well - R #0.docx' if app.session_state['job_type'] == CSG else
+                     'Cementing Program - LNR 7 - Regression Well - R #0.docx')
+    assert matches[-1][4] == app.session_state['_compiled_doc_filename'] == expected_name
+    doc = Document(BytesIO(data))
+    text = '\n'.join(p.text for p in doc.paragraphs)
+    assert text.count(sentence) == 1
+    assert app.session_state['_compiled_doc_signature'] == report.document_signature(context(app.session_state.to_dict()), report.TEMPLATE_PATH)
+    signature = app.session_state['_compiled_doc_signature']
+    next(b for b in app.get('download_button') if b.label == 'Download Final Document (.docx)').click().run()
+    assert app.session_state['_compiled_doc_bytes'] == data
+    assert app.session_state['_compiled_doc_signature'] == signature
+    assert app.session_state['_compiled_doc_filename'] == expected_name
+    path.write_bytes(data)
+    return data
+
+
+def r17b2_project_download(app):
+    from streamlit.elements.widgets import button as buttons
+    with patch.object(buttons, 'marshall_file', wraps=buttons.marshall_file) as served:
+        next(b for b in app.button if b.label == 'Prepare project download').click().run()
+    matches = [c.args for c in served.call_args_list if c.args[2].label == 'Download Project (.json)']
+    assert matches
+    data = matches[-1][1]
+    next(b for b in app.get('download_button') if b.label == 'Download Project (.json)').click().run()
+    CASE.healthy(app)
+    return data.encode() if isinstance(data, str) else data
+
+
+@pytest.mark.parametrize('job,mode', [(CSG, 'apply'), ('LNR 7"', 'ignore')])
+def test_r17b2_real_word_toggle_download_and_uploaded_restore(r17b2_sources, job, mode, tmp_path):
+    app = CASE.app(r17b2_sources(job))
+    names = ['Main'] if job == CSG else ['Lead', 'Tail']
+    app.session_state['executive_summary_config'] = {'version': 1, 'job_type': job, 'per_slurry': {
+        name: {'volume_basis': 'direct', 'excess_csg_oh_pct': 25. + 25. * i,
+               'excess_csg_csg_pct': 10.5 if i == 0 else 20.} for i, name in enumerate(names)}}
+    CASE.phase(app, 'phase2_3')
+    for label, value in [('Excess CSG-OH %', 25.), ('Excess CSG-CSG %', 10.5)]:
+        next(w for w in app.number_input if w.label == label).set_value(value).run()
+    control = next(w for w in app.selectbox if w.label == 'Chart Capacity Excess Mode')
+    control.set_value('ignore').run()
+    ignored = chart.resolve_cement_placement(app.session_state)
+    next(w for w in app.selectbox if w.label == 'Chart Capacity Excess Mode').set_value('apply').run()
+    assert chart.resolve_cement_placement(app.session_state) != ignored  # The engineering control stays effective.
+    next(w for w in app.selectbox if w.label == 'Chart Capacity Excess Mode').set_value(mode).run()
+    execute_centralizer(app.session_state)
+    receipt = r17b2_engineering(app.session_state.to_dict())
+    if job == CSG:
+        client = 'The calculated cement volume is based on client request, giving 50.0 bbl for main slurry.'
+        actual = 'The calculated cement volume is based on 25% excess for OH-CSG and 10.5% excess for CSG-CSG, giving 50.0 bbl for main slurry.'
+    else:
+        client = 'The calculated cement volume is based on client request, giving 50.0 bbl for lead slurry and 50.0 bbl for tail slurry.'
+        actual = ('The calculated cement volume is based on 25% excess for OH-CSG and 10.5% excess for CSG-CSG, giving 50.0 bbl for lead slurry. '
+                  'The calculated cement volume is based on 50% excess for OH-CSG and 20% excess for CSG-CSG, giving 50.0 bbl for tail slurry.')
+    documents = []
+    for basis, sentence in [('client_request', client), ('excess', actual)]:
+        CASE.phase(app, 'phase2_3')
+        choices = [w for w in app.selectbox if w.label == 'Volume Basis']
+        assert len(choices) == 1 and choices[0].options == ['Client Request', 'Actual Calculation']
+        old_sig = app.session_state.to_dict().get('_compiled_doc_signature')
+        choices[0].set_value(basis).run()
+        no_document(app.session_state)
+        assert r17b2_engineering(app.session_state.to_dict()) == receipt
+        assert next(w for w in app.selectbox if w.label == 'Chart Capacity Excess Mode').value == mode
+        CASE.phase(app, 'phase10')
+        assert not any(w.label.startswith('Volume basis — ') for w in app.selectbox)
+        for name in names:
+            for label in ('Excess CSG-OH % override — ', 'Excess CSG-CSG % override — '):
+                assert any(w.label == label + name for w in app.number_input)
+            if job.startswith('LNR'):
+                assert any(w.label == 'Wet stands — ' + name for w in app.number_input)
+                assert any(w.label == 'Liner lap (m) — ' + name for w in app.number_input)
+        data = r17b2_build(app, sentence, tmp_path / (basis + '.docx'))
+        assert app.session_state['_compiled_doc_signature'] != old_sig
+        assert r17b2_engineering(app.session_state.to_dict()) == receipt
+        documents.append(data)
+        raw = r17b2_project_download(app)
+        (tmp_path / (basis + '.json')).write_bytes(raw)
+        fresh = CASE.app()
+        next(w for w in fresh.file_uploader if w.label == 'Load Project (.json)').set_value((basis + '.json', raw, 'application/json')).run()
+        if any(b.key == '_confirm_upload_replacement' for b in fresh.button):
+            assert any('unsaved changes' in w.value for w in fresh.warning)
+            fresh.button(key='_confirm_upload_replacement').click().run()
+        CASE.healthy(fresh)
+        no_document(fresh.session_state)
+        assert not phase9.result_is_current(fresh.session_state)
+        assert fresh.session_state['executive_summary_config'] == app.session_state['executive_summary_config']
+        execute_centralizer(fresh.session_state)  # Genuine backend rebuild; no restored private receipt is trusted.
+        CASE.phase(fresh, 'phase2_3')
+        assert next(w for w in fresh.selectbox if w.label == 'Volume Basis').value == basis
+        assert r17b2_engineering(fresh.session_state.to_dict()) == receipt
+        r17b2_build(fresh, sentence, tmp_path / (basis + '-restored.docx'))
+        CASE.phase(app, 'phase2_3')
+    # Same ZIP members and byte-equal parts; only the exact checked prose differs in document.xml.
+    with ZipFile(BytesIO(documents[0])) as a, ZipFile(BytesIO(documents[1])) as b:
+        assert a.namelist() == b.namelist()
+        for name in a.namelist():
+            x, y = a.read(name), b.read(name)
+            if name == 'word/document.xml':
+                assert x.count(client.encode()) == y.count(actual.encode()) == 1
+                x, y = x.replace(client.encode(), b'VOLUME_SENTENCE'), y.replace(actual.encode(), b'VOLUME_SENTENCE')
+            assert x == y, name
+
+
+def test_r17b2_manual_review_build_keep_regenerate_restore(r17b2_sources, tmp_path):
+    app = CASE.app(r17b2_sources(CSG))
+    CASE.phase(app, 'phase2_3')
+    next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
+    client = 'The calculated cement volume is based on client request, giving 50.0 bbl for main slurry.'
+    r17b2_build(app, client, tmp_path / 'client.docx')
+    receipt = r17b2_engineering(app.session_state.to_dict())
+    manual = app.session_state['exec_summary_text'] + '\n\nOperator-reviewed summary annotation.'
+    next(w for w in app.text_area if w.label.startswith('Executive Summary Text')).set_value(manual).run()
+    CASE.phase(app, 'phase2_3')
+    next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('excess').run()
+    CASE.phase(app, 'phase10')
+    blocked(app)
+    assert app.session_state['exec_summary_text'] == manual
+    app.button(key='_keep_exec_summary_text').click().run()
+    kept = r17b2_build(app, client, tmp_path / 'kept.docx')
+    assert '\n\nOperator-reviewed summary annotation.' in '\n'.join(semantics(kept)[0])
+    app.button(key='_regenerate_exec_summary_text').click().run()
+    actual = 'The calculated cement volume is 50.0 bbl.'  # No excess source was supplied.
+    regenerated = r17b2_build(app, actual, tmp_path / 'regenerated.docx')
+    assert 'Operator-reviewed summary annotation.' not in '\n'.join(semantics(regenerated)[0])
+    app.button(key='_restore_exec_summary_text').click().run()
+    blocked(app)
+    assert app.session_state['exec_summary_text'] == manual
+    assert r17b2_engineering(app.session_state.to_dict()) == receipt
+
+
+@pytest.mark.parametrize('fault', ['rate', 'lab', 'geometry'])
+def test_r17b2_basis_never_bypasses_independent_admission(r17b2_sources, fault, tmp_path):
+    app = CASE.app(r17b2_sources(CSG))
+    CASE.phase(app, 'phase2_3')
+    next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
+    r17b2_build(app, 'The calculated cement volume is based on client request, giving 50.0 bbl for main slurry.', tmp_path / 'before.docx')
+    if fault == 'rate':
+        CASE.phase(app, 'phase4')
+        app.text_input(key='rate_Main').set_value('bad').run()
+    elif fault == 'lab':
+        CASE.phase(app, 'phase7')
+        next(w for w in app.number_input if w.label == 'Surface Sample Hours - Main').set_value(8.25).run()
+        qc = app.session_state['lab_qc_params']['Main']
+        assert qc['surface_hardened_hours'] == 8.25
+        assert qc['review_signature'] != eng.lab_review_signature(qc, app.session_state['lab_grid_dfs']['Main'])
+        assert any(b.label == 'Confirm measured lab results' for b in app.button)
+    else:
+        CASE.phase(app, 'phase2_3')
+        next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value('').run()
+    CASE.phase(app, 'phase2_3')
+    next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('excess').run()
+    blocked(app)
+    phase = {'rate': 'phase4', 'lab': 'phase7', 'geometry': 'phase2_3'}[fault]
+    assert eng.compute_phase_status(app.session_state)[phase]['level'] != 'ok'
+
+
+@pytest.mark.parametrize('job', ['TIE BACK LNR 7"', 'CMT PLUG', 'CMT SQUEEZE', db.CT_JOB])
+def test_r17b2_lightweight_sibling_ui_and_report_context(r17b2_sources, job):
+    app = CASE.app(r17b2_sources(job))
+    for basis in ('client_request', 'excess'):
+        CASE.phase(app, 'phase2_3')
+        next(w for w in app.selectbox if w.label == 'Volume Basis').set_value(basis).run()
+        CASE.phase(app, 'phase10')
+        assert not any(w.label.startswith('Volume basis — ') for w in app.selectbox)
+        ctx = context(app.session_state.to_dict())
+        assert ('based on client request' in unescape(ctx['exec_summary'])) == (basis == 'client_request')
+        assert not next(b for b in app.button if b.label == 'Build Word Document').disabled
+
+
+def test_r17b2_unsupported_basis_json_upload_is_rejected_without_source_replacement(r17b2_sources):
+    import json
+    app = CASE.app(r17b2_sources(CSG))
+    CASE.phase(app, 'phase2_3')
+    next(w for w in app.selectbox if w.label == 'Volume Basis').set_value('client_request').run()
+    before = deepcopy(app.session_state['executive_summary_config'])
+    checkpoint = json.loads(save_project(app))
+    for invalid in ('auto', 0, None, ['excess']):
+        bad = deepcopy(checkpoint)
+        bad['executive_summary_config']['volume_basis'] = invalid
+        raw = json.dumps(bad).encode()
+        next(w for w in app.file_uploader if w.label == 'Load Project (.json)').set_value(('invalid.json', raw, 'application/json')).run()
+        CASE.healthy(app)
+        assert any('executive_summary_config.volume_basis is not supported' in e.value for e in app.error)
+        assert app.session_state['executive_summary_config'] == before
+
+
+@pytest.fixture(scope="module")
 def r17_filename_source():
     app = CASE.configured_app(CSG, include_standalone_spacer=False)
     return app.session_state.to_dict()
