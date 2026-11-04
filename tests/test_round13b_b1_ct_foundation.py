@@ -354,7 +354,11 @@ def r17_original_placement_source(source):
 def legacy_placement_source(source):
     """Exclude only B1's explicit CT extension; retain every original source byte."""
     import ast
-    text = r17_original_placement_source(source).decode()
+    # The byte-exact pre-CT archive predates R17 report metadata. Only that
+    # pinned historical blob may bypass the two mandatory R17 reversals.
+    import subprocess
+    archive = subprocess.check_output(["git", "show", "80353e4:placement.py"])
+    text = (source if source == archive else r17_original_placement_source(source)).decode()
     tree = ast.parse(text)
     added = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "ct_setting_depth"]
     if not added:
@@ -377,6 +381,24 @@ def legacy_placement_source(source):
 '''
     assert text.count(controlled_target) == 1
     return text.replace(controlled_target, '    target = target_depth(table, job_type, config)\n', 1).encode()
+
+
+def test_r17_historical_placement_adapter_is_byte_exact_and_fail_closed():
+    import subprocess
+    from pathlib import Path
+    archive = subprocess.check_output(["git", "show", "80353e4:placement.py"])
+    assert legacy_placement_source(archive) == archive
+    assert b"import math\n" in archive
+    mutated_archive = archive.replace(b"import math\n", b"import math\n# unauthorized\n", 1)
+    assert mutated_archive != archive
+    with pytest.raises(AssertionError):
+        legacy_placement_source(mutated_archive)
+    current = Path("placement.py").read_bytes()
+    assert current != archive
+    approved = b'"squeeze_context_row", "tie_back_origin", "per_slurry", "volume_basis"}'
+    assert current.count(approved) == 1
+    with pytest.raises(AssertionError):
+        legacy_placement_source(current.replace(approved, b'"squeeze_context_row", "tie_back_origin", "per_slurry"}', 1))
 
 
 @pytest.mark.parametrize("change", ["depth_parser", "legacy_top", "ct_guard", "ct_handler", "import_side_effect", "formatting",
