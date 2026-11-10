@@ -48,10 +48,13 @@ STRUCTURAL_DESCRIPTIONS = {
     "Previous Liner Shoe",
     "Liner Shoe",
     "Tie Back Liner Shoe",
+    "Previous Tie Back Liner Shoe",
 }
 AUX_DESCRIPTIONS = {
     "Liner Lap",
     "Previous Liner Lap",
+    "Tie Back Liner Lap",
+    "Previous Tie Back Liner Lap",
     "Drill Pipes",
     "Tubing",
     "Open Hole Size",
@@ -211,7 +214,7 @@ def _renderer_type(desc: str) -> str:
         return "casing"
     if desc in ("Previous Liner Shoe", "Liner Shoe"):
         return "liner"
-    if desc == "Tie Back Liner Shoe":
+    if desc in ("Tie Back Liner Shoe", "Previous Tie Back Liner Shoe"):
         return "tieback"
     raise ValueError(f"unsupported structural description {desc!r}")
 
@@ -342,6 +345,15 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
     job = str(state.get("job_type", ""))
     kind = _job_kind(job)
     job_size = _job_size(job)
+    previous = None
+    if any(r.get("Description") in ("Previous Tie Back Liner Lap", "Previous Tie Back Liner Shoe") for r in rows):
+        from installed_geometry import physical_strings
+        from cement_chart_model import _segments
+        previous = next(s for s in physical_strings(rows, _segments,
+            {"Previous Casing", "Casing", "Previous Liner Shoe", "Liner Shoe"})
+            if s["description"] == "Previous Tie Back Liner Shoe")
+        if len({s["od_in"] for s in previous["sections"]}) != 1:
+            raise ValueError("Previous Tie Back schematic requires a uniform measured OD; tapered history is not represented by this renderer.")
 
     grouped: Dict[Tuple[str, float], List[Tuple[int, Mapping[str, Any]]]] = {}
     row_to_group: Dict[int, Tuple[str, float]] = {}
@@ -371,7 +383,9 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
         elif desc in ("Previous Liner Shoe", "Liner Shoe"):
             current_liner = kind == "liner" and desc == "Liner Shoe" and job_size is not None and abs(size - job_size) <= SIZE_TOL
             top = _resolve_liner_top(rows, desc, size, current_liner=current_liner)
-        else:  # Tie Back
+        elif desc == "Previous Tie Back Liner Shoe":
+            top = previous["top_md"]
+        else:  # Current Tie Back
             if kind == "tieback":
                 from cement_chart_model import resolve_chart_geometry
                 top = next(section["top_md"] for section in resolve_chart_geometry(state)["active_string"]
@@ -380,14 +394,8 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
                 if explicit is not None and _finite(explicit, "Tie Back Top", nonnegative=True) != top:
                     raise ValueError("Schematic Tie Back Top contradicts the certified active-string geometry")
             else:
-                interval_top, _ = _parse_md(entries[0][1].get("MD (m)"), "Historical Tie Back section")
-                if interval_top is None:
-                    top = _explicit_placement_depth(state, "tie_back_liner_lap_m", "Historical Tie Back Top")
-                else:
-                    top = interval_top
-                    explicit = (state.get("placement_config") or {}).get("tie_back_liner_lap_m")
-                    if explicit is not None and _finite(explicit, "Historical Tie Back Top", nonnegative=True) != top:
-                        raise ValueError("Historical Tie Back interval Top contradicts explicit schematic metadata")
+                from installed_geometry import tieback_top
+                top = tieback_top([row for _, row in entries], state.get("placement_config") or {}, hardware=rows)
 
         previous_end = top
         sections: List[Section] = []
@@ -840,6 +848,13 @@ def _ct_missing(value):
 def _ct_history_facts(rows, well_md, placement):
     """Validate every supplied fact before classifying absent historical geometry."""
     missing, facts = [], []
+    from installed_geometry import previous_tieback, point_depth, tieback_top
+    from cement_chart_model import _segments
+    previous_tie = previous_tieback(rows, _segments)
+    lap_roles = ("Tie Back Liner Lap", "Previous Tie Back Liner Lap")
+    current_laps = [row for row in rows if row.get("Description") == "Tie Back Liner Lap"]
+    if current_laps:
+        tieback_top([row for row in rows if row.get("Description") == "Tie Back Liner Shoe"], placement, hardware=rows)
     for index, row in enumerate(rows):
         desc = str(row.get("Description") or "").strip()
         ctx = f"Hardware row {index + 1} ({desc or 'Description missing'})"
@@ -873,7 +888,8 @@ def _ct_history_facts(rows, well_md, placement):
         if _ct_missing(raw):
             missing.append(f"{ctx}: MD (m) is missing")
         else:
-            start, end = _parse_md(raw, f"{ctx}.MD (m)")
+            start, end = ((None, point_depth(raw, f"{ctx}.MD (m)")) if desc in lap_roles
+                          else _parse_md(raw, f"{ctx}.MD (m)"))
             if end > well_md + DEPTH_TOL:
                 raise ValueError(f"{ctx}: MD exceeds the measured well MD")
             if desc in ("Liner Lap", "Previous Liner Lap") and start is not None:
@@ -914,6 +930,10 @@ def _ct_history_facts(rows, well_md, placement):
                 top = measured_top
             if top is None:
                 missing.append(f"{first['context']}: Liner Lap/Top is missing")
+        elif desc == "Previous Tie Back Liner Shoe":
+            top = previous_tie["top_md"]
+        elif desc == "Tie Back Liner Shoe" and current_laps:
+            top = tieback_top([row for row in rows if row.get("Description") == desc], placement, hardware=rows)
         elif desc == "Tie Back Liner Shoe":
             explicit = placement.get("tie_back_liner_lap_m")
             if explicit is not None:
@@ -941,7 +961,7 @@ def _ct_history_facts(rows, well_md, placement):
         if inner["size"] >= outer["size"] - SIZE_TOL or (outer["id"] is not None and inner["size"] >= outer["id"] - SIZE_TOL):
             raise ValueError(f"{inner['context']}: casing cannot pass the supplied outer OD/ID")
     for (desc, size), sections in groups.items():
-        if desc not in ("Previous Liner Shoe", "Liner Shoe", "Tie Back Liner Shoe"):
+        if desc not in ("Previous Liner Shoe", "Liner Shoe", "Tie Back Liner Shoe", "Previous Tie Back Liner Shoe"):
             continue
         child = sections[0]
         top = child.get("known_top")

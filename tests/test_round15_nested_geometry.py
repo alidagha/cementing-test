@@ -13,6 +13,346 @@ from engineering_tools import BBL_TO_CUFT
 from placement import hardware_choices, target_descriptions
 
 
+def r18b_previous_state(top=400., previous_top=0.):
+    """Explicitly synthetic measured strings, products/labs supplied separately."""
+    rows = hardware(
+        ('Previous Casing', '500', '9 5/8', 8.535),
+        ('Previous Liner Shoe', '300-1000', '7', 6.094),
+        ('Previous Liner Shoe', '700-1200', '5', 4.276),
+        ('Previous Tie Back Liner Lap', str(previous_top), '7', 6.094),
+        ('Previous Tie Back Liner Shoe', '300', '7', 6.094),
+        ('Tie Back Liner Lap', str(top), '5', 4.276),
+        ('Drill Pipes', str(top), '3 1/2', 2.764),
+        ('Tie Back Liner Shoe', '700', '5', 4.276),
+        ('Open Hole Size', '1000-1200', '6', 6.))
+    state = project('TIE BACK LNR 5"', rows, 1200.)
+    state['placement_config']['host_row'] = next(iter(hardware_choices(rows.iloc[[1]], {'Previous Liner Shoe'})))
+    return state
+
+
+def test_r18b_three_catalog_entries_are_exact_distinct_roles():
+    import materials_db as db
+    from placement import HOST_DESCRIPTIONS
+    expected = {'Tie Back Liner Lap', 'Previous Tie Back Liner Lap', 'Previous Tie Back Liner Shoe'}
+    assert expected <= set(db.HARDWARE_DESCRIPTIONS)
+    assert not expected & HOST_DESCRIPTIONS
+    assert not expected & target_descriptions('TIE BACK LNR 5"')
+
+
+@pytest.mark.parametrize('top', [0., 100.])
+def test_r18b_current_measured_lap_is_top_without_a_fabricated_interval(top):
+    state = synthetic_tieback(top=top)
+    table = state['hardware_table']
+    table.at[0, 'MD (m)'] = '700'
+    lap = hardware(('Tie Back Liner Lap', str(top), '7', 6.))
+    state['hardware_table'] = pd.concat([table, lap], ignore_index=True)
+    state['placement_config']['target_row'] = next(iter(hardware_choices(state['hardware_table'], target_descriptions(state['job_type']))))
+    before = pickle.dumps(state)
+    geometry = chart.resolve_chart_geometry(state)
+    expected = ([(0., top, 'Drill Pipes')] if top else []) + [(top, 700., 'Tie Back Liner Shoe')]
+    assert [(r['top_md'], r['bottom_md'], r['description']) for r in geometry['active_string']] == expected
+    assert centralizer_adapter.to_engine_geometry(state)['wellbore']['string_top'] == top
+    assert pickle.dumps(state) == before
+
+
+@pytest.mark.parametrize('top', [0., 100.])
+def test_r18b_previous_tieback_is_a_measured_installed_string(top):
+    import installed_geometry as installed
+    state = r18b_previous_state(previous_top=top)
+    rows = state['hardware_table'].to_dict('records')
+    strings = installed.physical_strings(rows, chart._segments, {'Previous Casing', 'Previous Liner Shoe'})
+    previous = [s for s in strings if s['description'] == 'Previous Tie Back Liner Shoe']
+    assert len(previous) == 1
+    assert (previous[0]['top_md'], previous[0]['shoe_md']) == (top, 300.)
+    assert previous[0]['indices'] == [4]
+    assert previous[0]['sections'] == [{'top_md': top, 'bottom_md': 300., 'od_in': 7.,
+        'id_in': 6.094, 'description': 'Previous Tie Back Liner Shoe'}]
+    geometry = chart.resolve_chart_geometry(state)
+    expected = ([(0., top, 8.535)] if top else []) + [(top, 300., 6.094), (300., 700., 6.094)]
+    assert boundary(geometry) == expected
+
+
+@pytest.mark.parametrize('interval,metadata', [(True,False),(False,True),(True,True)])
+def test_r18b_agreeing_explicit_top_authorities_do_not_rewrite_hardware(interval,metadata):
+    state = r18b_previous_state()
+    if interval:
+        state['hardware_table'].at[7,'MD (m)'] = '400-700'
+        state['placement_config']['target_row'] = next(iter(hardware_choices(
+            state['hardware_table'],target_descriptions(state['job_type']))))
+    if metadata:state['placement_config']['tie_back_liner_lap_m'] = 400.
+    before = pickle.dumps(state)
+    assert centralizer_adapter.to_engine_geometry(state)['wellbore']['string_top'] == 400.
+    assert pickle.dumps(state) == before
+
+
+def test_r18b_zero_depth_admission_is_only_for_measured_lap_roles():
+    from engineering_tools import compute_phase_status
+    from test_audit_regressions import well_profile_fixture
+    state = r18b_previous_state(previous_top=0.)
+    state.update(well_profile_fixture(md=1200.))
+    state.update(geo_md=1200.,geo_tvd=1200.)
+    state['well_data'] = {chart.PORE_FIELD:55.,chart.FRAC_FIELD:125.}  # Explicit synthetic formation prerequisites.
+    status = compute_phase_status(state)['phase2_3']
+    assert status['level'] == 'ok', status
+    for role,value in [('Previous Tie Back Liner Lap',''),('Previous Tie Back Liner Lap','0-100'),
+                       ('Previous Tie Back Liner Lap','-1'),('Previous Tie Back Liner Lap','nan'),
+                       ('Previous Casing','0'),('Drill Pipes','0')]:
+        changed = deepcopy(state)
+        changed['hardware_table'].loc[changed['hardware_table']['Description']==role,'MD (m)'] = value
+        assert compute_phase_status(changed)['phase2_3']['level'] != 'ok'
+
+
+def test_r18b_ct_history_consumes_previous_roles_without_inventing_missing_boundaries():
+    from well_schematic_adapter import _ct_history_facts
+    state = r18b_previous_state(previous_top=0.)
+    rows = state['hardware_table'].to_dict('records')
+    before = pickle.dumps(rows)
+    assert _ct_history_facts(rows,1200.,state['placement_config']) == []
+    assert pickle.dumps(rows) == before
+    for role in ('Previous Tie Back Liner Lap','Previous Tie Back Liner Shoe','Tie Back Liner Shoe'):
+        with pytest.raises(ValueError,match='Tie Back'):
+            _ct_history_facts([r for r in rows if r['Description']!=role],1200.,state['placement_config'])
+
+
+@pytest.mark.parametrize('fault', ['missing', 'negative', 'nonfinite', 'interval', 'duplicate',
+                                  'size', 'config', 'shoe', 'missing_dp', 'short_dp'])
+def test_r18b_current_top_conflicts_and_incomplete_path_fail_closed(fault):
+    state = r18b_previous_state()
+    table = state['hardware_table']
+    if fault == 'missing': table.at[5, 'MD (m)'] = None
+    elif fault == 'negative': table.at[5, 'MD (m)'] = '-1'
+    elif fault == 'nonfinite': table.at[5, 'MD (m)'] = 'inf'
+    elif fault == 'interval': table.at[5, 'MD (m)'] = '390-400'
+    elif fault == 'duplicate': state['hardware_table'] = pd.concat([table, table.iloc[[5]]], ignore_index=True)
+    elif fault == 'size': table.at[5, 'Size (in)'] = '7'
+    elif fault == 'config': state['placement_config']['tie_back_liner_lap_m'] = 399.
+    elif fault == 'shoe':
+        table.at[7, 'MD (m)'] = '399-700'
+        state['placement_config']['target_row'] = next(iter(hardware_choices(table, target_descriptions(state['job_type']))))
+    elif fault == 'missing_dp': state['hardware_table'] = table.drop(index=6)
+    else: table.at[6, 'MD (m)'] = '399'
+    before = pickle.dumps(state)
+    with pytest.raises(ValueError, match='Lap|Top|Hardware|geometry|Drill Pipes'):
+        chart.resolve_chart_geometry(state)
+    assert pickle.dumps(state) == before
+
+
+@pytest.mark.parametrize('fault', ['missing_lap', 'missing_shoe', 'duplicate_lap', 'duplicate_shoe',
+                                  'second_previous', 'lap_size', 'missing_id', 'bad_id', 'negative_id',
+                                  'reversed', 'gap', 'lap_interval', 'nonfinite', 'implicit_taper', 'short_host'])
+def test_r18b_previous_pair_cannot_infer_repair_or_create_a_second_string(fault):
+    import installed_geometry as installed
+    state = r18b_previous_state()
+    table = state['hardware_table']
+    if fault == 'missing_lap': table = table.drop(index=3)
+    elif fault == 'missing_shoe': table = table.drop(index=4)
+    elif fault == 'duplicate_lap': table = pd.concat([table, table.iloc[[3]]], ignore_index=True)
+    elif fault == 'duplicate_shoe': table = pd.concat([table, table.iloc[[4]]], ignore_index=True)
+    elif fault == 'second_previous':
+        extra = table.iloc[[3,4]].copy();extra['Size (in)'] = '6';extra['ID (in)'] = 5.5
+        table = pd.concat([table, extra], ignore_index=True)
+    elif fault == 'lap_size': table.at[3, 'Size (in)'] = '5'
+    elif fault == 'missing_id': table.at[4, 'ID (in)'] = None
+    elif fault == 'bad_id': table.at[4, 'ID (in)'] = 7.
+    elif fault == 'negative_id': table.at[4, 'ID (in)'] = -1.
+    elif fault == 'reversed': table.at[4, 'MD (m)'] = '300-100'
+    elif fault == 'gap': table.at[4, 'MD (m)'] = '100-300'
+    elif fault == 'lap_interval': table.at[3, 'MD (m)'] = '0-100'
+    elif fault == 'nonfinite': table.at[3, 'MD (m)'] = 'nan'
+    elif fault == 'implicit_taper':
+        extra = table.iloc[[4]].copy();extra['MD (m)'] = '350';extra['Size (in)'] = '6.5';extra['ID (in)'] = 5.8
+        table = pd.concat([table.iloc[:5], extra, table.iloc[5:]], ignore_index=True)
+    else: table.at[0, 'MD (m)'] = '200'
+    rows = table.to_dict('records');before = pickle.dumps(rows)
+    with pytest.raises(ValueError, match='Previous Tie Back|Hardware|OD|ID|host|clearance|overlap'):
+        installed.physical_strings(rows, chart._segments, {'Previous Casing', 'Previous Liner Shoe'})
+    assert pickle.dumps(rows) == before
+
+
+@pytest.mark.parametrize('taper', [False, True])
+def test_r18b_previous_sections_keep_source_order_identity_and_true_dimensions(taper):
+    import installed_geometry as installed
+    import well_schematic_adapter as schematic
+    state = r18b_previous_state()
+    table = state['hardware_table']
+    table.at[4, 'MD (m)'] = '100'
+    extra = table.iloc[[4]].copy();extra['MD (m)'] = '100-300';extra['ID (in)'] = 5.8
+    if taper: extra['Size (in)'] = '6.5'
+    state['hardware_table'] = pd.concat([table.iloc[:5], extra, table.iloc[5:]], ignore_index=True)
+    previous = next(s for s in installed.physical_strings(state['hardware_table'].to_dict('records'), chart._segments,
+        {'Previous Casing','Previous Liner Shoe'}) if s['description'] == 'Previous Tie Back Liner Shoe')
+    assert previous['indices'] == [4,5]
+    assert [(s['top_md'],s['bottom_md'],s['od_in'],s['id_in']) for s in previous['sections']] == [
+        (0.,100.,7.,6.094),(100.,300.,6.5 if taper else 7.,5.8)]
+    if taper:
+        with pytest.raises(ValueError, match='uniform measured OD'):
+            schematic.prepare_schematic(state)
+    else:
+        assert len([c for c in schematic.prepare_schematic(state)['casings'] if c['type']=='tieback']) == 2
+    reversed_rows = list(reversed(previous['rows']))
+    rows = state['hardware_table'].to_dict('records')
+    rows[4:6] = reversed_rows
+    with pytest.raises(ValueError, match='Previous Tie Back|reversed|gap|overlap'):
+        installed.physical_strings(rows, chart._segments, {'Previous Casing','Previous Liner Shoe'})
+
+
+def r18b_solver_state(previous_top=0.):
+    state = bug01_solver_state('TIE BACK LNR 5"')
+    state.update(r18b_previous_state(previous_top=previous_top))
+    state['centralizer_config']['zones'][0].update(top_md=400., bottom_md=700.)
+    return state
+
+
+@pytest.mark.parametrize('previous_top', [0., 100.])
+@pytest.mark.parametrize('physics,mode', [('static','direct'),('static','optimize'),('dynamic','direct'),('dynamic','optimize')])
+def test_r18b_frozen_modes_use_active_body_and_preserve_measured_upstream_flow(previous_top, physics, mode):
+    import phase_9_centralizer as phase9
+    import centralizer_optimizer_engine as engine
+    import centralizer_report
+    import test_audit_regressions as audit
+    state = r18b_solver_state(previous_top)
+    state['centralizer_config'].update(physics_mode=physics, placement_mode=mode)
+    geometry = chart.resolve_chart_geometry(state)
+    assert [(r['top_md'],r['bottom_md'],r['description']) for r in geometry['active_string']] == [
+        (0.,400.,'Drill Pipes'),(400.,700.,'Tie Back Liner Shoe')]
+    projected = centralizer_adapter.to_engine_geometry(state)
+    assert projected['wellbore']['string_top'] == 400.
+    assert projected['wellbore']['string_shoe'] == projected['wellbore']['prev_shoe_depth'] == 700.
+    assert projected['wellbore']['prev_casing_id'] == projected['wellbore']['hole_size'] == 6.094*.0254
+    pumping,_ = pumping_simulation._geometry(state,'tieback')
+    assert [(s.z_top,s.z_bot,s.od_in,s.id_in) for s in pumping.pipe_sections] == [
+        (0.,400.,3.5,2.764),(400.,700.,5.,4.276),(700.,1200.,5.,4.276)]
+    assert not any(s.od_in in (7.,9.625) for s in pumping.pipe_sections)
+    catalog = centralizer_adapter.load_official_catalog()
+    payload = (centralizer_adapter.build_static_payload(state,state['centralizer_config']['zones'],catalog)
+        if physics=='static' else centralizer_adapter.build_dynamic_payload(state,state['centralizer_config']['zones'],catalog)['payload'])
+    before = pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')})
+    result = phase9.execute(state)
+    solve = engine.compute_standoff_profile if mode=='direct' else engine.optimize_placement
+    assert result['profile'] == solve(payload)
+    assert pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')}) == before
+    assert phase9.result_is_current(state)
+    restored = audit.round_trip(state)
+    pd.testing.assert_frame_equal(restored['hardware_table'],state['hardware_table'],check_dtype=False)
+    assert restored['placement_config'] == state['placement_config']
+    assert phase9.source_signature(restored) == phase9.source_signature(state)
+    assert not phase9.result_is_current(restored)
+    state['hardware_table'].at[4,'ID (in)'] = 6.093
+    assert centralizer_adapter.to_engine_geometry(state) == projected
+    assert not phase9.result_is_current(state)
+    assert not centralizer_report.prepare_report(state)['current']
+    state['hardware_table'].at[4,'ID (in)'] = 4.4
+    with pytest.raises(ValueError,match='restriction|pass|fit'):
+        chart.resolve_chart_geometry(state)
+
+
+def test_r18b_inside_active_two_ids_and_previous_host_selection_stay_blocked():
+    state = r18b_previous_state()
+    table = state['hardware_table']
+    state['placement_config']['host_row'] = next(iter(hardware_choices(table, {'Previous Tie Back Liner Shoe'})))
+    with pytest.raises(ValueError, match='host'):
+        chart.resolve_chart_geometry(state)
+    table.at[0,'MD (m)']='650';table.at[1,'MD (m)']='600-1000'
+    table.at[3,'MD (m)']='500';table.at[4,'MD (m)']='600'
+    state['placement_config']['host_row'] = next(iter(hardware_choices(table.iloc[[0]], {'Previous Casing'})))
+    assert boundary(chart.resolve_chart_geometry(state)) == [(0.,500.,8.535),(500.,600.,6.094),(600.,700.,6.094)]
+    with pytest.raises(ValueError, match='identical scalar ID'):
+        centralizer_adapter.to_engine_geometry(state)
+
+
+@pytest.mark.parametrize('previous', [False, True])
+def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base, previous, tmp_path):
+    import json
+    from io import BytesIO
+    from docx import Document
+    import test_audit_regressions as audit
+    import phase_9_centralizer as phase9
+    import well_schematic_adapter as schematic
+    from test_uat_round10c_integration import save_project, restore_project, build
+    from test_uat_round9g_centralizer_word import ix_region
+    case = audit.AuditRegressions()
+    if previous:
+        measured = r18b_previous_state(previous_top=100.)
+        job = 'TIE BACK LNR 5"'
+    else:
+        measured = synthetic_tieback(top=0.)
+        measured['hardware_table'].at[0,'MD (m)'] = '700'
+        measured['hardware_table'] = pd.concat([measured['hardware_table'],
+            hardware(('Tie Back Liner Lap','0','7',6.))],ignore_index=True)
+        job = 'TIE BACK LNR 7"'
+        measured['placement_config']['target_row'] = next(iter(hardware_choices(measured['hardware_table'], target_descriptions(job))))
+    app = case.app(deepcopy(bug01_reviewed_report_base))
+    case.phase(app,'phase1');app.selectbox(key='_w_job_type').set_value(job).run()
+    for key in ('hardware_table','well_geometry','placement_config'):app.session_state[key] = deepcopy(measured[key])
+    for name in ('Main','Displacement Fluid'):app.session_state['fluids_config']['params'][name]['volume'] = 8.
+    app.session_state['cement_params']['Main'].update(top_mode='Not entered',top_depth=None,report_bottom_depth=None)
+    selected = deepcopy(measured['placement_config'])
+    case.phase(app,'phase2_3')
+    editor = next(e for e in app.dataframe if '_editor_hardware_' in e.proto.id)
+    options = json.loads(editor.proto.columns)['Description']['type_config']['options']
+    assert {'Tie Back Liner Lap','Previous Tie Back Liner Lap','Previous Tie Back Liner Shoe'} <= set(options)
+    host = next(w for w in app.selectbox if w.label.startswith('Tie Back host'))
+    assert host.value == selected['host_row']
+    assert not any('Previous Tie Back' in value for value in host.options)
+    assert not any('Tie Back Top' in w.label for w in app.number_input)
+    assert 'tie_back_liner_lap_m' not in app.session_state['placement_config']
+    for key, value in selected.items():
+        assert app.session_state['placement_config'][key] == value
+    selected = deepcopy(app.session_state['placement_config'])
+    case.phase(app,'phase1');case.phase(app,'phase2_3')
+    assert app.session_state['placement_config'] == selected
+    case.phase(app,'phase5');case.phase(app,'phase7')
+    sync_button = next((b for b in app.button if (b.key or '').startswith('_sync_btn_main_')),None)
+    if sync_button is not None:sync_button.click().run()
+    confirm = next(b for b in app.button if (b.key or '').startswith('_confirm_lab_btn_main_'))
+    assert not confirm.disabled;confirm.click().run();case.healthy(app)
+    state = app.session_state.to_dict()
+    configured = bug01_solver_state(job)['centralizer_config']
+    top = 400. if previous else 0.
+    configured['zones'][0].update(top_md=top,bottom_md=700.)
+    configured.update(physics_mode='dynamic',placement_mode='direct')
+    state['centralizer_config'] = configured
+    phase9.execute(state)
+    source_signature = phase9.source_signature(state)
+    saved = save_project(type('Project',(),{'session_state':state})())
+    restored = restore_project(saved)
+    second = save_project(restored)
+    again = restore_project(second)
+    for candidate in (restored,again):
+        pd.testing.assert_frame_equal(candidate.session_state['hardware_table'],state['hardware_table'],check_dtype=False)
+        assert candidate.session_state['placement_config'] == selected
+        assert phase9.source_signature(candidate.session_state) == source_signature
+        assert not phase9.result_is_current(candidate.session_state)
+        assert '_compiled_doc_bytes' not in candidate.session_state
+    case.phase(again,'phase9');again.button(key='_centralizer_execute').click().run();case.healthy(again)
+    assert phase9.result_is_current(again.session_state)
+    drawing = schematic.prepare_schematic(again.session_state)
+    assert len([s for s in drawing['casings'] if s['type']=='tieback']) == (2 if previous else 1)
+    case.phase(again,'phase10')
+    assert not next(b for b in again.button if b.label == 'Build Word Document').disabled, [
+        w.value for w in list(again.warning)+list(again.error)]
+    data = build(again)
+    document = Document(BytesIO(data))
+    table = next(t for t in document.tables if t.cell(0,0).text=='Tubular and Casing Hardware')
+    assert len(table._tbl.tblGrid.gridCol_lst) == 10 and len(table.rows[1].cells) == 9
+    rows = state['hardware_table'].to_dict('records')
+    assert [r.cells[0].text for r in table.rows[3:3+len(rows)]] == [r['Description'] for r in rows]
+    assert any(r.cells[0].text=='Tie Back Liner Lap' and r.cells[1].text==f'{top:.1f}' for r in table.rows)
+    region = ix_region(document)
+    assert any(e.xpath('.//w:drawing') for e in region)
+    assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
+    (tmp_path/'measured-tieback.docx').write_bytes(data)
+    (tmp_path/'project-first.json').write_bytes(saved)
+    (tmp_path/'project-second.json').write_bytes(second)
+    case.phase(again,'phase2_3')
+    index = 3 if previous else len(state['hardware_table'])-1
+    value = '101' if previous else '-1'
+    case.hardware_event(again,{'edited_rows':{str(index):{'MD (m)':value}}})
+    case.phase(again,'phase10')
+    assert '_compiled_doc_bytes' not in again.session_state
+    assert not phase9.result_is_current(again.session_state)
+
+
 def test_r18_catalog_and_exact_target_roles():
     import materials_db as db
     from placement import hardware_context_label

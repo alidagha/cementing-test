@@ -888,8 +888,12 @@ def compute_phase_status(ss) -> dict:
     # disabled the Phase X Build button. Use the same parser here.
     from placement import measured_depth, EXCESS_FIELDS, excess_percentage
 
-    def _positive_md(value):
+    def _positive_md(value, description):
         try:
+            if description in ("Tie Back Liner Lap", "Previous Tie Back Liner Lap"):
+                from installed_geometry import point_depth
+                point_depth(value, description)
+                return True
             depth = measured_depth(value)
         except Exception:
             return False
@@ -946,7 +950,7 @@ def compute_phase_status(ss) -> dict:
         except ValueError as exc:
             status["phase2_3"] = {"level": "warning", "message": str(exc)}
     elif any(not filled(row.get("Description")) or not filled(row.get("Size (in)"))
-             or not _positive_md(row.get("MD (m)")) or not _positive_number(row.get("ID (in)"))
+             or not _positive_md(row.get("MD (m)"), row.get("Description")) or not _positive_number(row.get("ID (in)"))
              for _, row in hw.iterrows()):
         status["phase2_3"] = {"level": "warning", "message": "Complete hardware description, depth, size and ID."}
     else:
