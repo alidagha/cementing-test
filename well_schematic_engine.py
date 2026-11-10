@@ -155,6 +155,39 @@ def _index(value, ctx: str, length: int) -> int:
     return value
 
 
+def _pipe_at(pipe: dict, depth: float) -> dict:
+    """Resolve an actual drawing section; never extrapolate a measured boundary."""
+    if "sections" not in pipe:
+        return pipe
+    for section in pipe["sections"]:
+        if section["top_md"] <= depth < section["shoe_md"] or depth == section["shoe_md"] == pipe["shoe_md"]:
+            return section
+    raise ValueError(f"Tie Back section is unresolved at {depth:g} m")
+
+
+def _validate_pipe_sections(pipe: dict, ctx: str) -> None:
+    if "sections" not in pipe:
+        return
+    sections = pipe["sections"]
+    if pipe["type"] != "tieback" or not isinstance(sections, list) or not sections:
+        raise ValueError(f"{ctx}.sections requires a nonempty measured Tie Back section list")
+    boundary = pipe["top_md"]
+    for section in sections:
+        if not isinstance(section, dict) or set(section) != {"top_md", "shoe_md", "size_in", "id_in"}:
+            raise ValueError(f"{ctx}.sections requires exact Top/Shoe/OD/ID fields")
+        top = _num(section["top_md"], f"{ctx}.section.top_md")
+        shoe = _num(section["shoe_md"], f"{ctx}.section.shoe_md")
+        od, inside = parse_api_size(section["size_in"]), parse_api_size(section["id_in"])
+        if top != boundary or shoe <= top or shoe > pipe["shoe_md"] or inside >= od:
+            raise ValueError(f"{ctx}: noncontinuous Tie Back section or invalid OD/ID")
+        section.update(top_md=top, shoe_md=shoe, size_in=od, id_in=inside)
+        boundary = shoe
+    if boundary != pipe["shoe_md"] or sections[0]["size_in"] != pipe["size_in"]:
+        raise ValueError(f"{ctx}: section Top/Shoe/OD contradicts its Tie Back string")
+    if pipe.get("id_in") is not None and any(s["id_in"] != pipe["id_in"] for s in sections):
+        raise ValueError(f"{ctx}: scalar ID contradicts the measured Tie Back sections")
+
+
 def validate_schematic_data(data: dict) -> dict:
     """Validate the renderer payload without inventing or repairing well geometry.
 
@@ -201,6 +234,7 @@ def validate_schematic_data(data: dict) -> dict:
         if stype not in ("casing", "liner", "tieback"):
             raise ValueError(f"{ctx}.type must be explicitly 'casing', 'liner' or 'tieback'")
         c["type"] = stype
+        _validate_pipe_sections(c, ctx)
 
     # Explicit host/landing authority: never select the nearest/deepest string.
     for i, c in enumerate(casings):
@@ -393,6 +427,20 @@ def check_well_design(data: dict) -> List[str]:
         if float(c["size_in"]) >= passable(host):
             findings.append(f"{nm(c)} does not fit through explicit host {nm(host)}")
 
+    # Sectioned drawing inputs retain every measured nested ID/OD restriction.
+    if any("sections" in c for c in cas):
+        for i, left in enumerate(cas):
+            for right in cas[i+1:]:
+                if "sections" not in left and "sections" not in right:
+                    continue
+                for a in left.get("sections", [left]):
+                    for b in right.get("sections", [right]):
+                        if min(a["shoe_md"], b["shoe_md"]) <= max(a["top_md"], b["top_md"]):
+                            continue
+                        outer, inner = (a, b) if a["size_in"] > b["size_in"] else (b, a)
+                        if inner["size_in"] >= passable(outer):
+                            findings.append("Tie Back section overlaps an installed string without ID/OD clearance")
+
     for a, b in zip(holes, holes[1:]):
         if float(b["top_md"]) < float(a["bottom_md"]) - _DEPTH_TOL:
             findings.append(f"open holes overlap: {float(a['top_md']):g}-{float(a['bottom_md']):g} m and "
@@ -493,6 +541,7 @@ def _build_radial_maps(data: dict, open_holes: List[dict], col_span: float) -> T
     space for hatching and shoe flares; decorative pipe strokes do not model steel ID.
     """
     pipe_sizes = {float(c["size_in"]) for c in data["casings"]}
+    pipe_sizes.update(float(s["size_in"]) for c in data["casings"] for s in c.get("sections", []))
     bore_sizes = {float(oh["hole_size_in"]) for oh in open_holes}
     bore_sizes.update(float(b["diameter_in"]) for b in data.get("plug_bores", []))
     bore_sizes.update(float(sq["wall_diameter_in"]) for sq in data.get("squeezes", [])
@@ -931,7 +980,12 @@ def _collect_labels(data: dict, open_holes: List[dict]) -> List[dict]:
             reqs.append({"depth": shoe, "text": f"{size} LNR Shoe @ {_fmt_depth(shoe)} m"})
         elif stype == "tieback":
             reqs.append({"depth": top, "text": f"{size} TB LNR Lap @ {_fmt_depth(top)} m"})
-            reqs.append({"depth": shoe, "text": f"{size} TB LNR Shoe @ {_fmt_depth(shoe)} m"})
+            shoe_size = format_api_size(_pipe_at(c, shoe)["size_in"])
+            reqs.append({"depth": shoe, "text": f"{shoe_size} TB LNR Shoe @ {_fmt_depth(shoe)} m"})
+            for before, after in zip(c.get("sections", []), c.get("sections", [])[1:]):
+                if before["size_in"] != after["size_in"]:
+                    reqs.append({"depth": after["top_md"], "text":
+                                 f'{format_api_size(before["size_in"])} → {format_api_size(after["size_in"])} TB LNR @ {_fmt_depth(after["top_md"])} m'})
 
     for oh in open_holes:
         bot = float(oh["bottom_md"])
@@ -1236,11 +1290,24 @@ def render_well_schematic(schematic_data: dict,
             stype = c.get("type", "casing")
             hw = hw_pipe(float(c["size_in"]))
 
-            for sgn in (-1, 1):
-                xw = dx(0.5 + sgn * hw)
-                ax.add_patch(Rectangle((xw - bar_w if sgn > 0 else xw, yd(shoe)), bar_w,
-                                       yd(top) - yd(shoe), facecolor=C_TUBULAR_FILL,
-                                       edgecolor=C_TUBULAR_EDGE, linewidth=0.9, zorder=3.0))
+            if len({s["size_in"] for s in c.get("sections", [])}) > 1:
+                # One continuous wall per side; the measured OD step stays at its MD.
+                for sgn in (-1, 1):
+                    outer, inner = [], []
+                    for section in c["sections"]:
+                        xw = dx(0.5 + sgn * hw_pipe(section["size_in"]))
+                        outer.extend([(xw, yd(section["top_md"])), (xw, yd(section["shoe_md"]))])
+                        inner.extend([(xw - sgn * bar_w, yd(section["top_md"])),
+                                      (xw - sgn * bar_w, yd(section["shoe_md"]))])
+                    ax.add_patch(Polygon(outer + list(reversed(inner)), closed=True,
+                                         facecolor=C_TUBULAR_FILL, edgecolor=C_TUBULAR_EDGE,
+                                         linewidth=0.9, zorder=3.0))
+            else:
+                for sgn in (-1, 1):
+                    xw = dx(0.5 + sgn * hw)
+                    ax.add_patch(Rectangle((xw - bar_w if sgn > 0 else xw, yd(shoe)), bar_w,
+                                           yd(top) - yd(shoe), facecolor=C_TUBULAR_FILL,
+                                           edgecolor=C_TUBULAR_EDGE, linewidth=0.9, zorder=3.0))
 
             # Tie-back connection is explicit; CSG/LNR keep the shoe flare.
             if stype != "tieback":
@@ -1271,8 +1338,8 @@ def render_well_schematic(schematic_data: dict,
             covering_pipes = [c for c in data.get("casings", [])
                               if float(c["top_md"]) <= d_mid <= float(c["shoe_md"])]
             if covering_pipes:
-                innermost = min(covering_pipes, key=lambda c: float(c["size_in"]))
-                return (dx(0.5 + hw_pipe(float(innermost["size_in"]))) - bar_w) - dx(0.5)
+                innermost = min(covering_pipes, key=lambda c: float(_pipe_at(c, d_mid)["size_in"]))
+                return (dx(0.5 + hw_pipe(float(_pipe_at(innermost, d_mid)["size_in"]))) - bar_w) - dx(0.5)
             covering_ohs = [oh for oh in open_holes
                             if float(oh["top_md"]) <= d_mid <= float(oh["bottom_md"])]
             if covering_ohs:
@@ -1290,6 +1357,9 @@ def render_well_schematic(schematic_data: dict,
                 float(c["shoe_md"]) for c in data.get("casings", []) if top < float(c["shoe_md"]) < bot
             } | {
                 float(c["top_md"]) for c in data.get("casings", []) if top < float(c["top_md"]) < bot
+            } | {
+                float(s["shoe_md"]) for c in data.get("casings", []) for s in c.get("sections", [])
+                if top < float(s["shoe_md"]) < bot
             } | {
                 float(o["top_md"]) for o in open_holes if top < float(o["top_md"]) < bot
             } | {
@@ -1338,7 +1408,7 @@ def render_well_schematic(schematic_data: dict,
                 continue
 
             target = data["casings"][sq["target_index"]]
-            target_hw = hw_pipe(float(target["size_in"]))
+            target_hw = hw_pipe(float(_pipe_at(target, d)["size_in"]))
             if kind == "lap":
                 host = _explicit_host(data, target)
                 host_hw = hw_pipe(float(host["size_in"]))

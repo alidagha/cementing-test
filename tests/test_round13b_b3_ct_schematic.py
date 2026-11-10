@@ -353,6 +353,121 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
     assert not any(isinstance(v,bytes) for k,v in s.items() if k.startswith('_well_schematic'))
 
 
+def r18c_original_renderer_source(source):
+    """Invert only the exact approved section-rendering delta; fixed golds stay intact."""
+    reference = subprocess.check_output(['git','show','cdb58925886d4ee649d583052ea138286f1e6f79:well_schematic_engine.py'])
+    edits = [['def validate_schematic_data(data: dict) -> dict:\n',
+      'def _pipe_at(pipe: dict, depth: float) -> dict:\n'
+      '    """Resolve an actual drawing section; never extrapolate a measured boundary."""\n'
+      '    if "sections" not in pipe:\n'
+      '        return pipe\n'
+      '    for section in pipe["sections"]:\n'
+      '        if section["top_md"] <= depth < section["shoe_md"] or depth == section["shoe_md"] == '
+      'pipe["shoe_md"]:\n'
+      '            return section\n'
+      '    raise ValueError(f"Tie Back section is unresolved at {depth:g} m")\n'
+      '\n'
+      '\n'
+      'def _validate_pipe_sections(pipe: dict, ctx: str) -> None:\n'
+      '    if "sections" not in pipe:\n'
+      '        return\n'
+      '    sections = pipe["sections"]\n'
+      '    if pipe["type"] != "tieback" or not isinstance(sections, list) or not sections:\n'
+      '        raise ValueError(f"{ctx}.sections requires a nonempty measured Tie Back section list")\n'
+      '    boundary = pipe["top_md"]\n'
+      '    for section in sections:\n'
+      '        if not isinstance(section, dict) or set(section) != {"top_md", "shoe_md", "size_in", "id_in"}:\n'
+      '            raise ValueError(f"{ctx}.sections requires exact Top/Shoe/OD/ID fields")\n'
+      '        top = _num(section["top_md"], f"{ctx}.section.top_md")\n'
+      '        shoe = _num(section["shoe_md"], f"{ctx}.section.shoe_md")\n'
+      '        od, inside = parse_api_size(section["size_in"]), parse_api_size(section["id_in"])\n'
+      '        if top != boundary or shoe <= top or shoe > pipe["shoe_md"] or inside >= od:\n'
+      '            raise ValueError(f"{ctx}: noncontinuous Tie Back section or invalid OD/ID")\n'
+      '        section.update(top_md=top, shoe_md=shoe, size_in=od, id_in=inside)\n'
+      '        boundary = shoe\n'
+      '    if boundary != pipe["shoe_md"] or sections[0]["size_in"] != pipe["size_in"]:\n'
+      '        raise ValueError(f"{ctx}: section Top/Shoe/OD contradicts its Tie Back string")\n'
+      '    if pipe.get("id_in") is not None and any(s["id_in"] != pipe["id_in"] for s in sections):\n'
+      '        raise ValueError(f"{ctx}: scalar ID contradicts the measured Tie Back sections")\n'
+      '\n'
+      '\n'
+      'def validate_schematic_data(data: dict) -> dict:\n'],
+     ['        c["type"] = stype\n', '        c["type"] = stype\n        _validate_pipe_sections(c, ctx)\n'],
+     ['    for a, b in zip(holes, holes[1:]):\n',
+      '    # Sectioned drawing inputs retain every measured nested ID/OD restriction.\n'
+      '    if any("sections" in c for c in cas):\n'
+      '        for i, left in enumerate(cas):\n'
+      '            for right in cas[i+1:]:\n'
+      '                if "sections" not in left and "sections" not in right:\n'
+      '                    continue\n'
+      '                for a in left.get("sections", [left]):\n'
+      '                    for b in right.get("sections", [right]):\n'
+      '                        if min(a["shoe_md"], b["shoe_md"]) <= max(a["top_md"], b["top_md"]):\n'
+      '                            continue\n'
+      '                        outer, inner = (a, b) if a["size_in"] > b["size_in"] else (b, a)\n'
+      '                        if inner["size_in"] >= passable(outer):\n'
+      '                            findings.append("Tie Back section overlaps an installed string without ID/OD '
+      'clearance")\n'
+      '\n'
+      '    for a, b in zip(holes, holes[1:]):\n'],
+     ['    pipe_sizes = {float(c["size_in"]) for c in data["casings"]}\n',
+      '    pipe_sizes = {float(c["size_in"]) for c in data["casings"]}\n'
+      '    pipe_sizes.update(float(s["size_in"]) for c in data["casings"] for s in c.get("sections", []))\n'],
+     ['            reqs.append({"depth": shoe, "text": f"{size} TB LNR Shoe @ {_fmt_depth(shoe)} m"})\n',
+      '            shoe_size = format_api_size(_pipe_at(c, shoe)["size_in"])\n'
+      '            reqs.append({"depth": shoe, "text": f"{shoe_size} TB LNR Shoe @ {_fmt_depth(shoe)} m"})\n'
+      '            for before, after in zip(c.get("sections", []), c.get("sections", [])[1:]):\n'
+      '                if before["size_in"] != after["size_in"]:\n'
+      '                    reqs.append({"depth": after["top_md"], "text":\n'
+      '                                 f\'{format_api_size(before["size_in"])} → '
+      '{format_api_size(after["size_in"])} TB LNR @ {_fmt_depth(after["top_md"])} m\'})\n'],
+     ['            for sgn in (-1, 1):\n'
+      '                xw = dx(0.5 + sgn * hw)\n'
+      '                ax.add_patch(Rectangle((xw - bar_w if sgn > 0 else xw, yd(shoe)), bar_w,\n'
+      '                                       yd(top) - yd(shoe), facecolor=C_TUBULAR_FILL,\n'
+      '                                       edgecolor=C_TUBULAR_EDGE, linewidth=0.9, zorder=3.0))\n',
+      '            if len({s["size_in"] for s in c.get("sections", [])}) > 1:\n'
+      '                # One continuous wall per side; the measured OD step stays at its MD.\n'
+      '                for sgn in (-1, 1):\n'
+      '                    outer, inner = [], []\n'
+      '                    for section in c["sections"]:\n'
+      '                        xw = dx(0.5 + sgn * hw_pipe(section["size_in"]))\n'
+      '                        outer.extend([(xw, yd(section["top_md"])), (xw, yd(section["shoe_md"]))])\n'
+      '                        inner.extend([(xw - sgn * bar_w, yd(section["top_md"])),\n'
+      '                                      (xw - sgn * bar_w, yd(section["shoe_md"]))])\n'
+      '                    ax.add_patch(Polygon(outer + list(reversed(inner)), closed=True,\n'
+      '                                         facecolor=C_TUBULAR_FILL, edgecolor=C_TUBULAR_EDGE,\n'
+      '                                         linewidth=0.9, zorder=3.0))\n'
+      '            else:\n'
+      '                for sgn in (-1, 1):\n'
+      '                    xw = dx(0.5 + sgn * hw)\n'
+      '                    ax.add_patch(Rectangle((xw - bar_w if sgn > 0 else xw, yd(shoe)), bar_w,\n'
+      '                                           yd(top) - yd(shoe), facecolor=C_TUBULAR_FILL,\n'
+      '                                           edgecolor=C_TUBULAR_EDGE, linewidth=0.9, zorder=3.0))\n'],
+     ['                innermost = min(covering_pipes, key=lambda c: float(c["size_in"]))\n'
+      '                return (dx(0.5 + hw_pipe(float(innermost["size_in"]))) - bar_w) - dx(0.5)\n',
+      '                innermost = min(covering_pipes, key=lambda c: float(_pipe_at(c, d_mid)["size_in"]))\n'
+      '                return (dx(0.5 + hw_pipe(float(_pipe_at(innermost, d_mid)["size_in"]))) - bar_w) - '
+      'dx(0.5)\n'],
+     ['                float(c["top_md"]) for c in data.get("casings", []) if top < float(c["top_md"]) < bot\n'
+      '            } | {\n',
+      '                float(c["top_md"]) for c in data.get("casings", []) if top < float(c["top_md"]) < bot\n'
+      '            } | {\n'
+      '                float(s["shoe_md"]) for c in data.get("casings", []) for s in c.get("sections", [])\n'
+      '                if top < float(s["shoe_md"]) < bot\n'
+      '            } | {\n'],
+     ['            target_hw = hw_pipe(float(target["size_in"]))\n',
+      '            target_hw = hw_pipe(float(_pipe_at(target, d)["size_in"]))\n']]
+    expected = reference
+    for old, new in edits:
+        old, new = old.encode(), new.encode()
+        assert expected.count(old) == 1
+        expected = expected.replace(old, new)
+    exact_source_match = source == expected
+    assert exact_source_match, "Unapproved schematic source change outside the exact R18-C section delta"
+    return reference
+
+
 def assert_authorized_radial_renderer(source):
     """Only the Owner-approved radial and axis functions differ from the frozen renderer.
 
@@ -360,6 +475,7 @@ def assert_authorized_radial_renderer(source):
     of the module remains byte-identical to the original independent reference.
     """
     import ast
+    source = r18c_original_renderer_source(source)
     expected = {
         'calculate_dynamic_depth_axis': '70ca64564ae510a7c5f2b61e172227edf1d3b5e9b72898eca3d9ac5fff3e38f9',
         '_build_radial_maps': '5bb3e530061079b1092fbc8dc250c4812bd2d4b469ed0c99561e135739231773',
@@ -393,6 +509,32 @@ def test_authorized_radial_renderer_identity_rejects_radial_depth_and_module_mut
     assert_authorized_radial_renderer(original)
     with pytest.raises(AssertionError):
         assert_authorized_radial_renderer(original.replace(old, new))
+
+
+@pytest.mark.parametrize('old,new',[
+    (b'shoe <= top or shoe > pipe["shoe_md"]',b'shoe < top or shoe > pipe["shoe_md"]'),
+    (b'inside >= od',b'inside > od'),
+    (b'top != boundary',b'top < boundary'),
+    (b'outer + list(reversed(inner))',b'outer + inner'),
+    (b'section["top_md"] <= depth < section["shoe_md"]',b'section["top_md"] <= depth <= section["shoe_md"]'),
+    (b'if inner["size_in"] >= passable(outer):',b'if inner["size_in"] > passable(outer):'),
+    (b'float(_pipe_at(target, d)["size_in"])',b'float(target["size_in"])'),
+    (b'{format_api_size(after["size_in"])} TB LNR',b'{format_api_size(before["size_in"])} TB LNR'),
+    (b'if "sections" not in left and "sections" not in right:',b'if False:'),
+    (b'FONT_FAMILY = "DejaVu Sans"',b'FONT_FAMILY = "Arial"'),
+    (b'if s.startswith("-"):',b'if False:'),
+    (b'return f"{float(d):.1f}".rstrip("0").rstrip(".")',b'return f"{float(d):.2f}".rstrip("0").rstrip(".")'),
+])
+def test_r18c_section_identity_rejects_unapproved_geometry_and_rendering_mutations(old,new):
+    source=Path('well_schematic_engine.py').read_bytes()
+    assert source.count(old)==1
+    assert_authorized_radial_renderer(source)
+    with pytest.raises(AssertionError):assert_authorized_radial_renderer(source.replace(old,new))
+
+
+def test_r18c_section_identity_rejects_complete_feature_reversion():
+    reference=subprocess.check_output(['git','show','cdb58925886d4ee649d583052ea138286f1e6f79:well_schematic_engine.py'])
+    with pytest.raises(AssertionError):assert_authorized_radial_renderer(reference)
 
 
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
