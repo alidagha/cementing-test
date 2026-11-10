@@ -115,6 +115,48 @@ def _string(source):
                            tuple(source['indices']), _sections(source['sections'], source['indices']))
 
 
+
+def _duplicate_column_reason(source):
+    geometry = source.get('well_geometry')
+    survey = geometry.get('survey') if isinstance(geometry, dict) else None
+    for frame, code, label in (
+        (source.get('hardware_table'), 'HARDWARE_INCOMPLETE', 'Committed Hardware'),
+        (source.get('hardware_editor_draft'), 'HARDWARE_DRAFT_INVALID', 'Pending Hardware draft'),
+        (survey, 'TRAJECTORY_INVALID', 'Canonical Survey')):
+        if isinstance(frame, pd.DataFrame) and not frame.columns.is_unique:
+            return code, f'{label} has ambiguous duplicate columns; no values were discarded or repaired.'
+    return None
+
+
+def _positional_source(value):
+    """Type-tagged invalid-input identity, without DataFrame records conversion.
+
+    Retain ordered labels, dtype, index and EVERY positional cell. Scalar repr
+    preserves canonical App value types/precision (including int vs float and
+    signed zero), rather than fingerprint's intentional numeric equivalence.
+    Containers are tagged too, so a user list/dict cannot impersonate a frame.
+    This path is used only after detecting duplicate columns; healthy sources
+    keep the published fingerprint scheme byte-for-byte.
+    """
+    if isinstance(value, pd.DataFrame):
+        return ('frame', _positional_source(tuple(value.columns)),
+                _positional_source(tuple(value.index)),
+                tuple(str(dtype) for dtype in value.dtypes),
+                tuple(tuple(_positional_source(cell) for cell in row)
+                      for row in value.itertuples(index=False, name=None)))
+    if (hasattr(value, 'shape') and hasattr(value, 'tolist')
+            and (value.shape or type(value).__name__ == 'ndarray')):
+        # Avoid truncated NumPy array repr hiding positional values in malformed cells.
+        return ('array', type(value).__module__ + '.' + type(value).__qualname__,
+                str(value.dtype), _positional_source(value.shape), _positional_source(value.tolist()))
+    if isinstance(value, Mapping):
+        return ('mapping', tuple(sorted(((_positional_source(k), _positional_source(v))
+                                        for k, v in value.items()), key=repr)))
+    if isinstance(value, (tuple, list)):
+        return (type(value).__name__, tuple(_positional_source(v) for v in value))
+    return (type(value).__module__ + '.' + type(value).__qualname__, repr(value))
+
+
 def snapshot_geometry(state: Mapping, *, app_source_sha: str,
                       query_md: tuple[float, ...] = ()) -> GeometrySnapshot:
     """Copy canonical geometry and classify against the pinned ER-03 interface.
@@ -131,7 +173,9 @@ def snapshot_geometry(state: Mapping, *, app_source_sha: str,
     source = deepcopy({k: state[k] for k in ('job_type', 'hardware_table', 'hardware_editor_draft',
         'placement_config', 'well_geometry', 'formation_pressure_config', 'well_data',
         chart.PORE_FIELD, chart.FRAC_FIELD) if k in state})
-    source_id = fingerprint(source)
+    duplicate = _duplicate_column_reason(source)
+    source_id = (fingerprint(['cfw128-duplicate-columns/v1', _positional_source(source)])
+                 if duplicate else fingerprint(source))
     request_id = fingerprint([1, app_source_sha, source_id, query_md])
     job = source.get('job_type')
 
@@ -139,6 +183,8 @@ def snapshot_geometry(state: Mapping, *, app_source_sha: str,
         return GeometrySnapshot('INVALID_INPUT', (code,), message, app_source_sha,
                                 source_id, request_id, job if isinstance(job, str) else '')
 
+    if duplicate is not None:
+        return invalid(*duplicate)
     if job is None or job == '':
         return invalid('JOB_NOT_SELECTED', 'Select the current App job before snapshotting geometry.')
     if not isinstance(job, str):

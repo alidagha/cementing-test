@@ -1996,3 +1996,134 @@ def test_cfw128_no_rheology_or_solver_calls_and_input_sha_contract(monkeypatch):
         snapshot_geometry(state,app_source_sha='unverified')
     with pytest.raises(TypeError):
         GeometrySnapshot('GEOMETRY_REPRESENTABLE',(),'', 'c'*40,'x','y','job', enabled=True)
+
+
+@pytest.mark.parametrize('location,reason', [('hardware_table','HARDWARE_INCOMPLETE'),
+    ('survey','TRAJECTORY_INVALID'), ('hardware_editor_draft','HARDWARE_DRAFT_INVALID')])
+def test_cfw128_duplicate_columns_reject_without_warning_and_keep_dropped_values(location, reason):
+    from cfw128_adapter import snapshot_geometry
+    import warnings
+    state = synthetic_tieback()
+    if location == 'survey':
+        frame = pd.DataFrame([[0.,0.,0.],[1200.,60.,90.]],columns=['MD','Deviation','Azimuth'])
+        state['well_geometry'] = {'type':'Directional','survey':frame}
+    else: frame = state['hardware_table']
+    duplicate = pd.concat([frame.iloc[:,[0]],frame],axis=1)
+    if location == 'survey': state['well_geometry']['survey'] = duplicate
+    else: state[location] = duplicate
+    before = pickle.dumps(state)
+    with warnings.catch_warnings(record=True) as emitted:
+        first = snapshot_geometry(state,app_source_sha='a'*40)
+        repeated = snapshot_geometry(state,app_source_sha='a'*40)
+    assert not emitted
+    assert first == repeated
+    assert first.status == 'INVALID_INPUT' and first.reason_codes == (reason,)
+    assert first.active_sections == first.enclosing_sections == first.installed_strings == first.trajectory == ()
+    assert all(getattr(first,k) is False for k in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible'))
+    assert pickle.dumps(state) == before
+    assert (state['well_geometry']['survey'] if location=='survey' else state[location]) is duplicate
+    # Only the FIRST duplicate changes: the published records serializer discarded this column.
+    duplicate.iat[0,0] = 17. if location=='survey' else 'otherwise-dropped-value'
+    changed_before = pickle.dumps(state)
+    with warnings.catch_warnings(record=True) as emitted:
+        changed = snapshot_geometry(state,app_source_sha='a'*40)
+    assert not emitted and changed.reason_codes == first.reason_codes
+    assert changed.source_identity != first.source_identity
+    assert changed.request_identity != first.request_identity
+    assert pickle.dumps(state) == changed_before
+
+
+@pytest.mark.parametrize('left,right', [(None,'None'), (1,1.), (True,1), (-0.,0.),
+    (2**53,2**53+1), ('one','two'), (pd.NA,None), ([1,2],[1,3])])
+def test_cfw128_duplicate_identity_preserves_positional_cell_types_and_values(left,right):
+    from cfw128_adapter import snapshot_geometry
+    state = synthetic_tieback()
+    frame = pd.DataFrame([[left,'unchanged']],columns=['Description','Description'],dtype=object)
+    state['hardware_table'] = frame
+    first = snapshot_geometry(state,app_source_sha='b'*40)
+    frame.iat[0,0] = right
+    second = snapshot_geometry(state,app_source_sha='b'*40)
+    assert first.reason_codes == second.reason_codes == ('HARDWARE_INCOMPLETE',)
+    assert first.source_identity != second.source_identity
+    assert first.request_identity != second.request_identity
+
+
+def test_cfw128_duplicate_empty_columns_and_column_order_are_not_silently_repaired():
+    from cfw128_adapter import snapshot_geometry
+    state = synthetic_tieback()
+    ids = []
+    for columns in (['Description','Description','MD (m)'], ['Description','MD (m)','Description']):
+        state['hardware_table'] = pd.DataFrame(columns=columns)
+        before = pickle.dumps(state)
+        result = snapshot_geometry(state,app_source_sha='c'*40)
+        assert result.reason_codes == ('HARDWARE_INCOMPLETE',)
+        assert pickle.dumps(state) == before
+        ids.append(result.source_identity)
+    assert ids[0] != ids[1]
+
+
+@pytest.mark.parametrize('location', ['hardware_table','survey','hardware_editor_draft'])
+def test_cfw128_duplicate_preflight_mutation_cannot_reintroduce_unsafe_fingerprint(location,monkeypatch):
+    import cfw128_adapter as adapter
+    state = synthetic_tieback()
+    frame = state['hardware_table']
+    if location == 'survey':
+        frame = pd.DataFrame([[0.,0.,0.],[1200.,60.,90.]],columns=['MD','Deviation','Azimuth'])
+        state['well_geometry'] = {'type':'Directional','survey':frame}
+        state['well_geometry']['survey'] = pd.concat([frame.iloc[:,[0]],frame],axis=1)
+    else: state[location] = pd.concat([frame.iloc[:,[0]],frame],axis=1)
+    assert adapter.snapshot_geometry(state,app_source_sha='d'*40).status == 'INVALID_INPUT'
+    # Actual mutation of the guard: without it the original Pandas warning must escape under -W error.
+    monkeypatch.setattr(adapter,'_duplicate_column_reason',lambda source: None)
+    with pytest.raises(UserWarning,match='columns are not unique'):
+        adapter.snapshot_geometry(state,app_source_sha='d'*40)
+
+
+def test_cfw128_unique_source_outputs_and_identities_equal_fixed_published_adapter(monkeypatch):
+    from dataclasses import asdict
+    from pathlib import Path
+    import hashlib
+    import subprocess
+    import sys
+    from types import ModuleType
+    import cfw128_adapter as adapter
+    root = Path(__file__).resolve().parents[1]
+    original = subprocess.check_output(['git','show','bf98f73676e784de37e620fd6ae0217744883ae9:cfw128_adapter.py'],cwd=root)
+    assert hashlib.sha256(original).hexdigest() == '3591c557ddc396a5f4b8f9411513d06fadb0762018c4f7cbb2aa4acab45b645c'
+    reference = ModuleType('_cfw128_c1_fixed_published_reference')
+    monkeypatch.setitem(sys.modules,reference.__name__,reference)
+    exec(compile(original,'<fixed-published-bf98f736-adapter>','exec'),reference.__dict__)
+    states = [bug01_geometry_case(job) for job in BUG01_JOBS]
+    states += [synthetic_tieback(top=0.),r18c_tapered_state(100.),{}, {'job_type':'CMT PLUG'},
+               {'job_type':'CMT SQUEEZE'},{'job_type':'CMT PLUG WITH CT'}]
+    directional = synthetic_tieback()
+    directional['well_geometry'] = {'type':'Directional','survey':pd.DataFrame(
+        [[0.,0.,0.],[100.,60.,90.],[1200.,60.,90.]],columns=['MD','Deviation','Azimuth'])}
+    states.append(directional)
+    pending = synthetic_tieback();pending['hardware_editor_draft']=pending['hardware_table'].copy()
+    pending['hardware_editor_draft'].at[0,'MD (m)']='101-700';states.append(pending)
+    for state in states:
+        before = pickle.dumps(state)
+        kwargs = {'app_source_sha':'e'*40, 'query_md':(50.,100.)}
+        expected = asdict(reference.snapshot_geometry(state,**kwargs))
+        actual = asdict(adapter.snapshot_geometry(state,**kwargs))
+        assert pickle.dumps(actual) == pickle.dumps(expected)
+        assert pickle.dumps(state) == before
+
+
+def test_cfw128_duplicate_identity_does_not_truncate_nested_array_cells():
+    from cfw128_adapter import snapshot_geometry
+    import numpy as np
+    state = synthetic_tieback()
+    frame = pd.DataFrame([[None,'unchanged']],columns=['Description','Description'],dtype=object)
+    values = np.zeros(10000)
+    frame.iat[0,0] = values
+    state['hardware_table'] = frame
+    before = pickle.dumps(state)
+    first = snapshot_geometry(state,app_source_sha='f'*40)
+    assert first.reason_codes == ('HARDWARE_INCOMPLETE',) and pickle.dumps(state) == before
+    values[5000] = 1.  # This element is omitted by NumPy's abbreviated repr.
+    second = snapshot_geometry(state,app_source_sha='f'*40)
+    assert second.source_identity != first.source_identity
+    assert second.request_identity != first.request_identity
+    assert second == snapshot_geometry(state,app_source_sha='f'*40)
