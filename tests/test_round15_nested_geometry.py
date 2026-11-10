@@ -1766,3 +1766,233 @@ def test_bug01_new_tieback_sources_retire_current_results(change):
     assert not phase9.result_is_current(state)
     report = centralizer_report.prepare_report(state)
     assert report['current'] is False and report['analysis'] is None
+
+
+# CFW128 Batch A: inert source projection only, never a hydraulic request.
+@pytest.mark.parametrize('job', BUG01_JOBS)
+def test_cfw128_canonical_geometry_copies_are_inert_and_do_not_touch_source(job):
+    from cfw128_adapter import snapshot_geometry
+    state = bug01_geometry_case(job)
+    before = pickle.dumps(state)
+    frame = state['hardware_table']
+    result = snapshot_geometry(state, app_source_sha='146d9694d8e6c69fb3d03091a8e573b930155475')
+    assert result.status in ('GEOMETRY_REPRESENTABLE', 'ENGINE_INTERFACE_NOT_REPRESENTABLE')
+    assert all(getattr(result, k) is False for k in ('enabled', 'ready_to_run', 'hb_admissible', 'hydraulic_admissible'))
+    resolved = chart.resolve_chart_geometry(state)
+    assert [(s.top_md, s.bottom_md, s.od_in, s.id_in, s.description) for s in result.active_sections] == [
+        (s['top_md'], s['bottom_md'], s['od_in'], s['id_in'], s['description']) for s in resolved['active_string']]
+    assert [(s.top_md, s.bottom_md, s.id_in) for s in result.enclosing_sections] == [
+        (s['top_md'], s['bottom_md'], s['id_in']) for s in resolved['enclosing_string']]
+    assert result == snapshot_geometry(state, app_source_sha=result.app_source_sha)
+    assert state['hardware_table'] is frame and pickle.dumps(state) == before
+    assert result.target_token == state['placement_config']['target_row']
+    assert result.active_sections[0].top_md == 0. and result.active_sections[-1].bottom_md == result.shoe_md
+    state['hardware_table'].at[0, 'ID (in)'] += .001
+    assert snapshot_geometry(state, app_source_sha=result.app_source_sha).source_identity != result.source_identity
+
+
+@pytest.mark.parametrize('top', [0., 100.])
+def test_cfw128_scalar_tieback_proof_and_point_a_zero_are_distinct(top):
+    from cfw128_adapter import snapshot_geometry
+    state = synthetic_tieback(top=top)
+    # Measured scalar Lap is optional only where an explicit Shoe interval already establishes Top.
+    state['hardware_table'] = pd.concat([state['hardware_table'], hardware(
+        ('Tie Back Liner Lap', str(top), '7', 6.))], ignore_index=True)
+    result = snapshot_geometry(state, app_source_sha='a'*40)
+    assert result.string_top_md == top and result.shoe_md == 700.
+    assert result.receiver.top_md == 700. and result.receiver.shoe_md == 1200.
+    assert result.host_token == state['placement_config']['host_row']
+    assert result.selected_host.top_md == 0. and result.selected_host.shoe_md == 800.
+    assert result.status == ('GEOMETRY_REPRESENTABLE' if top else 'ENGINE_INTERFACE_NOT_REPRESENTABLE')
+    assert ('POINT_A_ZERO' in result.reason_codes) == (top == 0)
+    assert [s.description for s in result.active_sections] == (['Drill Pipes', 'Tie Back Liner Shoe'] if top else ['Tie Back Liner Shoe'])
+    if top:
+        assert result.reason_codes == ('SCALAR_TIEBACK_SOURCE_PROVED',)
+        assert {(s.id_in, s.od_in) for s in result.active_sections} == {(6., 7.)}
+    assert result.ready_to_run is False
+
+
+def test_cfw128_tapered_previous_and_piecewise_wall_are_preserved_not_averaged():
+    from cfw128_adapter import snapshot_geometry
+    state = r18c_tapered_state(100.)
+    before = pickle.dumps(state)
+    result = snapshot_geometry(state, app_source_sha='b'*40)
+    assert result.status == 'ENGINE_INTERFACE_NOT_REPRESENTABLE'
+    assert 'SEGMENTED_ENCLOSURE' in result.reason_codes
+    previous = [s for s in result.installed_strings if s.description == 'Previous Tie Back Liner Shoe']
+    assert len(previous) == 1
+    assert [(s.top_md, s.bottom_md, s.od_in, s.id_in) for s in previous[0].sections] == [
+        (100., 150., 7., 6.094), (150., 300., 6.5, 5.8)]
+    assert previous[0].source_rows == (4, 5)
+    assert [(s.top_md, s.bottom_md, s.id_in) for s in result.enclosing_sections] == [
+        (0., 100., 8.535), (100., 150., 6.094), (150., 300., 5.8), (300., 700., 6.094)]
+    assert result.selected_host.source_rows == (1,)
+    assert result.receiver.source_rows == (2,)
+    assert result.receiver.sections[0].bottom_md == 1200.
+    assert result.string_top_md == 400.
+    assert pickle.dumps(state) == before
+
+
+@pytest.mark.parametrize('fault,code', [
+    ('draft', 'HARDWARE_DRAFT_PENDING'), ('missing_table', 'HARDWARE_MISSING'),
+    ('missing_target', 'TARGET_NOT_SELECTED'), ('wrong_target', 'TARGET_NOT_SELECTED'),
+    ('wrong_host', 'HOST_NOT_SELECTED'), ('previous_as_host', 'HOST_NOT_SELECTED'),
+    ('duplicate_lap', 'APP_GEOMETRY_INVALID'), ('missing_lap', 'APP_GEOMETRY_INVALID'),
+    ('conflicting_top', 'APP_GEOMETRY_INVALID'), ('bad_id', 'APP_GEOMETRY_INVALID'),
+    ('gap', 'APP_GEOMETRY_INVALID'), ('duplicate_previous', 'APP_GEOMETRY_INVALID'),
+    ('bad_survey', 'TRAJECTORY_INVALID'), ('partial_survey', 'TRAJECTORY_INVALID'),
+    ('old_description', 'NONCANONICAL_HARDWARE'), ('missing_shoe', 'TARGET_NOT_SELECTED')])
+def test_cfw128_invalid_or_incomplete_sources_are_honest_and_nonmutating(fault, code):
+    from cfw128_adapter import snapshot_geometry
+    state = r18c_tapered_state(100.)
+    table = state['hardware_table']
+    if fault == 'draft':
+        state['hardware_editor_draft'] = table.copy(); state['hardware_editor_draft'].at[0,'MD (m)'] = '501'
+    elif fault == 'missing_table': state.pop('hardware_table')
+    elif fault in ('missing_target', 'wrong_target'): state['placement_config']['target_row'] = None if fault == 'missing_target' else 'retired'
+    elif fault in ('wrong_host', 'previous_as_host'):
+        state['placement_config']['host_row'] = 'retired' if fault == 'wrong_host' else next(iter(hardware_choices(table, {'Previous Tie Back Liner Shoe'})))
+    elif fault == 'duplicate_lap': state['hardware_table'] = pd.concat([table, table.iloc[[6]]],ignore_index=True)
+    elif fault == 'missing_lap': state['hardware_table'] = table[table['Description'] != 'Tie Back Liner Lap'].copy()
+    elif fault == 'conflicting_top': state['placement_config']['tie_back_liner_lap_m'] = 399.
+    elif fault == 'bad_id': table.at[4, 'ID (in)'] = 7.
+    elif fault == 'gap': table.at[5, 'MD (m)'] = '151-300'
+    elif fault == 'duplicate_previous': state['hardware_table'] = pd.concat([table,table.iloc[[3,4]]],ignore_index=True)
+    elif fault in ('bad_survey', 'partial_survey'):
+        state['well_geometry'] = {'type':'Directional', 'survey':pd.DataFrame([[0.,0.,0.],[1200.,181. if fault=='bad_survey' else None,0.]],columns=['MD','Deviation','Azimuth'])}
+    elif fault == 'old_description': table.at[8,'Description'] = 'Tie Back'
+    else: state['hardware_table'] = table[table['Description'] != 'Tie Back Liner Shoe'].copy()
+    before = pickle.dumps(state)
+    result = snapshot_geometry(state, app_source_sha='c'*40)
+    assert result.status == 'INVALID_INPUT' and result.reason_codes == (code,)
+    assert result.active_sections == () and result.enabled is False
+    assert pickle.dumps(state) == before
+
+
+def test_cfw128_directional_tvd_is_canonical_at_interior_and_knots_not_linear():
+    from cfw128_adapter import snapshot_geometry
+    from well_profile import tvd_at_md
+    state = synthetic_tieback()
+    state['well_geometry'] = {'type':'Directional','survey':pd.DataFrame(
+        [[0.,0.,0.],[100.,60.,90.],[1200.,60.,90.]],columns=['MD','Deviation','Azimuth'])}
+    result = snapshot_geometry(state, app_source_sha='d'*40, query_md=(50.,100.,700.))
+    assert result.status == 'GEOMETRY_REPRESENTABLE'  # Geometry only; TVD convention remains an explicit hold.
+    assert 'DIRECTIONAL_TVD_CONVENTION' in result.future_gates
+    values = {s.md:s.tvd for s in result.trajectory}
+    assert values[50.] == tvd_at_md(state['well_geometry'],[50.])[0] == pytest.approx(47.7464829275686)
+    assert values[100.] == tvd_at_md(state['well_geometry'],[100.])[0]
+    assert values[50.] != pytest.approx(values[100.]/2)
+    assert [(s.md,s.deviation_deg,s.azimuth_deg) for s in result.survey] == [(0.,0.,0.),(100.,60.,90.),(1200.,60.,90.)]
+    assert result.hydraulic_admissible is False
+    assert snapshot_geometry(state, app_source_sha='d'*40, query_md=(1201.,)).reason_codes == ('TRAJECTORY_INVALID',)
+
+
+def test_cfw128_deep_immutability_provenance_and_excess_do_not_rewrite_geometry():
+    from cfw128_adapter import snapshot_geometry
+    from dataclasses import FrozenInstanceError, fields, is_dataclass
+    state = r18c_tapered_state(100.)
+    before = pickle.dumps(state)
+    result = snapshot_geometry(state, app_source_sha='e'*40)
+    def immutable(value):
+        if is_dataclass(value):
+            for field in fields(value): immutable(getattr(value,field.name))
+        elif isinstance(value,tuple):
+            for item in value: immutable(item)
+        else: assert value is None or type(value) in (str,float,int,bool)
+    immutable(result)
+    with pytest.raises(FrozenInstanceError): result.enabled = True
+    with pytest.raises(FrozenInstanceError): result.enclosing_sections[0].id_in = 99.
+    with pytest.raises(TypeError): result.enclosing_sections[0] = result.enclosing_sections[1]
+    assert pickle.dumps(state) == before
+    state['placement_config'].update(chart_excess_mode='apply',excess_csg_csg_pct=50.,excess_csg_oh_pct=60.)
+    changed = snapshot_geometry(state, app_source_sha='e'*40)
+    assert changed.active_sections == result.active_sections and changed.enclosing_sections == result.enclosing_sections
+    assert changed.source_identity != result.source_identity
+    assert snapshot_geometry(state, app_source_sha='f'*40).request_identity != changed.request_identity
+
+
+@pytest.mark.parametrize('job', ['CMT PLUG','CMT SQUEEZE','CMT PLUG WITH CT'])
+def test_cfw128_not_applicable_is_distinct_from_unknown_or_unfinished(job):
+    from cfw128_adapter import snapshot_geometry
+    result = snapshot_geometry({'job_type':job}, app_source_sha='a'*40)
+    assert result.status == 'NOT_APPLICABLE' and result.reason_codes == ('NON_CHART_OPERATION',)
+    assert result.ready_to_run is False
+    assert snapshot_geometry({'job_type':'unknown'},app_source_sha='a'*40).status == 'INVALID_INPUT'
+    assert snapshot_geometry({},app_source_sha='a'*40).reason_codes == ('JOB_NOT_SELECTED',)
+
+
+def test_cfw128_adapter_remains_unimported_by_production_and_research_free():
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for path in root.glob('*.py'):
+        tree = ast.parse(path.read_text())
+        modules = [n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
+        modules += [a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
+        if path.name == 'cfw128_adapter.py':
+            assert set(modules) <= {'__future__','collections.abc','copy','dataclasses','math','re','typing','pandas','cement_chart_model','installed_geometry','placement','project_state','well_profile'}
+        else: assert 'cfw128_adapter' not in modules
+
+
+@pytest.mark.parametrize('fault', ['target_type','host_type','description_type','well_record','query_bool','query_nan','query_outside'])
+def test_cfw128_malformed_typed_sources_cannot_escape_or_hide_behind_deduplication(fault):
+    from cfw128_adapter import snapshot_geometry
+    state = synthetic_tieback()
+    query = ()
+    if fault == 'target_type': state['placement_config']['target_row'] = ['invalid']
+    elif fault == 'host_type': state['placement_config']['host_row'] = ['invalid']
+    elif fault == 'description_type': state['hardware_table'].at[0,'Description'] = ['invalid']
+    elif fault == 'well_record': state['well_data'] = 4
+    else: query = {'query_bool':(False,), 'query_nan':(float('nan'),), 'query_outside':(1201.,)}[fault]
+    before = pickle.dumps(state)
+    result = snapshot_geometry(state, app_source_sha='a'*40, query_md=query)
+    assert result.status == 'INVALID_INPUT'
+    assert result.active_sections == () and result.ready_to_run is False
+    assert pickle.dumps(state) == before
+
+
+@pytest.mark.parametrize('fault', ['host_coverage','two_active_walls','dp_taper','body_taper'])
+def test_cfw128_app_valid_non_scalar_boundaries_are_not_malformed(fault):
+    from cfw128_adapter import snapshot_geometry
+    state = synthetic_tieback(top=400.)
+    t = state['hardware_table']
+    if fault == 'host_coverage':
+        # Actual outer Casing covers the top; explicitly selected installed liner starts at100.
+        state = bug01_geometry_case('TIE BACK LNR 5"')
+    elif fault == 'two_active_walls':
+        state = r18c_tapered_state(100.)
+        state['hardware_table'].loc[state['hardware_table']['Description']=='Tie Back Liner Lap','MD (m)']='0'
+        state['hardware_table'] = state['hardware_table'][state['hardware_table']['Description']!='Drill Pipes'].reset_index(drop=True)
+        state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
+    elif fault == 'dp_taper':
+        dp = t.index[t['Description']=='Drill Pipes'][0]
+        t.at[dp,'MD (m)']='200'
+        extra=t.iloc[[dp]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    else:
+        t.at[0,'MD (m)']='400-500'
+        extra=t.iloc[[0]].copy();extra['MD (m)']='500-700';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t.iloc[:1],extra,t.iloc[1:]],ignore_index=True)
+        state['placement_config']['target_row']=next(k for k,v in hardware_choices(state['hardware_table'],target_descriptions(state['job_type'])).items() if v['depth']==700.)
+    chart.resolve_chart_geometry(state)  # Independent App validity, not archive constructor acceptance.
+    before = pickle.dumps(state)
+    result=snapshot_geometry(state,app_source_sha='b'*40)
+    assert result.status=='ENGINE_INTERFACE_NOT_REPRESENTABLE'
+    assert {'host_coverage':'HOST_NOT_FULL_PATH','two_active_walls':'SEGMENTED_ENCLOSURE',
+            'dp_taper':'SEGMENTED_DRILL_PIPE','body_taper':'SEGMENTED_TIEBACK_BODY'}[fault] in result.reason_codes
+    assert result.enabled is False and pickle.dumps(state)==before
+
+
+def test_cfw128_no_rheology_or_solver_calls_and_input_sha_contract(monkeypatch):
+    from cfw128_adapter import snapshot_geometry, GeometrySnapshot
+    def forbidden(*args,**kwargs): raise AssertionError('A disabled snapshot must not execute physics.')
+    monkeypatch.setattr(pumping_simulation,'run_pumping_simulation',forbidden)
+    monkeypatch.setattr(centralizer_adapter,'build_dynamic_payload',forbidden)
+    state=synthetic_tieback()
+    state['lab_qc_params']={'invalid':'not consumed'}
+    result=snapshot_geometry(state,app_source_sha='c'*40)
+    assert result.status=='GEOMETRY_REPRESENTABLE'
+    with pytest.raises(ValueError,match='40-character'):
+        snapshot_geometry(state,app_source_sha='unverified')
+    with pytest.raises(TypeError):
+        GeometrySnapshot('GEOMETRY_REPRESENTABLE',(),'', 'c'*40,'x','y','job', enabled=True)
