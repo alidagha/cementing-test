@@ -2127,3 +2127,239 @@ def test_cfw128_duplicate_identity_does_not_truncate_nested_array_cells():
     assert second.source_identity != first.source_identity
     assert second.request_identity != first.request_identity
     assert second == snapshot_geometry(state,app_source_sha='f'*40)
+
+
+# B1 is a new disabled source-intake capability, not an App physics repair.
+def test_cfw128_b1_intact_reviewed_source_is_captured_without_instrument_claim(bug01_reviewed_report_base):
+    import project_state as ps
+    from engineering_tools import lab_review_signature
+    from rheology import RPM_ORDER
+    state=deepcopy(bug01_reviewed_report_base)
+    qc=state['lab_qc_params']['Main'];grid=state['lab_grid_dfs']['Main']
+    assert qc['reviewed'] is True and qc['review_signature']==lab_review_signature(qc,grid)
+    assert state['lab_source_signatures']['Main']==ps.lab_source_signature(state,'Main')
+    from cfw128_hb_intake import snapshot_lab_intake
+    before=pickle.dumps(state);grid_object=state['lab_grid_dfs']['Main']
+    result=snapshot_lab_intake(state,'Main',app_source_sha='a'*40)
+    assert result.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    assert result.reason_codes==('INTACT_REVIEWED_BHCT_DOWN_SOURCE','INSTRUMENT_PROVENANCE_UNVERIFIED')
+    source=qc['rheology']['bhct_down']['readings']
+    assert tuple(r.rpm for r in result.readings)==RPM_ORDER
+    assert tuple((r.raw,r.raw_type,r.dial) for r in result.readings)==tuple((source[str(r)],type(source[str(r)]).__name__,int(source[str(r)])) for r in RPM_ORDER)
+    assert result.review_signature==qc['review_signature']
+    assert result.formulation_signature==state['lab_source_signatures']['Main']
+    assert result.material_name==state['cement_params']['Main']['base_cement']
+    assert result.instrument_provenance=='UNVERIFIED'
+    assert all(getattr(result,k) is False for k in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible'))
+    assert result==snapshot_lab_intake(state,'Main',app_source_sha='a'*40)
+    assert pickle.dumps(state)==before and state['lab_grid_dfs']['Main'] is grid_object
+
+
+@pytest.mark.parametrize('fault,reason',[
+    ('unselected','BHCT_DOWN_NOT_SELECTED'),('wrong_ramp','BHCT_DOWN_NOT_SELECTED'),
+    ('empty','DIAL_MISSING'),('missing_key','RPM_MISSING'),('extra_key','RPM_KEYS_INVALID'),
+    ('colliding_key','RPM_KEYS_INVALID'),('duplicate_pairs','RPM_RECORD_INVALID'),
+    ('bool','DIAL_BOOLEAN'),('fractional','DIAL_FRACTIONAL'),('tiny_fraction','DIAL_FRACTIONAL'),
+    ('negative','DIAL_NEGATIVE'),('nonfinite','DIAL_NONFINITE'),('expression','DIAL_SYNTAX'),
+    ('exponent','DIAL_SYNTAX'),('unreviewed','LAB_NOT_REVIEWED'),
+    ('reading_edit','REVIEW_SIGNATURE_MISMATCH'),('grid_edit','REVIEW_SIGNATURE_MISMATCH'),
+    ('formulation_edit','FORMULATION_SIGNATURE_MISMATCH'),('signature_edit','FORMULATION_SIGNATURE_MISMATCH'),
+    ('duplicate_grid','DUPLICATE_SOURCE_COLUMNS'),('duplicate_additives','DUPLICATE_SOURCE_COLUMNS'),
+    ('other_fluid','LAB_SOURCE_MISSING')])
+def test_cfw128_b1_bad_or_stale_sources_never_carry_captured_readings(bug01_reviewed_report_base,fault,reason):
+    from cfw128_hb_intake import snapshot_lab_intake
+    state=deepcopy(bug01_reviewed_report_base);fluid='Main';qc=state['lab_qc_params']['Main'];row=qc['rheology']['bhct_down'];readings=row['readings']
+    if fault in ('unselected','wrong_ramp'):
+        row['selected']=False
+        if fault=='wrong_ramp':qc['rheology']['surface_down']=deepcopy(row);qc['rheology']['surface_down']['selected']=True
+    elif fault=='empty':readings['300']=''
+    elif fault=='missing_key':readings.pop('3')
+    elif fault=='extra_key':readings['600']='1'
+    elif fault=='colliding_key':readings[300]='999'
+    elif fault=='duplicate_pairs':row['readings']=[('300','168'),('300','169')]
+    elif fault in ('bool','fractional','tiny_fraction','negative','nonfinite','expression','exponent'):
+        readings['300']={'bool':True,'fractional':'168.5','tiny_fraction':'168.00000000000000000000001','negative':'-1','nonfinite':float('inf'),'expression':'100+68','exponent':'1.68e2'}[fault]
+    elif fault=='unreviewed':qc['reviewed']=False
+    elif fault=='reading_edit':readings['300']='169'
+    elif fault=='grid_edit':state['lab_grid_dfs']['Main'].at[0,'Lot No']='different lot'
+    elif fault=='formulation_edit':state['fluid_data']['Main']['density']='119.0'
+    elif fault=='signature_edit':state['lab_source_signatures']['Main']='stale'
+    elif fault in ('duplicate_grid','duplicate_additives'):
+        key='lab_grid_dfs' if fault=='duplicate_grid' else 'cement_additives_dfs'
+        frame=state[key]['Main']
+        if not len(frame.columns):frame=pd.DataFrame([['x']],columns=['Name'])
+        state[key]['Main']=pd.concat([frame.iloc[:,[0]],frame],axis=1)
+    else:state['fluids_config']['active'].append('Lead');fluid='Lead'
+    before=pickle.dumps(state)
+    result=snapshot_lab_intake(state,fluid,app_source_sha='b'*40)
+    assert result.status!='CAPTURED_FOR_FUTURE_REVIEW' and result.reason_codes==(reason,)
+    assert result.readings==()
+    assert all(getattr(result,k) is False for k in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible'))
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('fluid,reason', [('Displacement Fluid','NO_NATIVE_PHASE7_SEVEN_RPM_SOURCE'),('Mud','NO_NATIVE_PHASE7_SEVEN_RPM_SOURCE'),
+    ('Diesel','UNSUPPORTED_RHEOLOGY_ONLY_FLUID'),('Pre Flush','UNSUPPORTED_RHEOLOGY_ONLY_FLUID'),
+    ('Spacer','UNSUPPORTED_SPACER_SOURCE'),('Spacer Ahead','UNSUPPORTED_FLUID_STAGE'),('unknown','UNSUPPORTED_FLUID')])
+def test_cfw128_b1_unsupported_fluids_do_not_become_measured_from_pv_yp(fluid,reason):
+    from cfw128_hb_intake import snapshot_lab_intake
+    state={'fluids_config':{'active':[fluid]},'plastic_viscosity':45.,'yield_point':15.,'mud_density':80.}
+    result=snapshot_lab_intake(state,fluid,app_source_sha='c'*40)
+    assert result.status=='NOT_AVAILABLE' and result.reason_codes==(reason,)
+    assert result.readings==() and result.fit_admissible is False
+
+
+@pytest.mark.parametrize('fluid', ['Main','Lead','Lead #1','Lead #2','Tail','Scavenger'])
+def test_cfw128_b1_formulation_identity_is_active_and_job_eligible_not_inferred(fluid):
+    from cfw128_hb_intake import snapshot_lab_intake
+    result=snapshot_lab_intake({},fluid,app_source_sha='d'*40)
+    assert result.status=='NOT_APPLICABLE' and result.reason_codes==('FLUID_NOT_ACTIVE',)
+    if fluid!='Main':
+        result=snapshot_lab_intake({'job_type':'CMT PLUG WITH CT','fluids_config':{'active':[fluid]}},fluid,app_source_sha='d'*40)
+        assert result.reason_codes==('FLUID_NOT_ELIGIBLE',)
+
+
+def test_cfw128_b1_restore_raw_types_and_currentness_are_read_only(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    from project_state import fingerprint
+    source=deepcopy(bug01_reviewed_report_base);state=audit.round_trip(source)
+    before=pickle.dumps(state);first=snapshot_lab_intake(state,'Main',app_source_sha='e'*40)
+    assert first.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    assert pickle.dumps(state)==before
+    assert fingerprint(source['lab_qc_params'])==fingerprint(state['lab_qc_params'])
+    assert source['lab_source_signatures']==state['lab_source_signatures']
+    # Actual project serialization sorts keys; RPM association is semantic, not dict insertion order.
+    assert tuple(r.rpm for r in first.readings)==(300,200,100,60,30,6,3)
+    state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']='169'
+    changed=snapshot_lab_intake(state,'Main',app_source_sha='e'*40)
+    assert changed.reason_codes==('REVIEW_SIGNATURE_MISMATCH',)
+    assert changed.source_identity!=first.source_identity and changed.request_identity!=first.request_identity
+    state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=source['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']
+    assert snapshot_lab_intake(state,'Main',app_source_sha='e'*40)==first
+
+
+def test_cfw128_b1_operator_review_transition_is_real_and_instrument_stays_unverified(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    import project_state as ps
+    from cfw128_hb_intake import snapshot_lab_intake
+    case=audit.AuditRegressions();app=case.app(deepcopy(bug01_reviewed_report_base));case.phase(app,'phase7')
+    box=next(w for w in app.text_input if w.label=='300 RPM - BHCT — Ramp-Down - Main')
+    box.set_value('169').run()
+    assert snapshot_lab_intake(app.session_state.to_dict(),'Main',app_source_sha='f'*40).status!='CAPTURED_FOR_FUTURE_REVIEW'
+    confirm=next(w for w in app.button if w.label=='Confirm measured lab results');assert not confirm.disabled
+    confirm.click().run()
+    state=app.session_state.to_dict();before=pickle.dumps(state);result=snapshot_lab_intake(state,'Main',app_source_sha='f'*40)
+    assert result.status=='CAPTURED_FOR_FUTURE_REVIEW' and result.readings[0].raw=='169'
+    assert result.instrument_provenance=='UNVERIFIED' and result.fit_admissible is False
+    assert pickle.dumps(state)==before
+    assert state['lab_source_signatures']['Main']==ps.lab_source_signature(state,'Main')
+    # An ad-hoc external claim is not a canonical instrument authority.
+    state['instrument_evidence']={'family':'Fann35','rotor':'R1','bob':'B1','spring':1.0,'verified':True}
+    assert snapshot_lab_intake(state,'Main',app_source_sha='f'*40).instrument_provenance=='UNVERIFIED'
+
+
+def test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_reviewed_report_base,monkeypatch):
+    import ast,sys,subprocess
+    from pathlib import Path
+    from dataclasses import fields,is_dataclass,FrozenInstanceError
+    import rheology
+    from cfw128_hb_intake import snapshot_lab_intake
+    def forbidden(*args,**kwargs):raise AssertionError('B1 must not fit or execute physics')
+    monkeypatch.setattr(rheology,'calculate_cemcade_bingham',forbidden)
+    result=snapshot_lab_intake(deepcopy(bug01_reviewed_report_base),'Main',app_source_sha='a'*40)
+    assert result.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    def frozen(value):
+        if is_dataclass(value):
+            for f in fields(value):frozen(getattr(value,f.name))
+        elif isinstance(value,tuple):
+            for x in value:frozen(x)
+        else:assert value is None or type(value) in (str,int,float,bool)
+    frozen(result)
+    with pytest.raises(FrozenInstanceError):result.fit_admissible=True
+    with pytest.raises(FrozenInstanceError):result.readings[0].dial=9
+    root=Path(__file__).resolve().parents[1]
+    for file in root.glob('*.py'):
+        tree=ast.parse(file.read_text());imports=[n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]+[a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
+        if file.name!='cfw128_hb_intake.py':assert 'cfw128_hb_intake' not in imports
+    code='import sys, cfw128_hb_intake; assert not any(n in sys.modules for n in ("scipy", "pumping_simulation", "fluids_charts_module_v1_4_2"))'
+    subprocess.run([sys.executable,'-B','-W','error','-c',code],cwd=root,check=True)
+
+
+@pytest.mark.parametrize('raw', [168,168.0,' 00168.00 '])
+def test_cfw128_b1_real_confirmation_retains_numeric_or_text_source_types(bug01_reviewed_report_base,raw):
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    state=deepcopy(bug01_reviewed_report_base)
+    state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=raw
+    state['lab_qc_params']['Main']['reviewed']=False
+    case=audit.AuditRegressions();app=case.app(state);case.phase(app,'phase7')
+    confirm=next(w for w in app.button if w.label=='Confirm measured lab results');assert not confirm.disabled
+    confirm.click().run()
+    source=app.session_state.to_dict();before=pickle.dumps(source)
+    result=snapshot_lab_intake(source,'Main',app_source_sha='b'*40)
+    assert result.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    reading=result.readings[0]
+    assert reading.raw==raw and type(reading.raw) is type(raw) and reading.raw_type==type(raw).__name__
+    assert reading.dial==168 and pickle.dumps(source)==before
+
+
+def test_cfw128_b1_duplicate_grid_identity_and_guard_mutation_preserve_every_cell(bug01_reviewed_report_base,monkeypatch):
+    import cfw128_hb_intake as intake
+    state=deepcopy(bug01_reviewed_report_base);frame=state['lab_grid_dfs']['Main']
+    duplicate=pd.concat([frame.iloc[:,[0]],frame],axis=1);state['lab_grid_dfs']['Main']=duplicate
+    before=pickle.dumps(state);first=intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
+    assert first.reason_codes==('DUPLICATE_SOURCE_COLUMNS',) and pickle.dumps(state)==before
+    assert first==intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
+    duplicate.iat[0,0]='otherwise-lost-material'
+    second=intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
+    assert first.source_identity!=second.source_identity and first.request_identity!=second.request_identity
+    monkeypatch.setattr(intake,'_duplicate_columns',lambda value:False)
+    with pytest.raises(UserWarning,match='columns are not unique'):
+        intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
+
+
+def test_cfw128_b1_positional_encoding_matches_locked_ac1_without_runtime_import():
+    import ast,inspect
+    import cfw128_adapter as geometry
+    import cfw128_hb_intake as intake
+    def body(function):
+        node=ast.parse(inspect.getsource(function)).body[0]
+        return ast.dump(ast.Module(body=node.body[1:],type_ignores=[]),include_attributes=False)
+    assert body(geometry._positional_source)==body(intake._positional_source)
+    for value in [pd.DataFrame([[1,2],[3,4]],columns=['x','x']), {'300':168,'200':116.0}, [None,pd.NA,True,2**60,-0.0]]:
+        assert geometry._positional_source(value)==intake._positional_source(value)
+
+
+@pytest.mark.parametrize('raw,expected', [(0,0),(168,168),(168.0,168),(' 00168.00 ',168),('0',0),('-0.00',0)])
+def test_cfw128_b1_documented_integer_syntax_is_exact_without_fit(raw,expected):
+    from cfw128_hb_intake import _dial
+    assert _dial(raw)==(expected,None)
+
+
+@pytest.mark.parametrize('fault,reason',[('empty_qc','RHEOLOGY_SOURCE_MISSING'),('unknown_ramp','RHEOLOGY_KEYS_INVALID'),
+    ('dataset_extra','DATASET_KEYS_INVALID'),('selection_type','SELECTION_INVALID'),('review_signature','REVIEW_SIGNATURE_MISMATCH'),
+    ('nonfinite_text','DIAL_NONFINITE'),('bad_type','DIAL_TYPE')])
+def test_cfw128_b1_additional_source_shape_and_review_mutations_are_honest(bug01_reviewed_report_base,fault,reason):
+    from cfw128_hb_intake import snapshot_lab_intake
+    state=deepcopy(bug01_reviewed_report_base);qc=state['lab_qc_params']['Main'];row=qc['rheology']['bhct_down']
+    if fault=='empty_qc':qc.clear()
+    elif fault=='unknown_ramp':qc['rheology']['invented_down']={}
+    elif fault=='dataset_extra':row['instrument']='Fann35'
+    elif fault=='selection_type':row['selected']=1
+    elif fault=='review_signature':qc['review_signature']='different-review'
+    elif fault=='nonfinite_text':row['readings']['300']='NaN'
+    else:row['readings']['300']={'dial':168}
+    before=pickle.dumps(state);result=snapshot_lab_intake(state,'Main',app_source_sha='e'*40)
+    assert result.reason_codes==(reason,) and result.readings==()
+    assert result.fit_admissible is False and pickle.dumps(state)==before
+
+
+def test_cfw128_b1_snapshot_pickle_and_clone_cannot_enable_fitting(bug01_reviewed_report_base):
+    from dataclasses import asdict,replace
+    from cfw128_hb_intake import snapshot_lab_intake
+    result=snapshot_lab_intake(deepcopy(bug01_reviewed_report_base),'Main',app_source_sha='f'*40)
+    assert pickle.loads(pickle.dumps(result))==result
+    for name in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible','scientifically_qualified'):
+        assert asdict(result)[name] is False
+        with pytest.raises(ValueError):replace(result,**{name:True})
