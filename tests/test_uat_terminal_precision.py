@@ -675,12 +675,12 @@ def test_wnf02_operational_procedure_tokens_preserve_sources(job,rate,display,wn
     old_line=next(l for l in old.splitlines() if 'as Spacer Behind' in l)
     line=next(l for l in new.splitlines() if 'as Spacer Behind' in l)
     assert f'at {display} bpm; duration 00:13 (HH:MM).' in line
-    assert old.replace(old_line,line)==new
+    assert r18_historical_procedure_text(old.replace(old_line,line),job)==new
     assert pickle.dumps((s['fluid_data'],s['cement_params'],cfg))==source
 
 
 from test_round13b_b4_ct_report import valid_ct as wnf02_ct
-from test_uat_round12a5_diesel_word_e2e import projects as wnf02_projects
+from test_uat_round12a5_diesel_word_e2e import projects as wnf02_projects, r18_historical_procedure_text
 
 
 @pytest.mark.parametrize('rate,display',[('5.00','5.0'),('0.0050','0.005'),('+.5-+1.250','+0.5–+1.25')])
@@ -768,7 +768,9 @@ def test_wnf02_no_operational_spacer_sources_do_not_churn(wnf02_projects,wnf02_p
     old=wnf_sync(previous,wnf02_previous['synchronize_report_texts']);new=wnf_sync(current)
     for key in ('exec_summary_text','procedure_text'):
         assert new[key]['signature']==old[key]['signature']
-        assert new[key]['generated']==old[key]['generated']
+        expected=old[key]['generated']
+        if key=='procedure_text':expected=r18_historical_procedure_text(expected,job)
+        assert new[key]['generated']==expected
 
 
 def test_wnf02_real_old_cache_rebuild_and_zero_plan_ui_block(wnf02_projects,wnf02_previous,tmp_path):

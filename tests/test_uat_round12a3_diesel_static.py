@@ -28,14 +28,14 @@ def diesel_state(job=JOBS[0], excess="ignore"):
     state['mud_type'] = 'OBM'
     if job == JOBS[1]:
         state['hardware_table'] = hardware(
-            ('Drill Pipes', '400', '5', 4.), ('Liner', '700', '7', 6.2),
-            ('Liner', '1000', '7', 6.), ('Liner Hanger', '400', '7', 6.),
+            ('Drill Pipes', '400', '5', 4.), ('Liner Shoe', '700', '7', 6.2),
+            ('Liner Shoe', '1000', '7', 6.), ('Liner Lap', '400', '7', 6.),
             ('Previous Casing', '500', '9.625', 8.535), ('Open Hole Size', '1000', '8.5', 8.5))
     elif job == JOBS[2]:
         state['hardware_table'] = hardware(
-            ('Tie Back', '0-1000', '7', 6.), ('Previous Casing', '1000', '9.625', 8.535),
+            ('Tie Back Liner Shoe', '0-1000', '7', 6.), ('Previous Casing', '1000', '9.625', 8.535),
             # Synthetic receiver must pass the measured 8.535-inch host ID.
-            ('Previous Liner', '500-1300', '8.5', 7.5))
+            ('Previous Liner Shoe', '500-1300', '8.5', 7.5))
         state['placement_config']['host_row'] = next(iter(
             hardware_choices(state['hardware_table'], {'Previous Casing'})))
     state['placement_config'].update(

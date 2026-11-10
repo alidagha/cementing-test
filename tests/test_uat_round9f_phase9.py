@@ -546,7 +546,7 @@ def test_current_execution_supports_every_applicable_job(catalog,job):
     if chart_job_kind(job) == "tieback":
         state["placement_config"]["host_row"] = next(iter(hardware_choices(state["hardware_table"],HOST_DESCRIPTIONS)))
     geometry = adapter.to_engine_geometry(state)
-    description = {"casing":"Casing","liner":"Liner","tieback":"Tie Back"}[geometry["job_type"]]
+    description = {"casing":"Casing","liner":"Liner Shoe","tieback":"Tie Back Liner Shoe"}[geometry["job_type"]]
     row = next(row for row in state["hardware_table"].to_dict("records") if row["Description"] == description)
     record = custom(pipe_size_in=tools.parse_fractional_size(row["Size (in)"]),
                     hole_size_in=geometry["wellbore"]["hole_size"]/adapter.INCH_TO_M,

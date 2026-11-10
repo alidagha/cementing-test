@@ -335,8 +335,8 @@ def test_liner_hanger_and_explicit_running_string_geometry():
     state = chart_state()
     state["job_type"] = state["placement_config"]["job_type"] = 'LNR 7"'
     state["hardware_table"] = hardware(("Drill Pipes", "400", "5", 4.),
-        ("Liner", "700", "7", 6.2), ("Liner", "1000", "7", 6.),
-        ("Liner Hanger", "400", "7", 6.), ("Previous Casing", "500", "9.625", 8.535),
+        ("Liner Shoe", "700", "7", 6.2), ("Liner Shoe", "1000", "7", 6.),
+        ("Liner Lap", "400", "7", 6.), ("Previous Casing", "500", "9.625", 8.535),
         ("Open Hole Size", "1000", "8.5", 8.5))
     geometry = chart_module().resolve_chart_geometry(state)
     assert [s["top_md"] for s in geometry["active_string"]] == [0., 400., 700.]
@@ -349,9 +349,9 @@ def test_tieback_host_is_selected_and_pore_frac_are_shoe_markers():
     state = chart_state()
     state["job_type"] = state["placement_config"]["job_type"] = 'TIE BACK LNR 7"'
     state["cement_params"]["Main"]["top_job_type"] = state["job_type"]
-    state["hardware_table"] = hardware(("Tie Back", "1000", "7", 6.),
+    state["hardware_table"] = hardware(("Tie Back Liner Shoe", "1000", "7", 6.),
         ("Previous Casing", "1100", "9.625", 8.535),
-        ("Previous Liner", "1000-1200", "7", 6.))
+        ("Previous Liner Shoe", "1000-1200", "7", 6.))
     state["placement_config"]["tie_back_liner_lap_m"] = 0.  # Explicit synthetic Top.
     assert "selected" in chart_module().chart_readiness(state)["issues"][0]
     state["placement_config"]["host_row"] = next(iter(hardware_choices(state["hardware_table"], {"Previous Casing"})))

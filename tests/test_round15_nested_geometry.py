@@ -13,6 +13,72 @@ from engineering_tools import BBL_TO_CUFT
 from placement import hardware_choices, target_descriptions
 
 
+def test_r18_catalog_and_exact_target_roles():
+    import materials_db as db
+    from placement import hardware_context_label
+    expected = {"Previous Liner Lap", "Previous Liner Shoe", "Liner Shoe",
+                "Liner Lap", "Tie Back Liner Shoe"}
+    assert expected <= set(db.HARDWARE_DESCRIPTIONS)
+    assert not {"Previous Liner Hanger", "Previous Liner", "Liner", "Liner Hanger",
+                "Tie Back"} & set(db.HARDWARE_DESCRIPTIONS)
+    assert target_descriptions('LNR 5"') == {"Liner Shoe"}
+    assert target_descriptions('TIE BACK LNR 5"') == {"Tie Back Liner Shoe"}
+    assert target_descriptions('CMT PLUG') == {"Casing", "Liner Shoe", "Tie Back Liner Shoe", "Open Hole Size"}
+    rows = hardware(("Tie Back Liner Shoe", "200-700", "5", 4.),
+                    ("Liner Shoe", "400-900", "5", 4.))
+    choices = hardware_choices(rows, target_descriptions('TIE BACK LNR 5"'))
+    assert len(choices) == 1
+    assert next(iter(choices.values()))["description"] == "Tie Back Liner Shoe"
+    assert hardware_context_label(rows, next(iter(choices))) == '5" Tie Back'
+    from installed_geometry import receiving_liner
+    from well_schematic_adapter import _renderer_type
+    assert _renderer_type("Tie Back Liner Shoe") == "tieback"
+    with pytest.raises(ValueError, match="receiving Liner"):
+        receiving_liner([{"description": "Tie Back Liner Shoe", "top_md": 100.,
+                          "shoe_md": 1000.}], 500.)
+
+
+@pytest.mark.parametrize('job', ['LNR 5"', 'TIE BACK LNR 4 1/2"'])
+def test_r18_editor_choices_first_edit_navigation_and_json_identity(job):
+    import json
+    import test_audit_regressions as audit
+    import phase_9_centralizer as phase9
+    from phase_2_3_well_data import HARDWARE_COLUMNS
+    case = audit.AuditRegressions()
+    source = bug01_solver_state(job)
+    app = case.app(deepcopy(source))
+    case.phase(app, 'phase2_3')
+    editor = next(e for e in app.dataframe if '_editor_hardware_' in e.proto.id)
+    options = json.loads(editor.proto.columns)['Description']['type_config']['options']
+    assert {'Previous Liner Lap', 'Previous Liner Shoe', 'Liner Shoe',
+            'Liner Lap', 'Tie Back Liner Shoe'} <= set(options)
+    assert not {'Previous Liner Hanger', 'Previous Liner', 'Liner', 'Liner Hanger', 'Tie Back'} & set(options)
+    assert list(editor.value.columns) == HARDWARE_COLUMNS
+    before = app.session_state['hardware_table'].copy(deep=True)
+    tokens = deepcopy(app.session_state['placement_config'])
+    signature = phase9.source_signature(app.session_state)
+    # Navigation retains the editor draft; returning commits it through the
+    # established Hardware cleaner, without bypassing pending-draft admission.
+    inner = float(before.at[0, 'ID (in)'])-.001
+    case.hardware_event(app, {'edited_rows': {'0': {'ID (in)': inner}}}, navigate='phase1')
+    assert app.session_state['hardware_editor_draft'].at[0, 'ID (in)'] == inner
+    case.phase(app, 'phase2_3')
+    before.at[0, 'ID (in)'] = inner
+    pd.testing.assert_frame_equal(app.session_state['hardware_table'], before, check_dtype=False)
+    assert app.session_state['placement_config'] == tokens
+    assert phase9.source_signature(app.session_state) != signature
+    saved = audit.round_trip(app.session_state.to_dict())
+    again = audit.round_trip(saved)
+    pd.testing.assert_frame_equal(saved['hardware_table'], again['hardware_table'], check_dtype=False)
+    assert saved['placement_config'] == again['placement_config'] == tokens
+    assert phase9.source_signature(saved) == phase9.source_signature(again)
+    assert chart.resolve_chart_geometry(saved) == chart.resolve_chart_geometry(again)
+    restored = case.app(saved)
+    case.phase(restored, 'phase2_3')
+    pd.testing.assert_frame_equal(restored.session_state['hardware_table'], before, check_dtype=False)
+    assert restored.session_state['placement_config'] == tokens
+
+
 def hardware(*rows):
     return pd.DataFrame([dict(zip(("Description", "MD (m)", "Size (in)", "ID (in)"), row),
                               **{"Joint (m)": 12.2, "Weight (ppf)": 50., "Grade": "K-55",
@@ -43,9 +109,9 @@ def reference_casing(reverse=False):
 def synthetic_tieback(top=100., explicit=True):
     # All Tie Back measurements in this fixture are synthetic. The upstream
     # workstring is explicit; its OD matches the active OD for scalar mapping.
-    rows = [("Tie Back", f"{top:g}-700" if explicit else "700", "7", 6.),
+    rows = [("Tie Back Liner Shoe", f"{top:g}-700" if explicit else "700", "7", 6.),
             ("Previous Casing", "800", "9 5/8", 8.535),
-            ("Previous Liner", "700-1200", "7", 6.),
+            ("Previous Liner Shoe", "700-1200", "7", 6.),
             ("Open Hole Size", "800-1200", "8.5", 8.5)]
     if top > 0:
         rows.append(("Drill Pipes", f"{top:g}", "7", 6.))
@@ -83,7 +149,7 @@ def test_explicit_nonzero_tieback_top_preserves_explicit_upstream_path_and_landi
     state = synthetic_tieback()
     geometry = chart.resolve_chart_geometry(state)
     assert [(s["top_md"], s["bottom_md"], s["description"]) for s in geometry["active_string"]] == [
-        (0., 100., "Drill Pipes"), (100., 700., "Tie Back")]
+        (0., 100., "Drill Pipes"), (100., 700., "Tie Back Liner Shoe")]
     centralizer = centralizer_adapter.to_engine_geometry(state)
     assert centralizer["wellbore"]["string_top"] == 100.
     pumping, _ = pumping_simulation._geometry(state, "tieback")
@@ -99,15 +165,15 @@ def test_scalar_tieback_endpoint_without_top_is_not_surface_evidence():
 
 def test_historical_liner_has_nonzero_top_and_actual_nested_host():
     state = project('LNR 5"', hardware(
-        ("Drill Pipes", "900", "5", 4.), ("Liner Hanger", "900", "5", 4.),
-        ("Liner", "900-1500", "5", 4.),
+        ("Drill Pipes", "900", "5", 4.), ("Liner Lap", "900", "5", 4.),
+        ("Liner Shoe", "900-1500", "5", 4.),
         ("Previous Casing", "400", "13 3/8", 12.347),
         ("Previous Casing", "800", "9 5/8", 8.535),
-        ("Previous Liner", "600-1100", "7", 6.),
+        ("Previous Liner Shoe", "600-1100", "7", 6.),
         ("Open Hole Size", "1100-1500", "6.125", 6.125)), 1500.)
     geometry = chart.resolve_chart_geometry(state)
     assert boundary(geometry) == [(0., 600., 8.535), (600., 1100., 6.), (1100., 1500., 6.125)]
-    assert next(s for s in geometry["active_string"] if s["description"] == "Liner")["top_md"] == 900.
+    assert next(s for s in geometry["active_string"] if s["description"] == "Liner Shoe")["top_md"] == 900.
 
 
 def test_outer_installed_history_edit_retires_centralizer_authority():
@@ -155,7 +221,7 @@ def test_tieback_insufficient_or_inconsistent_authority_blocks_all_consumers(fau
     elif fault == "missing_workstring":
         state["hardware_table"] = state["hardware_table"].loc[lambda f: f["Description"] != "Drill Pipes"]
     elif fault == "missing_receiver":
-        state["hardware_table"] = state["hardware_table"].loc[lambda f: f["Description"] != "Previous Liner"]
+        state["hardware_table"] = state["hardware_table"].loc[lambda f: f["Description"] != "Previous Liner Shoe"]
     elif fault == "ambiguous_receiver":
         state["hardware_table"] = pd.concat([state["hardware_table"], state["hardware_table"].iloc[[2]]], ignore_index=True)
     elif fault == "missing_host":
@@ -186,7 +252,7 @@ def test_explicit_tieback_top_interval_or_metadata_roundtrips_without_inference(
     pd.testing.assert_frame_equal(restored["hardware_table"], state["hardware_table"], check_dtype=False)
     for source in (state, restored):
         active = chart.resolve_chart_geometry(source)["active_string"]
-        assert next(s for s in active if s["description"] == "Tie Back")["top_md"] == top
+        assert next(s for s in active if s["description"] == "Tie Back Liner Shoe")["top_md"] == top
         assert centralizer_adapter.to_engine_geometry(source)["wellbore"]["string_top"] == top
 
 
@@ -255,7 +321,7 @@ def test_schematic_cannot_disagree_with_running_restriction_above_liner_hanger()
     import well_schematic_adapter as schematic
     from test_uat_round9b_geometry import state_for
     state = state_for("liner")
-    state["placement_config"]["target_row"] = next(iter(hardware_choices(state["hardware_table"], {"Liner"})))
+    state["placement_config"]["target_row"] = next(iter(hardware_choices(state["hardware_table"], {"Liner Shoe"})))
     host = state["hardware_table"].loc[lambda f: f["Description"] == "Previous Casing"].iloc[0].to_dict()
     host.update({"MD (m)": "100", "ID (in)": 6.5})
     state["hardware_table"] = pd.concat([pd.DataFrame([host]), state["hardware_table"]], ignore_index=True)
@@ -275,19 +341,19 @@ def test_scalar_representable_measured_paths_execute_real_frozen_solver(kind, ph
     elif kind.startswith("liner"):
         size, inner = (7., 6.) if kind == "liner7" else (5., 4.)
         geometry = project(f'LNR {size:g}"', hardware(
-            ("Drill Pipes", "400", str(size), inner), ("Liner Hanger", "400", str(size), inner),
-            ("Liner", "400-1000", str(size), inner),
+            ("Drill Pipes", "400", str(size), inner), ("Liner Lap", "400", str(size), inner),
+            ("Liner Shoe", "400-1000", str(size), inner),
             ("Previous Casing", "500", "9 5/8", 8.535),
             ("Open Hole Size", "500-1000", "8.5", 8.5)), 1000.)
     else:
         geometry = synthetic_tieback()
         if kind == "tieback5":
             geometry["job_type"] = geometry["placement_config"]["job_type"] = 'TIE BACK LNR 5"'
-            selected = geometry["hardware_table"]["Description"].isin(("Tie Back", "Drill Pipes", "Previous Liner"))
+            selected = geometry["hardware_table"]["Description"].isin(("Tie Back Liner Shoe", "Drill Pipes", "Previous Liner Shoe"))
             geometry["hardware_table"].loc[selected, "Size (in)"] = "5"
             geometry["hardware_table"].loc[selected, "ID (in)"] = 4.
             geometry["placement_config"]["target_row"] = next(iter(hardware_choices(
-                geometry["hardware_table"], {"Tie Back"})))
+                geometry["hardware_table"], {"Tie Back Liner Shoe"})))
     state.update(geometry)
     if kind.startswith("tieback"):
         resolved = chart.resolve_chart_geometry(state)
@@ -387,7 +453,7 @@ def test_schematic_rejects_active_body_larger_than_measured_open_hole():
     import well_schematic_adapter as schematic
     from test_uat_round9b_geometry import state_for
     state = state_for("liner")
-    state["placement_config"]["target_row"] = next(iter(hardware_choices(state["hardware_table"], {"Liner"})))
+    state["placement_config"]["target_row"] = next(iter(hardware_choices(state["hardware_table"], {"Liner Shoe"})))
     state["hardware_table"].loc[state["hardware_table"]["Description"] == "Open Hole Size", ["Size (in)", "ID (in)"]] = ["6.5", 6.5]
     with pytest.raises(ValueError, match="pass|fit|restriction"):
         schematic.prepare_schematic(state)
@@ -395,13 +461,13 @@ def test_schematic_rejects_active_body_larger_than_measured_open_hole():
 
 def test_deepest_liner_top_cannot_overrule_a_different_innermost_receiving_bore():
     state = project('TIE BACK LNR 5"', hardware(
-        ("Tie Back", "100-700", "5", 4.), ("Drill Pipes", "100", "5", 4.),
+        ("Tie Back Liner Shoe", "100-700", "5", 4.), ("Drill Pipes", "100", "5", 4.),
         ("Previous Casing", "1000", "13 3/8", 12.25),
-        ("Previous Liner", "100-1200", "7", 6.),
-        ("Previous Liner", "200-1100", "9 5/8", 8.535),
+        ("Previous Liner Shoe", "100-1200", "7", 6.),
+        ("Previous Liner Shoe", "200-1100", "9 5/8", 8.535),
         ("Open Hole Size", "1100-1200", "12.25", 12.25)), 1200.)
     state["placement_config"]["host_row"] = next(token for token, row in hardware_choices(
-        state["hardware_table"], {"Previous Liner"}).items() if row["size"] == "7")
+        state["hardware_table"], {"Previous Liner Shoe"}).items() if row["size"] == "7")
     with pytest.raises(ValueError, match="receiving.*(ambiguous|innermost)"):
         chart.resolve_chart_geometry(state)
 
@@ -459,7 +525,7 @@ def test_c1_selected_receiver_requires_its_own_source_interval_at_tie_in(source)
         extra = table.iloc[2].to_dict()
         extra.update({"MD (m)": "2400-3500", "Size (in)": "8", "ID (in)": 7.5})
         # Synthetic owner-consistent hanger for the additional 8-inch liner.
-        hanger = {**extra, "Description": "Previous Liner Hanger", "MD (m)": "2400"}
+        hanger = {**extra, "Description": "Previous Liner Lap", "MD (m)": "2400"}
         state["hardware_table"] = pd.concat([table, pd.DataFrame([extra, hanger])], ignore_index=True)
     elif source == "earlier_interval":
         # Even an explicit section of the SAME string cannot authorize a later
@@ -534,7 +600,7 @@ def test_c1_loss_of_explicit_receiver_blocks_export_and_retires_compiled_documen
     old_signature = pumping_simulation.source_signature(state)
     # The existing interval is 400-1000; only its source authority is removed.
     table = state["hardware_table"]
-    hanger = {**table.iloc[2].to_dict(), "Description": "Previous Liner Hanger", "MD (m)": "400"}
+    hanger = {**table.iloc[2].to_dict(), "Description": "Previous Liner Lap", "MD (m)": "400"}
     table.at[2, "MD (m)"] = "1000"
     state["hardware_table"] = pd.concat([table, pd.DataFrame([hanger])], ignore_index=True)
     assert pumping_simulation.source_signature(state) != old_signature
@@ -564,7 +630,7 @@ def test_c2_nested_receiver_drawing_is_independent_of_hydraulic_admission(both_h
     outer = {**table.iloc[2].to_dict(), "MD (m)": "2400-3500", "Size (in)": "8", "ID (in)": 7.5}
     extra = [outer]
     if both_hangers:
-        extra.append({**outer, "Description": "Previous Liner Hanger", "MD (m)": "2400"})
+        extra.append({**outer, "Description": "Previous Liner Lap", "MD (m)": "2400"})
     state["hardware_table"] = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
     before = pickle.dumps(state)
     interval = deepcopy(state)
@@ -661,10 +727,10 @@ def test_r15a_initial_measured_sections_excess_and_placement_share_capacity():
 @pytest.mark.parametrize('kind',['liner','tieback'])
 def test_r15a_measured_hole_cannot_replace_liner_or_tieback_history(kind):
     if kind=='liner':
-        state=project('LNR 7"',hardware(('Drill Pipes','50','5',4.),('Liner Hanger','50','7',6.),
-            ('Liner','50-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
+        state=project('LNR 7"',hardware(('Drill Pipes','50','5',4.),('Liner Lap','50','7',6.),
+            ('Liner Shoe','50-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
     else:
-        state=project('TIE BACK LNR 7"',hardware(('Tie Back','0-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
+        state=project('TIE BACK LNR 7"',hardware(('Tie Back Liner Shoe','0-150','7',6.),('Open Hole Size','0-150','9',9.)),150.)
     with pytest.raises(ValueError,match='Previous|host|Liner'):chart.resolve_chart_geometry(state)
 
 
@@ -735,11 +801,11 @@ def bug01_dq19():
         ('Previous Casing', '253.0', '18 5/8', 17.755, 87.5),
         ('Previous Casing', '2190', '13 3/8', 12.347, 72.),
         ('Previous Casing', '2800', '9 5/8', 8.535, 53.5),
-        ('Previous Liner Hanger', '2650', '7', 6.094, 32.),
-        ('Previous Liner', '3839', '7', 6.094, 32.),
+        ('Previous Liner Lap', '2650', '7', 6.094, 32.),
+        ('Previous Liner Shoe', '3839', '7', 6.094, 32.),
         ('Drill Pipes', '3419', '3 1/2', 2.764, 18.),
-        ('Liner Hanger', '3419', '5', 4.276, 18.),
-        ('Liner', '4500', '5', 4.276, 18.),
+        ('Liner Lap', '3419', '5', 4.276, 18.),
+        ('Liner Shoe', '4500', '5', 4.276, 18.),
         ('Open Hole Size', '4550', '6', 6., 0.),
     ]
     frame = pd.DataFrame([{'Description': desc, 'MD (m)': md, 'Size (in)': size,
@@ -747,7 +813,7 @@ def bug01_dq19():
         'Weight (ppf)': weight, 'Grade': '-', 'Collapse (psi)': 0., 'Burst (psi)': 0.}
         for desc, md, size, inner, weight in rows])
     state = project('LNR 5"', frame, 4550.)
-    assert state['placement_config']['target_row'] == '0f925f04a60228e7d2a10b2f1473a6d997896c578e2de2d05b5a96366d0f3ab6'
+    assert state['placement_config']['target_row'] == '569a8120e7b2faf846abe57d5ccd6b646f6743e1d3d120fd62a01a49769226e2'
     state['centralizer_config'] = {'version': 1, 'physics_mode': 'static', 'placement_mode': 'optimize',
         'custom_products': [], 'aux_rheology': {}, 'zones': [
             {'top_md': top, 'bottom_md': bottom, 'density': '1/4', 'target_standoff_pct': 67.,
@@ -765,25 +831,25 @@ def bug01_geometry_case(job):
             ('Casing', '1200', str(od), inner), ('Open Hole Size', '400-1200', str(hole), hole)), 1200.)
     if job == 'LNR 7"':
         return project(job, hardware(('Previous Casing', '700', '9 5/8', 8.535),
-            ('Drill Pipes', '400', '3 1/2', 2.764), ('Liner Hanger', '400', '7', 6.094),
-            ('Liner', '1200', '7', 6.094), ('Open Hole Size', '700-1200', '8.5', 8.5)), 1200.)
+            ('Drill Pipes', '400', '3 1/2', 2.764), ('Liner Lap', '400', '7', 6.094),
+            ('Liner Shoe', '1200', '7', 6.094), ('Open Hole Size', '700-1200', '8.5', 8.5)), 1200.)
     if job == 'LNR 4 1/2"':
         return project(job, hardware(('Previous Casing', '300', '9 5/8', 8.535),
-            ('Previous Liner', '200-700', '7', 6.094), ('Drill Pipes', '400', '3 1/2', 2.764),
-            ('Liner Hanger', '400', '4 1/2', 4.), ('Liner', '1200', '4 1/2', 4.),
+            ('Previous Liner Shoe', '200-700', '7', 6.094), ('Drill Pipes', '400', '3 1/2', 2.764),
+            ('Liner Lap', '400', '4 1/2', 4.), ('Liner Shoe', '1200', '4 1/2', 4.),
             ('Open Hole Size', '700-1200', '6', 6.)), 1200.)
     od, inner = {'TIE BACK LNR 7"': ('7', 6.094), 'TIE BACK LNR 5"': ('5', 4.276),
                  'TIE BACK LNR 4 1/2"': ('4 1/2', 4.)}[job]
     rows = [('Previous Casing', '1100' if od == '7' else '300', '9 5/8', 8.535)]
     if od != '7':
-        rows.append(('Previous Liner', '100-1100', '7', 6.094))
+        rows.append(('Previous Liner Shoe', '100-1100', '7', 6.094))
     host_index = len(rows)-1
-    rows += [('Previous Liner', '700-1200', od, inner), ('Drill Pipes', '200', '3 1/2', 2.764),
-             ('Tie Back', '200-700', od, inner),
+    rows += [('Previous Liner Shoe', '700-1200', od, inner), ('Drill Pipes', '200', '3 1/2', 2.764),
+             ('Tie Back Liner Shoe', '200-700', od, inner),
              ('Open Hole Size', '1100-1200', '8.5' if od == '7' else '6', 8.5 if od == '7' else 6.)]
     state = project(job, hardware(*rows), 1200.)
     state['placement_config']['host_row'] = next(iter(hardware_choices(
-        state['hardware_table'].iloc[[host_index]], {'Previous Casing', 'Previous Liner'})))
+        state['hardware_table'].iloc[[host_index]], {'Previous Casing', 'Previous Liner Shoe'})))
     return state
 
 
@@ -1000,6 +1066,38 @@ def test_bug01_actual_ui_restore_pumping_schematic_and_current_word(bug01_review
     data = build(restored)
     assert phase9.result_is_current(restored.session_state)
     doc = Document(BytesIO(data));region = ix_region(doc)
+    hardware_tables = [t for t in doc.tables if t.cell(0,0).text == 'Tubular and Casing Hardware']
+    assert len(hardware_tables) == 1
+    hardware_table = hardware_tables[0]
+    assert len(hardware_table.columns) == len(hardware_table._tbl.tblGrid.gridCol_lst) == 10
+    assert [c.text for c in hardware_table.rows[1].cells] == [
+        'Description', 'MD', 'Size', 'ID', 'Joint', 'Weight', 'Grade', 'Collapse', 'Burst']
+    from lxml import etree
+    reference = next(t for t in Document(report.TEMPLATE_PATH).tables
+                     if t.cell(0,0).text == 'Tubular and Casing Hardware')
+    xml = lambda node: etree.tostring(node, method='c14n')
+    assert xml(hardware_table._tbl.tblGrid) == xml(reference._tbl.tblGrid)
+    for actual, original in zip(hardware_table.rows[:3], reference.rows[:3]):
+        assert xml(actual._tr) == xml(original._tr)
+    descriptions = state['hardware_table']['Description'].tolist()
+    assert [r.cells[0].text for r in hardware_table.rows[3:3+len(descriptions)]] == descriptions
+    from phase_2_3_well_data import HARDWARE_COLUMNS
+    material_row = reference.rows[4]
+    for actual, source_row in zip(hardware_table.rows[3:3+len(descriptions)],
+                                  state['hardware_table'].to_dict('records')):
+        assert len(actual.cells) == 9
+        assert xml(actual._tr.trPr) == xml(material_row._tr.trPr)
+        for cell, original, field in zip(actual.cells, material_row.cells, HARDWARE_COLUMNS):
+            assert xml(cell._tc.tcPr) == xml(original._tc.tcPr)
+            value = source_row[field]
+            if source_row['Description'] == 'Open Hole Size' and field in (
+                    'Joint (m)', 'Weight (ppf)', 'Grade', 'Collapse (psi)', 'Burst (psi)'):
+                expected = '-'
+            elif field == 'MD (m)' and '-' not in str(value):
+                expected = f'{float(value):.1f}'
+            else:
+                expected = str(value)
+            assert cell.text == expected
     tables = [t for t in doc.tables if t._tbl in region]
     assert [len(t.rows) for t in tables] == [4,2+len(state['centralizer_config']['zones'])]
     assert tables[0].cell(3,1).text == f"{chart.resolve_chart_geometry(state)['shoe_md']:.1f} m"
@@ -1015,6 +1113,13 @@ def test_bug01_actual_ui_restore_pumping_schematic_and_current_word(bug01_review
         assert 4.5 == prepared['inputs']['geometry'].pipe_sections[0].od_in or any(
             s.od_in == 4.5 for s in prepared['inputs']['geometry'].pipe_sections)
         (tmp_path/'source-project.json').write_bytes(save_project(restored))
+    # A valid consumed Hardware edit retires the old report and Centralizer;
+    # the new labels must not conceal stale result/download authority.
+    case.phase(restored, 'phase2_3')
+    case.hardware_event(restored, {'edited_rows': {'0': {'ID (in)': float(state['hardware_table'].iloc[0]['ID (in)'])-.001}}})
+    case.phase(restored, 'phase10')
+    assert not phase9.result_is_current(restored.session_state)
+    assert '_compiled_doc_bytes' not in restored.session_state
 
 
 @pytest.mark.parametrize('change', ['host_id','host_md','host_token','top','receiver','od','zone','product','fluid'])

@@ -93,12 +93,12 @@ DEFAULT_MATERIAL_NAMES = {
 
 HARDWARE_DESCRIPTIONS = [
     "Previous Casing", 
-    "Previous Liner", 
-    "Previous Liner Hanger",
+    "Previous Liner Shoe",
+    "Previous Liner Lap",
     "Casing", 
-    "Liner", 
-    "Liner Hanger", 
-    "Tie Back", 
+    "Liner Shoe",
+    "Liner Lap",
+    "Tie Back Liner Shoe",
     "Drill Pipes", 
     "Tubing",
     "Open Hole Size"

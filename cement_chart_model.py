@@ -344,16 +344,16 @@ def resolve_chart_geometry(state):
         raise ValueError("Select the placement target before chart geometry can be resolved.")
     if shoe <= LANDING_COLLAR_OFFSET_M:
         raise ValueError("String shoe is too shallow for the project collar offsets.")
-    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[kind]
+    description = {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[kind]
     active_rows = [r for r in rows if r.get("Description") == description]
     if kind == "liner":
-        hangers = [measured_depth(r.get("MD (m)")) for r in rows if r.get("Description") == "Liner Hanger"]
+        hangers = [measured_depth(r.get("MD (m)")) for r in rows if r.get("Description") == "Liner Lap"]
         if len(hangers) != 1 or hangers[0] is None or not 0 < hangers[0] < shoe-FLOAT_COLLAR_OFFSET_M:
-            raise ValueError("Liner geometry requires one valid Liner Hanger above the float collar.")
+            raise ValueError("Liner geometry requires one valid Liner Lap above the float collar.")
         hanger = hangers[0]
         active = _segments([r for r in rows if r.get("Description") == "Drill Pipes"], 0., hanger,
-                           "Drill Pipes above Liner Hanger")
-        active += _segments(active_rows, hanger, shoe, "Liner")
+                           "Drill Pipes above Liner Lap")
+        active += _segments(active_rows, hanger, shoe, "Liner Shoe")
     elif kind == "tieback":
         top = installed_geometry.tieback_top(active_rows, config)
         active = (_segments([r for r in rows if r.get("Description") == "Drill Pipes"],
@@ -361,7 +361,7 @@ def resolve_chart_geometry(state):
         active += _segments(active_rows, top, shoe, description)
     else:
         active = _segments(active_rows, 0., shoe, description)
-    history = {"Previous Casing", "Previous Liner", "Casing", "Liner"} - {description}
+    history = {"Previous Casing", "Previous Liner Shoe", "Casing", "Liner Shoe"} - {description}
     strings = installed_geometry.physical_strings(rows, _segments, history)
     if kind != "tieback" and any(s["description"].startswith("Previous ") and s["shoe_md"] >= shoe
                                  for s in strings):

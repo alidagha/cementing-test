@@ -6,7 +6,7 @@ from project_state import fingerprint
 from engineering_tools import require_nonnegative_number
 
 _MD = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:[-–]\s*(\d+(?:\.\d+)?)\s*)?$")
-HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner", "Liner"}
+HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner Shoe", "Liner Shoe"}
 EXCESS_FIELDS = (("excess_csg_oh_pct", "Excess CSG-OH %", "excess_oh"),
                 ("excess_csg_csg_pct", "Excess CSG-CSG %", "excess_csg"))
 
@@ -74,11 +74,11 @@ def target_descriptions(job_type):
         return {"CT"}
     name = str(job_type).upper()
     if "TIE BACK" in name:
-        return {"Tie Back"}
+        return {"Tie Back Liner Shoe"}
     if "LNR" in name:
-        return {"Liner"}
+        return {"Liner Shoe"}
     if "PLUG" in name or "SQUEEZE" in name:
-        return {"Casing", "Liner", "Tie Back", "Open Hole Size"}
+        return {"Casing", "Liner Shoe", "Tie Back Liner Shoe", "Open Hole Size"}
     return {"Casing"}
 
 
@@ -259,7 +259,7 @@ def resolve_report_excess(job_type, placement_config, summary_config, slurry):
 
 def hardware_row_metadata(table, token):
     """Resolve current labels through the existing stable hardware token model."""
-    return hardware_choices(table, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back"}).get(token)
+    return hardware_choices(table, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back Liner Shoe"}).get(token)
 
 
 def target_row_metadata(table, job_type, config):
@@ -274,5 +274,5 @@ def hardware_context_label(table, token):
         return None
     kind = ("Open Hole" if row["description"] == "Open Hole Size" else
             "Casing" if "Casing" in row["description"] else
-            "Liner" if "Liner" in row["description"] else "Tie Back")
+            "Liner" if row["description"] in ("Previous Liner Shoe", "Liner Shoe") else "Tie Back")
     return f'{row["size"]}" {kind}' if row["size"] else kind

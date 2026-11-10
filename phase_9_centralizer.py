@@ -371,7 +371,7 @@ def render():
     try:
         geometry = adapter.to_engine_geometry(st.session_state)
         st.caption(f"Active Centralizer string: {geometry['wellbore']['string_top']:g}–{geometry['wellbore']['string_shoe']:g} m MD")
-        description = {"casing":"Casing", "liner":"Liner", "tieback":"Tie Back"}[geometry["job_type"]]
+        description = {"casing":"Casing", "liner":"Liner Shoe", "tieback":"Tie Back Liner Shoe"}[geometry["job_type"]]
         pipe_size = next(segment["od_in"] for segment in resolve_chart_geometry(st.session_state)["active_string"]
                          if segment["description"] == description)
         candidates = product_candidates(products, config["custom_products"], pipe_size)

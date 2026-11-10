@@ -425,7 +425,7 @@ def test_small_depth_edits_change_capacity_by_area_times_changed_length(edit):
         frame.loc[frame.Description == "Previous Casing", "MD (m)"] = "500.001"
         expected_delta = .001 * (before["capacity_segments"][0]["bbl_per_m"] - before["capacity_segments"][-1]["bbl_per_m"])
     elif edit == "liner hanger":
-        frame.loc[frame.Description.isin(["Liner Hanger", "Drill Pipes"]), "MD (m)"] = "400.001"
+        frame.loc[frame.Description.isin(["Liner Lap", "Drill Pipes"]), "MD (m)"] = "400.001"
         expected_delta = .001 * (before["capacity_segments"][0]["bbl_per_m"] - before["capacity_segments"][1]["bbl_per_m"])
     else:
         frame.loc[frame.Description == "Casing", "MD (m)"] = "999.999"
@@ -552,7 +552,7 @@ def test_repeated_rebuild_and_two_real_roundtrips_preserve_numerical_meaning(pro
 @pytest.mark.parametrize("job", ['CSG 9 5/8"', 'LNR 4 1/2"', 'TIE BACK LNR 5"'])
 def test_small_consumed_geometry_change_stales_real_centralizer_and_shared_word_facts(projects, job):
     state = projects(job)
-    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[chart.chart_job_kind(job)]
+    description = {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[chart.chart_job_kind(job)]
     frame = state["hardware_table"]
     frame.loc[frame.Description == description, "ID (in)"] -= .001
     assert not phase9.result_is_current(state)

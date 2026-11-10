@@ -377,6 +377,60 @@ NO_DIESEL_A42 = {
 }
 
 
+def r18_historical_report_source(inputs, hardware=None):
+    """Reverse only Hardware names and their selected row tokens in a copy."""
+    assert isinstance(inputs, list) and len(inputs) == 2 and inputs[0] in (1, 2)
+    source = deepcopy(inputs)
+    if inputs[0] == 2:
+        assert len(inputs[1]) == 9
+        hardware = inputs[1][5]
+        placement_index = 7
+    else:
+        assert hardware is not None and 10 <= len(inputs[1]) <= 12
+        placement_index = 8
+    names = {"Previous Liner Lap": "Previous Liner Hanger",
+             "Previous Liner Shoe": "Previous Liner", "Liner Shoe": "Liner",
+             "Liner Lap": "Liner Hanger", "Tie Back Liner Shoe": "Tie Back"}
+    historical = hardware.copy(deep=True)
+    tokens, originals, current = {}, set(), {}
+    for index, row in hardware.iterrows():
+        description = row['Description']
+        assert description not in names.values(), 'obsolete live Hardware Description'
+        md, size = str(row['MD (m)']).strip(), str(row['Size (in)']).strip()
+        live = ps.fingerprint([description, md, size])
+        current[live] = current.get(live, 0) + 1
+        if description in names:
+            old = ps.fingerprint([names[description], md, size])
+            assert live not in tokens and old not in originals, 'ambiguous Hardware token mapping'
+            tokens[live] = old
+            originals.add(old)
+            historical.at[index, 'Description'] = names[description]
+    placement = source[1][placement_index]
+    for field in ('target_row', 'host_row'):
+        token = placement.get(field)
+        if token not in (None, '', '__manual__'):
+            assert current.get(token) == 1, 'missing or ambiguous selected Hardware'
+            if token in tokens:
+                placement[field] = tokens[token]
+    if inputs[0] == 2:
+        source[1][5] = historical
+    return source
+
+
+def r18_summary_source(specs, captured, expected):
+    sources = [v for v in captured if isinstance(v, list) and len(v) == 2 and v[0] == 2]
+    assert len(sources) == 1
+    live = sources[0]
+    original = ps.fingerprint(live)
+    assert specs['exec_summary_text']['signature'] == original
+    assert ps.fingerprint(r18_historical_report_source(live)) == expected
+    assert ps.fingerprint(live) == original  # projection never changes live inputs
+    changed = deepcopy(live)
+    changed[1][5].at[changed[1][5].index[0], 'ID (in)'] -= .001
+    assert ps.fingerprint(changed) != original
+    return live
+
+
 @pytest.mark.parametrize('job', JOBS)
 @pytest.mark.parametrize('mud', ['WBM', 'OBM'])
 def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
@@ -391,10 +445,10 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     with patch.object(report, 'fingerprint', observe):
         specs = sync(state)
     expected_summary, expected_procedure = NO_DIESEL_A42[job]
-    assert specs['exec_summary_text']['signature'] == expected_summary
+    summary = r18_summary_source(specs, captured, expected_summary)
     # Original golds remain untouched. Reverse only approved presentation inputs.
     inputs = next(value for value in captured if isinstance(value,list) and len(value)==2 and value[0]==1)
-    legacy=deepcopy(inputs[1])
+    legacy=r18_historical_report_source(inputs, summary[1][5])[1]
     if job=='CMT PLUG':
         assert legacy[-1]=={'plug_numeric_display_revision':2}
         legacy.pop()
@@ -413,6 +467,38 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     assert ctx['standalone_spacer']['lab']['rheology']['bhct_down']['is_valid_bingham']
 
 
+@pytest.mark.parametrize('change', ['md', 'id', 'size', 'volume', 'placement', 'metadata', 'missing', 'duplicate'])
+def test_r18_historical_source_projection_rejects_nonname_mutations(projects, change):
+    state = projects('LNR 7"', active=False, include_standalone_spacer=True)
+    captured = []
+    fingerprint = report.fingerprint
+    def observe(value):
+        captured.append(deepcopy(value))
+        return fingerprint(value)
+    with patch.object(report, 'fingerprint', observe):
+        specs = sync(state)
+    live = r18_summary_source(specs, captured, NO_DIESEL_A42['LNR 7"'][0])
+    changed = deepcopy(live)
+    source = changed[1]
+    if change == 'md': source[5].at[source[5].index[0], 'MD (m)'] = '500.1'
+    elif change == 'id': source[5].at[source[5].index[0], 'ID (in)'] -= .001
+    elif change == 'size': source[5].at[source[5].index[0], 'Size (in)'] = '13.376'
+    elif change == 'volume': source[2]['Main']['volume'] += .1
+    elif change == 'placement': source[7]['chart_excess_mode'] = 'apply'
+    elif change == 'metadata': source[8]['volume_basis'] = 'client_request'
+    elif change == 'missing': source[7]['target_row'] = 'missing-row'
+    else:
+        import pandas as pd
+        target = source[5].loc[source[5]['Description'] == 'Liner Shoe']
+        source[5] = pd.concat([source[5], target], ignore_index=True)
+    if change in ('missing', 'duplicate'):
+        with pytest.raises(AssertionError, match='missing|ambiguous'):
+            r18_historical_report_source(changed)
+    else:
+        assert ps.fingerprint(r18_historical_report_source(changed)) != NO_DIESEL_A42['LNR 7"'][0]
+    assert ps.fingerprint(live) == specs['exec_summary_text']['signature']
+
+
 def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(projects):
     state = projects()
     state['fluids_config']['active'].append('Scavenger')
@@ -429,6 +515,56 @@ def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(
                                           if name not in ('Diesel', 'Scavenger')]
     ps.refresh_fluids(without)
     assert sync(without)['exec_summary_text'] == after
+
+
+def r18_historical_procedure_text(text, job):
+    """Project only the two approved historical Tie Back spelling anchors."""
+    if not str(job).startswith('TIE BACK LNR '):
+        return text
+    anchors = (
+        ('When the Tie back assembly reached ', 'When the Tie Back assembly reached '),
+        ('Select down Tie back seal assembly into Tie Back sleeve.',
+         'Select down Tie Back seal assembly into Tie Back sleeve.'),
+    )
+    assert text.count('Tie back') == 2
+    for old, new in anchors:
+        assert text.count(old) == 1 and text.count(new) == 0
+        text = text.replace(old, new, 1)
+    return text
+
+
+@pytest.mark.parametrize('change', ['omitted', 'duplicated', 'malformed', 'unexpected',
+                                  'word', 'number', 'instruction', 'non_tieback'])
+def test_r18_historical_procedure_projection_rejects_other_changes(change):
+    from test_uat_terminal_precision import wnf02_previous
+    from test_round13b_b4_operational_spacers import operational
+    job = 'CSG 9 5/8"' if change == 'non_tieback' else 'TIE BACK LNR 7"'
+    state = operational(job)
+    state['fluids_config']['active'] = ['Main', 'Displacement Fluid']
+    ps.refresh_fluids(state)
+    args = (job, state['fluid_data'], state['fluids_config']['active'], state['cement_params'],
+            state.get('cement_additives_dfs', {}), state.get('preflush_calc'),
+            state.get('geo_md'), state.get('total_pump_time_min'), state.get('placement_config'))
+    with patch.object(report.st, 'session_state', state):
+        old = wnf02_previous.__wrapped__()['generate_official_procedure'](*args)
+        current = report.generate_official_procedure(*args)
+    assert r18_historical_procedure_text(old, job) == current
+    anchor = 'When the Tie back assembly reached '
+    if change == 'omitted': altered = old.replace(anchor, '', 1)
+    elif change == 'duplicated': altered = old + '\n' + anchor
+    elif change == 'malformed': altered = old.replace(anchor, 'When the Tie back assembly reaches ', 1)
+    elif change == 'unexpected': altered = old + '\nAdditional Tie back text.'
+    elif change == 'number':
+        assert old.count('Tests cement line W/ 3500 psi.') == 1
+        altered = old.replace('Tests cement line W/ 3500 psi.', 'Tests cement line W/ 3501 psi.', 1)
+    elif change == 'instruction': altered = old + '\nUnapproved extra instruction.'
+    else:
+        before = 'Rig down Cement Line.' if change == 'non_tieback' else 'Rig down cement line.'
+        assert old.count(before) == 1
+        altered = old.replace(before, before.replace('down', 'up'), 1)
+    assert altered != old
+    with pytest.raises(AssertionError):
+        assert r18_historical_procedure_text(altered, job) == current
 
 
 @pytest.mark.parametrize('job', JOBS)
@@ -451,7 +587,7 @@ def test_wnf_plug_only_revision_preserves_other_generated_text_and_sources(proje
             expected=expected.replace(line,line.replace('duration 00:12 (HH:MM).',f'duration {format_to_hr_mm(boundary-previous_minutes)} (HH:MM).'))
         previous_minutes=boundary
     if job=='CMT PLUG':expected=expected.replace(', 4 bbl/ min.',', 4.0 bbl/ min.')
-    assert new['procedure_text']['generated']==expected
+    assert new['procedure_text']['generated']==r18_historical_procedure_text(expected,job)
     assert old['procedure_text']['signature']!=new['procedure_text']['signature']
     assert new_state['fluids_config']==old_state['fluids_config']
     assert new_state['fluid_data']==old_state['fluid_data']

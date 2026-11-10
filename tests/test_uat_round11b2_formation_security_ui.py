@@ -286,8 +286,8 @@ def test_tieback_advanced_is_unavailable_and_draft_is_not_erased(phase):
     from placement import hardware_choices
     state=balanced_state();state['job_type']=state['placement_config']['job_type']='TIE BACK LNR 7"'
     # Synthetic surface Top and receiver-at-tie-in, wholly cased/no exposure.
-    state['hardware_table']=hardware(('Tie Back','0-1000','7',6.276),('Previous Casing','1200','9.625',8.535),
-                                     ('Previous Liner','1000-1300','7',6.276))
+    state['hardware_table']=hardware(('Tie Back Liner Shoe','0-1000','7',6.276),('Previous Casing','1200','9.625',8.535),
+                                     ('Previous Liner Shoe','1000-1300','7',6.276))
     state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
     state['formation_pressure_config']=configured_profile()
     draft=deepcopy(state['formation_pressure_config'])
@@ -378,8 +378,8 @@ def test_empty_phase4_and_unsafe_phase_status_remain_controlled():
 def test_liner_editor_locks_open_hole_endpoints_instead_of_overlap_hanger():
     from test_uat_round8a_chart_model import hardware
     state=balanced_state();state['job_type']=state['placement_config']['job_type']='LNR 7"'
-    state['hardware_table']=hardware(('Drill Pipes','400','5',4.),('Liner','1000','7',6.),
-        ('Liner Hanger','400','7',6.),('Previous Casing','500','9.625',8.535),('Open Hole Size','1000','8.5',8.5))
+    state['hardware_table']=hardware(('Drill Pipes','400','5',4.),('Liner Shoe','1000','7',6.),
+        ('Liner Lap','400','7',6.),('Previous Casing','500','9.625',8.535),('Open Hole Size','1000','8.5',8.5))
     state['formation_pressure_config']={'mode':'advanced','profile':[]}
     _,app=application(state)
     assert [r['md_m'] for r in app.session_state['formation_pressure_config']['profile']]==[500.,1000.]

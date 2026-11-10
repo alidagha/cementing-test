@@ -167,7 +167,7 @@ class Round2Phase23UAT(unittest.TestCase):
                 with self.subTest(job=job, manual=manual):
                     app = self.configured_app(job)
                     if not manual:
-                        description = 'Tie Back' if 'TIE BACK' in job else ('Liner' if job.startswith('LNR') else 'Casing')
+                        description = 'Tie Back Liner Shoe' if 'TIE BACK' in job else ('Liner Shoe' if job.startswith('LNR') else 'Casing')
                         table = app.session_state['hardware_table'].copy()
                         row = table.iloc[0].copy();row['Description'] = description;row['MD (m)'] = '2850'
                         app.session_state['hardware_table'] = pd.concat([table, pd.DataFrame([row])], ignore_index=True)

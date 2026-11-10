@@ -134,7 +134,7 @@ def select_target(state):
 
 
 def target_description(state):
-    return {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[chart.chart_job_kind(state["job_type"])]
+    return {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[chart.chart_job_kind(state["job_type"])]
 
 
 def pump_geometry(state):
@@ -267,8 +267,8 @@ def test_nominal_od_mismatch_is_blocked_without_fabricating_geometry_and_recover
 def test_liner_actual_id_and_hanger_depth_after_execution_drive_shared_geometry(projects, job, id_in):
     state = projects(job)
     frame = state["hardware_table"]
-    frame.loc[frame["Description"].isin(["Liner", "Liner Hanger"]), "ID (in)"] = id_in
-    frame.loc[frame["Description"] == "Liner Hanger", "MD (m)"] = "1050"
+    frame.loc[frame["Description"].isin(["Liner Shoe", "Liner Lap"]), "ID (in)"] = id_in
+    frame.loc[frame["Description"] == "Liner Lap", "MD (m)"] = "1050"
     frame.loc[frame["Description"] == "Drill Pipes", "MD (m)"] = "1050"
     assert not phase9.result_is_current(state)
     drawing = schematic.prepare_schematic(state)
@@ -557,8 +557,8 @@ def test_save_after_source_change_before_rebuild_then_different_consumer_first(p
 def test_real_engines_render_after_multiple_source_edits_in_unusual_order(projects, tmp_path):
     state = projects(LNR)
     frame = state["hardware_table"]
-    frame.loc[frame["Description"] == "Liner", "ID (in)"] = 4.05
-    frame.loc[frame["Description"] == "Liner Hanger", "ID (in)"] = 4.05
+    frame.loc[frame["Description"] == "Liner Shoe", "ID (in)"] = 4.05
+    frame.loc[frame["Description"] == "Liner Lap", "ID (in)"] = 4.05
     state["fluids_config"]["params"]["Diesel"].update(density="54", volume=21.)
     state["lab_qc_params"]["Diesel"]["rheology"]["bhct_down"]["readings"]["300"] = "169"
     expected = sources(state)

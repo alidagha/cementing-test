@@ -519,7 +519,7 @@ def test_rejected_schematic_load_is_transactional_and_has_no_derived_resurrectio
 
 
 def test_round11_sources_and_protected_template():
-    assert "Previous Liner Hanger" in materials_db.HARDWARE_DESCRIPTIONS
+    assert "Previous Liner Lap" in materials_db.HARDWARE_DESCRIPTIONS
     assert importlib.util.find_spec("well_schematic_adapter") is not None
     assert importlib.util.find_spec("well_schematic_engine") is not None
     assert hashlib.sha256(Path("master_template.docx").read_bytes()).hexdigest() == TEMPLATE_SHA
@@ -644,7 +644,7 @@ def certified_interior_state():
     state['well_geometry']['td_m'] = 3000.
     # Preserve the original interior-lap fixture independently of the uniform
     # Centralizer success prerequisite used by generic valid-export helpers.
-    state['hardware_table'].loc[state['hardware_table']['Description'] == 'Previous Liner', 'MD (m)'] = '2500-3300'
+    state['hardware_table'].loc[state['hardware_table']['Description'] == 'Previous Liner Shoe', 'MD (m)'] = '2500-3300'
     return state
 
 
@@ -693,10 +693,10 @@ def tieback_state(interval=False):
     table.loc[2, "MD (m)"] = "2500-4000" if interval else "4000"
     table.loc[2, "ID (in)"] = 6.276
     table.loc[3, "MD (m)"] = "4000"
-    hanger = {**table.iloc[2].to_dict(), "Description": "Previous Liner Hanger", "MD (m)": "2500"}
+    hanger = {**table.iloc[2].to_dict(), "Description": "Previous Liner Lap", "MD (m)": "2500"}
     state["hardware_table"] = pd.concat([table, pd.DataFrame([hanger])], ignore_index=True)
     state["placement_config"].update(
-        target_row=next(iter(hardware_choices(state["hardware_table"], {"Tie Back"}))),
+        target_row=next(iter(hardware_choices(state["hardware_table"], {"Tie Back Liner Shoe"}))),
         host_row=next(iter(hardware_choices(state["hardware_table"], {"Previous Casing"}))))
     return state
 
@@ -795,9 +795,9 @@ def local_well(case):
     from phase_2_3_well_data import HARDWARE_COLUMNS
     previous = [("Previous Casing", "800", "20"), ("Previous Casing", "1600", "13 3/8"),
                 ("Previous Casing", "3000", "9 5/8")]
-    historical = [("Previous Liner Hanger", "2500", "7"), ("Previous Liner", "4000", "7")]
-    liner5 = [("Liner Hanger", "3600", "5"), ("Liner", "4300", "5"),
-              ("Liner", "4800", "5"), ("Open Hole Size", "5200", "6")]
+    historical = [("Previous Liner Lap", "2500", "7"), ("Previous Liner Shoe", "4000", "7")]
+    liner5 = [("Liner Lap", "3600", "5"), ("Liner Shoe", "4300", "5"),
+              ("Liner Shoe", "4800", "5"), ("Open Hole Size", "5200", "6")]
     if case == "casing":
         job = 'CSG 9 5/8"'
         rows = previous[:2] + [("Casing", "2200", "9 5/8"), ("Casing", "3000", "9 5/8"),
@@ -805,8 +805,8 @@ def local_well(case):
         target = 3
     elif case == "liner7":
         job = 'LNR 7"'
-        rows = previous + [("Drill Pipes", "2500", "5"), ("Liner Hanger", "2500", "7"),
-                           ("Liner", "4000", "7"), ("Open Hole Size", "4300", "8 1/2")]
+        rows = previous + [("Drill Pipes", "2500", "5"), ("Liner Lap", "2500", "7"),
+                           ("Liner Shoe", "4000", "7"), ("Open Hole Size", "4300", "8 1/2")]
         target = 5
     elif case == "liner5":
         job = 'LNR 5"'
@@ -822,7 +822,7 @@ def local_well(case):
         row.update({"Description": desc, "MD (m)": depth, "Size (in)": size, "Grade": "-"})
         data.append(row)
     table = pd.DataFrame(data, columns=HARDWARE_COLUMNS)
-    for description, weights in (("Casing", [47., 53.5]), ("Liner", [18., 21.])):
+    for description, weights in (("Casing", [47., 53.5]), ("Liner Shoe", [18., 21.])):
         indices = table.index[table['Description'] == description]
         if len(indices) == 2:
             table.loc[indices, 'Weight (ppf)'] = weights
@@ -836,7 +836,7 @@ def local_well(case):
         placement.update(target_row="__manual__", manual_depth_m=5000.)
         state["cement_params"] = {"Main": {"top_mode": "Depth (m MD)", "top_depth": 3900., "top_job_type": job}}
     elif case == "squeeze_liner":
-        placement.update(squeeze_depth_m=4000., target_string_id="previous-liner:7")
+        placement.update(squeeze_depth_m=4000., target_string_id="previous-liner-shoe:7")
     elif case == "squeeze_oh":
         placement.update(squeeze_depth_m=5000., target_string_id="open-hole")
     return state
@@ -887,7 +887,7 @@ def test_genuine_missing_or_contradictory_schematic_authority_blocks(fault, matc
     if fault == "two_holes":
         state["hardware_table"] = pd.concat([table, table.iloc[[-1]]], ignore_index=True)
     elif fault == "missing_lap":
-        state["hardware_table"] = table[table["Description"] != "Previous Liner Hanger"].copy()
+        state["hardware_table"] = table[table["Description"] != "Previous Liner Lap"].copy()
     elif fault == "hanger_drill":
         table.loc[table["Description"] == "Drill Pipes", "MD (m)"] = "3590"
     elif fault == "squeeze_outside":
@@ -898,7 +898,7 @@ def test_genuine_missing_or_contradictory_schematic_authority_blocks(fault, matc
     elif fault == "bad_target":
         state["placement_config"]["target_row"] = "deleted-row"
     else:
-        table.loc[table["Description"] == "Liner", "ID (in)"] = 5.
+        table.loc[table["Description"] == "Liner Shoe", "ID (in)"] = 5.
     with pytest.raises(ValueError, match=match):
         schematic.prepare_schematic(state)
 
@@ -931,8 +931,8 @@ def test_row_target_resolves_to_whole_multisection_string_without_changing_calcu
     from placement import target_depth
     state = local_well("squeeze_liner")
     table = state["hardware_table"]
-    first = table.loc[table["Description"] == "Liner"].iloc[[0]]
-    token = next(iter(hardware_choices(first, {"Liner"})))
+    first = table.loc[table["Description"] == "Liner Shoe"].iloc[[0]]
+    token = next(iter(hardware_choices(first, {"Liner Shoe"})))
     state["placement_config"] = {"job_type": "CMT SQUEEZE", "target_row": token, "squeeze_depth_m": 4500.}
     payload = schematic.prepare_schematic(state)
     sq = payload["squeezes"][0]
@@ -1243,7 +1243,7 @@ def test_historical_tieback_interval_remains_visible_without_new_top_input(tmp_p
     import well_schematic_adapter as schematic
     import well_schematic_engine as engine
     state = local_well('plug')
-    row = {**state['hardware_table'].iloc[0].to_dict(), 'Description': 'Tie Back',
+    row = {**state['hardware_table'].iloc[0].to_dict(), 'Description': 'Tie Back Liner Shoe',
            'MD (m)': '1200-2500', 'Size (in)': '7'}
     state['hardware_table'] = pd.concat([state['hardware_table'], pd.DataFrame([row])], ignore_index=True)
     before = pickle.dumps(state)

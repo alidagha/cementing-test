@@ -1095,14 +1095,14 @@ def generate_official_procedure(
             mixing_proc_text,
             sc.next("Before running Liner, check Plug Dropping Head assembly Specially Pump down Plug release Handle."),
             sc.next(f'After Tie Back assembly reach {tb_sz} liner lap, prepare circulation at least one annular volume.'),
-            sc.next(f'When the Tie back assembly reached {tb_sz} liner lap, connected plug dropping and arrange with mud engineer to measure drilling fluid & cement loss/gain during cement job.'),
+            sc.next(f'When the Tie Back assembly reached {tb_sz} liner lap, connected plug dropping and arrange with mud engineer to measure drilling fluid & cement loss/gain during cement job.'),
             sc.next("prepare pre job safety meeting with involved personnel and arrange with mud engineer to measure drilling fluid & cement loss/gain during cement job."),
             sc.next("Stop circulation, connect cement line, set the data acquisition system and calibrate it with cement unit."),
             sc.next("Tests cement line W/ 3500 psi."),
             pump_steps,
             sc.next("Release pump down plug."),
             sc.next("Displace cement with .... bbl. drilling fluid, slow pump rate down to 3 bbl/ minute, last 10 bbl of displacement volume."),
-            sc.next("Select down Tie back seal assembly into Tie Back sleeve."),
+            sc.next("Select down Tie Back seal assembly into Tie Back sleeve."),
             sc.next("Bleed off pressure and monitor U-Tube return."),
             sc.next("Rig down cement line."),
             sc.next("Wait on cement.")
@@ -1945,7 +1945,7 @@ def _commit_summary_metadata(widget_key, field, slurry=None):
 def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
     active = active_slurry_names(active_fluids)
     config = summary_config_for_job(st.session_state.get("executive_summary_config"), job_type, active)
-    rows = hardware_choices(hw_df, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back"})
+    rows = hardware_choices(hw_df, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back Liner Shoe"})
     hosts = hardware_choices(hw_df, HOST_DESCRIPTIONS)
     revision = fingerprint([job_type, load_sig, list(rows)])[:16]
 

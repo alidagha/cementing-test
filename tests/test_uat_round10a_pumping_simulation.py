@@ -29,9 +29,9 @@ def program_state(kind="casing", fluids=None):
     if kind == "tieback":
         state["placement_config"]["tie_back_liner_lap_m"] = 0.
         state["hardware_table"] = hardware(
-            ("Tie Back", "400", "7", 6.),
+            ("Tie Back Liner Shoe", "400", "7", 6.),
             ("Previous Casing", "800", "9 5/8", 8.535),
-            ("Previous Liner", "400-1000", "7", 6.),
+            ("Previous Liner Shoe", "400-1000", "7", 6.),
             ("Open Hole Size", "1000", "8.5", 8.5))
         state["placement_config"]["host_row"] = next(iter(hardware_choices(
             state["hardware_table"], {"Previous Casing"})))

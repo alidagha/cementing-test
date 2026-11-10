@@ -80,7 +80,7 @@ def physical_strings(rows, segmenter, descriptions):
                 top = 0.
             else:
                 hangers = [md_bounds(r.get("MD (m)"))[1] for r in rows
-                           if r.get("Description") == ("Previous Liner Hanger" if desc == "Previous Liner" else "Liner Hanger")
+                           if r.get("Description") == ("Previous Liner Lap" if desc == "Previous Liner Shoe" else "Liner Lap")
                            and parse_fractional_size(r.get("Size (in)")) == size]
                 if len(hangers) > 1 or (hangers and top is not None and hangers[0] != top):
                     raise ValueError("Historical Liner Top / Hanger is ambiguous or contradictory.")
@@ -103,7 +103,7 @@ def physical_strings(rows, segmenter, descriptions):
                     if outer["id_in"] <= inner["od_in"]:
                         raise ValueError("Installed strings overlap without physical ID/OD clearance or have duplicate identity.")
     for child in strings:
-        if "Liner" not in child["description"]:
+        if child["description"] not in ("Previous Liner Shoe", "Liner Shoe"):
             continue
         first = child["sections"][0]
         hosts = [s for s in strings if s is not child and any(
@@ -115,7 +115,7 @@ def physical_strings(rows, segmenter, descriptions):
 
 
 def receiving_liner(strings, tie_in):
-    candidates = [s for s in strings if "Liner" in s["description"] and s["top_md"] <= tie_in < s["shoe_md"]]
+    candidates = [s for s in strings if s["description"] in ("Previous Liner Shoe", "Liner Shoe") and s["top_md"] <= tie_in < s["shoe_md"]]
     if not candidates:
         raise ValueError("Tie Back tie-in requires one unambiguous receiving Liner interval continuing to its shoe.")
     # Retain the existing certified deepest-explicit-top connection criterion,
@@ -144,7 +144,7 @@ def enclosing_path(rows, strings, active, end, segmenter, *, excluded=(), exclud
     running = active if running is None else running
     installed = [s for s in strings if not any(i in excluded for i in s["indices"])]
     if not installed and (strings or not active or any(s["description"] != "Casing" for s in active)):
-        raise ValueError("Resolve Previous Casing / Previous Liner from explicit installed Hardware.")
+        raise ValueError("Resolve Previous Casing / Previous Liner Shoe from explicit installed Hardware.")
     # A first surface-origin Casing still needs a complete measured open-hole wall.
     last_shoe = max((s["shoe_md"] for s in installed), default=0.)
     holes = []

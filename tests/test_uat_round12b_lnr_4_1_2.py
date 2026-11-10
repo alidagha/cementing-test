@@ -38,10 +38,10 @@ def liner_state(job=JOB, size='4 1/2', diesel=False):
     state['job_type'] = job
     state['hardware_table'] = hardware(
         ('Drill Pipes', '400', '3 1/2', 2.75),
-        ('Liner', '1000', size, 4.), ('Liner Hanger', '400', size, 4.),
+        ('Liner Shoe', '1000', size, 4.), ('Liner Lap', '400', size, 4.),
         ('Previous Casing', '500', '7', 6.276), ('Open Hole Size', '1000', '6', 6.))
     state['placement_config'].update(job_type=job, target_row=next(iter(
-        placement.hardware_choices(state['hardware_table'], {'Liner'}))))
+        placement.hardware_choices(state['hardware_table'], {'Liner Shoe'}))))
     state['cement_params'] = {'Main': {'top_mode': 'Surface', 'top_job_type': job,
                                       'mix_water': 20., 'dead_vol': 2., 'tank_name': 'Mud Reserve Tanks'}}
     state.update(pore_gradient_emw_pcf=70., frac_gradient_emw_pcf=160., mud_type='OBM' if diesel else 'WBM')
@@ -52,7 +52,7 @@ def liner_state(job=JOB, size='4 1/2', diesel=False):
 
 
 def zones(catalog, state):
-    size = next(row['Size (in)'] for row in state['hardware_table'].to_dict('records') if row['Description'] == 'Liner')
+    size = next(row['Size (in)'] for row in state['hardware_table'].to_dict('records') if row['Description'] == 'Liner Shoe')
     # Explicit fixture selection from real candidates; the application never auto-selects.
     product = next(p for p in centralizer.filter_official_products(catalog, tools.parse_fractional_size(size))
                    if p['kind'] == 'rigid')
@@ -130,7 +130,7 @@ def test_procedure_has_fractional_operation_size():
 @pytest.mark.parametrize('size', ['4 1/2', '4 1/2"'])
 def test_existing_fractional_parser_and_placement_family_are_green(size):
     assert tools.parse_fractional_size(size) == 4.5
-    assert placement.target_descriptions(JOB) == {'Liner'}
+    assert placement.target_descriptions(JOB) == {'Liner Shoe'}
     assert db.get_cementing_method(JOB) == 'Primary Cementing'
     assert db.get_procedure_group(JOB) == 'Group A'
 
@@ -196,12 +196,12 @@ def test_closed_diesel_taxonomy_and_order_are_unchanged():
 def test_actual_hardware_dimensions_joint_and_weight_remain_authoritative(size):
     state = liner_state(size=size)
     frame = state['hardware_table']
-    frame.loc[frame['Description'] == 'Liner', ['ID (in)', 'Joint (m)', 'Weight (ppf)']] = [4.05, 9.5, 23.5]
+    frame.loc[frame['Description'] == 'Liner Shoe', ['ID (in)', 'Joint (m)', 'Weight (ppf)']] = [4.05, 9.5, 23.5]
     translated = centralizer.to_engine_geometry(state)
     assert translated['casing'] == {'od': 4.5 * .0254, 'id': 4.05 * .0254,
         'weight_kg_m': 23.5 * .45359237 / .3048, 'joint_length': 9.5}
     resolved = model.resolve_chart_geometry(state)
-    liner = next(row for row in resolved['active_string'] if row['description'] == 'Liner')
+    liner = next(row for row in resolved['active_string'] if row['description'] == 'Liner Shoe')
     assert (liner['od_in'], liner['id_in']) == (4.5, 4.05)
     simulation = pumping.prepare_pumping_simulation(state)['inputs']['geometry']
     assert (simulation.pipe_sections[-1].od_in, simulation.pipe_sections[-1].id_in) == (4.5, 4.05)
@@ -318,12 +318,12 @@ def word_project():
     for key in ('request_description', 'revision_description'):
         state[key] = state['doc_control'][key] = ps.request_description_for_job(JOB)
     frame = state['hardware_table']
-    frame.loc[frame['Description'].isin(['Liner', 'Liner Hanger']), 'Size (in)'] = '4 1/2"'
-    frame.loc[frame['Description'].isin(['Liner', 'Liner Hanger']), 'ID (in)'] = 4.
+    frame.loc[frame['Description'].isin(['Liner Shoe', 'Liner Lap']), 'Size (in)'] = '4 1/2"'
+    frame.loc[frame['Description'].isin(['Liner Shoe', 'Liner Lap']), 'ID (in)'] = 4.
     frame.loc[frame['Description'] == 'Open Hole Size', 'Size (in)'] = '6'
     frame.loc[frame['Description'] == 'Open Hole Size', 'ID (in)'] = 6.
     state['placement_config'].update(job_type=JOB, target_row=next(iter(
-        placement.hardware_choices(frame, {'Liner'}))))
+        placement.hardware_choices(frame, {'Liner Shoe'}))))
     for params in state['cement_params'].values():
         params.update(top_job_type=JOB, last_job_type=JOB)
     for name, params in state['fluids_config']['params'].items():
