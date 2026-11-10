@@ -34,7 +34,27 @@ def md_bounds(value):
     return top, bottom
 
 
-def tieback_top(rows, config):
+def point_depth(value, label):
+    """A measured scalar Top may be zero; it is never an interval length."""
+    match = MD_INTERVAL.fullmatch(str(value))
+    if not match or match.group(2) is not None:
+        raise ValueError(f"{label} requires one finite nonnegative scalar MD.")
+    depth = float(match.group(1))
+    if not math.isfinite(depth):
+        raise ValueError(f"{label} requires one finite nonnegative scalar MD.")
+    return depth
+
+
+def _lap_top(lap, shoe, label):
+    top = point_depth(lap.get("MD (m)"), label)
+    size = lap.get("Size (in)")
+    if size not in (None, "") and not (isinstance(size, float) and math.isnan(size)):
+        if positive_size(size) != positive_size(shoe.get("Size (in)")):
+            raise ValueError(f"{label} Size contradicts its measured Shoe string.")
+    return top
+
+
+def tieback_top(rows, config, *, hardware=None):
     if not rows:
         raise ValueError("Tie Back Top requires current Tie Back Hardware.")
     interval, _ = md_bounds(rows[0].get("MD (m)"))
@@ -45,9 +65,42 @@ def tieback_top(rows, config):
         if interval is not None and interval != explicit:
             raise ValueError("Tie Back interval Top contradicts tie_back_liner_lap_m.")
         interval = float(explicit)
+    laps = [r for r in (hardware if hardware is not None else rows)
+            if r.get("Description") == "Tie Back Liner Lap"]
+    if len(laps) > 1:
+        raise ValueError("Tie Back Top requires exactly one current Tie Back Liner Lap.")
+    if laps:
+        measured = _lap_top(laps[0], rows[0], "Tie Back Liner Lap")
+        if interval is not None and measured != interval:
+            raise ValueError("Tie Back Liner Lap Top contradicts the Shoe interval / explicit Top.")
+        interval = measured
     if interval is None:
         raise ValueError("Tie Back Top is missing; a scalar endpoint does not establish a surface Top.")
     return interval
+
+
+def previous_tieback(rows, segmenter):
+    """At most one installed Tie Back, paired by its unique measured Lap."""
+    laps = [(i, r) for i, r in enumerate(rows) if r.get("Description") == "Previous Tie Back Liner Lap"]
+    shoes = [(i, r) for i, r in enumerate(rows) if r.get("Description") == "Previous Tie Back Liner Shoe"]
+    if not laps and not shoes:
+        return None
+    if len(laps) != 1 or not shoes:
+        raise ValueError("Previous Tie Back requires one measured Lap and one continuous Shoe string; multiple previous strings are unsupported.")
+    top = _lap_top(laps[0][1], shoes[0][1], "Previous Tie Back Liner Lap")
+    body = [r for _, r in shoes]
+    end = md_bounds(body[-1].get("MD (m)"))[1]
+    if top >= end:
+        raise ValueError("Previous Tie Back requires measured Top < Shoe.")
+    previous_od = positive_size(body[0].get("Size (in)"))
+    for row in body[1:]:
+        od = positive_size(row.get("Size (in)"))
+        if od != previous_od and md_bounds(row.get("MD (m)"))[0] is None:
+            raise ValueError("Previous Tie Back OD changes require an explicit continuous section boundary.")
+        previous_od = od
+    return {"description": "Previous Tie Back Liner Shoe", "top_md": top, "shoe_md": end,
+            "last_od": previous_od, "rows": body, "indices": [i for i, _ in shoes],
+            "sections": segmenter(body, top, end, "Previous Tie Back Liner Shoe")}
 
 
 def physical_strings(rows, segmenter, descriptions):
@@ -56,10 +109,16 @@ def physical_strings(rows, segmenter, descriptions):
     Within a role/size, increasing endpoints retain their established section
     semantics. An explicit continuation can change OD only when its preceding
     boundary identifies exactly one string. Never sort or repair section rows.
+    Existing Casing/Liner role filters cannot discard a measured previous Tie Back.
     """
     strings = []
+    previous = previous_tieback(rows, segmenter)
     for index, row in enumerate(rows):
         desc = row.get("Description")
+        if desc == "Previous Tie Back Liner Shoe":
+            if index == previous["indices"][0]:
+                strings.append(previous)
+            continue
         if desc not in descriptions:
             continue
         size = positive_size(row.get("Size (in)"))
@@ -111,6 +170,20 @@ def physical_strings(rows, segmenter, descriptions):
             for sec in s["sections"])]
         if not hosts:
             raise ValueError("Historical Liner requires an applicable measured host with positive lap.")
+    if previous is not None:
+        hosts = [sec for string in strings if string is not previous for sec in string["sections"]]
+        # Enclosing strings restrict installation; an inner historical string
+        # is not an enclosing host for this already installed outer body.
+        largest = max(sec["od_in"] for sec in previous["sections"])
+        require_running_fit([sec for sec in hosts if sec["od_in"] > largest], previous["sections"])
+        for section in previous["sections"]:
+            a, b = section["top_md"], section["bottom_md"]
+            bounds = sorted({a, b, *(max(a, min(b, sec[key])) for sec in hosts
+                                    for key in ("top_md", "bottom_md"))})
+            for left, right in zip(bounds, bounds[1:]):
+                md = (left+right)/2
+                if not any(sec["top_md"] <= md < sec["bottom_md"] and sec["id_in"] > section["od_in"] for sec in hosts):
+                    raise ValueError("Previous Tie Back requires measured cased host coverage throughout its body.")
     return strings
 
 

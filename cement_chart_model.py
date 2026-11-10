@@ -355,7 +355,7 @@ def resolve_chart_geometry(state):
                            "Drill Pipes above Liner Lap")
         active += _segments(active_rows, hanger, shoe, "Liner Shoe")
     elif kind == "tieback":
-        top = installed_geometry.tieback_top(active_rows, config)
+        top = installed_geometry.tieback_top(active_rows, config, hardware=rows)
         active = (_segments([r for r in rows if r.get("Description") == "Drill Pipes"],
                             0., top, "Drill Pipes above Tie Back Top") if top > 0 else [])
         active += _segments(active_rows, top, shoe, description)

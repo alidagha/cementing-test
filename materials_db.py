@@ -99,6 +99,9 @@ HARDWARE_DESCRIPTIONS = [
     "Liner Shoe",
     "Liner Lap",
     "Tie Back Liner Shoe",
+    "Tie Back Liner Lap",
+    "Previous Tie Back Liner Lap",
+    "Previous Tie Back Liner Shoe",
     "Drill Pipes", 
     "Tubing",
     "Open Hole Size"
