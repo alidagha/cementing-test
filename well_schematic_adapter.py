@@ -352,8 +352,6 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
         previous = next(s for s in physical_strings(rows, _segments,
             {"Previous Casing", "Casing", "Previous Liner Shoe", "Liner Shoe"})
             if s["description"] == "Previous Tie Back Liner Shoe")
-        if len({s["od_in"] for s in previous["sections"]}) != 1:
-            raise ValueError("Previous Tie Back schematic requires a uniform measured OD; tapered history is not represented by this renderer.")
 
     grouped: Dict[Tuple[str, float], List[Tuple[int, Mapping[str, Any]]]] = {}
     row_to_group: Dict[int, Tuple[str, float]] = {}
@@ -366,7 +364,7 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
         if desc not in STRUCTURAL_DESCRIPTIONS:
             continue
         size = parse_size(row.get("Size (in)"), f"hardware[{i}].Size (in)")
-        key = (desc, size)
+        key = (desc, previous["sections"][0]["od_in"] if desc == "Previous Tie Back Liner Shoe" else size)
         grouped.setdefault(key, []).append((i, row))
         row_to_group[i] = key
 
@@ -411,10 +409,10 @@ def _build_strings(state: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) 
             sec = Section(
                 row_index=row_index,
                 description=desc,
-                size_in=size,
+                size_in=parse_size(row.get("Size (in)"), f"hardware[{row_index}].Size (in)"),
                 start_md=previous_end,
                 end_md=end,
-                id_in=_optional_id(row, size, f"hardware[{row_index}]"),
+                id_in=_optional_id(row, parse_size(row.get("Size (in)")), f"hardware[{row_index}]"),
                 token=hardware_row_token(row),
             )
             sections.append(sec)
@@ -459,16 +457,17 @@ def _section_id_at(string: WellString, depth: float) -> Optional[float]:
 def _validate_fit(child: WellString, host: WellString, overlap_top: float, overlap_bottom: float) -> None:
     if child.size_in >= host.size_in - SIZE_TOL:
         raise ValueError(f"{child.label} does not have a smaller OD than host {host.label}")
-    for sec in host.sections:
-        a = max(overlap_top, sec.start_md)
-        b = min(overlap_bottom, sec.end_md)
-        if b <= a + DEPTH_TOL:
-            continue
-        if sec.id_in is not None and child.size_in >= sec.id_in - SIZE_TOL:
-            raise ValueError(
-                f"{child.label} OD {child.size_in:g} in cannot pass host {host.label} ID {sec.id_in:g} in "
-                f"over {a:g}-{b:g} m"
-            )
+    for body in child.sections:
+        for sec in host.sections:
+            a = max(overlap_top, body.start_md, sec.start_md)
+            b = min(overlap_bottom, body.end_md, sec.end_md)
+            if b <= a + DEPTH_TOL:
+                continue
+            if sec.id_in is not None and body.size_in >= sec.id_in - SIZE_TOL:
+                raise ValueError(
+                    f"{child.label} OD {body.size_in:g} in cannot pass host {host.label} ID {sec.id_in:g} in "
+                    f"over {a:g}-{b:g} m"
+                )
 
 
 def _resolve_hosts(strings: List[WellString]) -> None:
@@ -509,7 +508,9 @@ def _resolve_tieback_landings(strings: Sequence[WellString], state=None) -> None
             ln for ln in liners
             if ln.top_md - DEPTH_TOL <= tb.shoe_md <= ln.shoe_md + DEPTH_TOL
         ]
-        if len(candidates) > 1 and state is not None and _job_kind(state.get("job_type")) == "tieback":
+        if len(candidates) > 1 and state is not None and (
+                _job_kind(state.get("job_type")) == "tieback" or
+                any(s.description == "Previous Tie Back Liner Shoe" for s in strings)):
             # Share physical receiver selection without hydraulic admission:
             # a measured Hanger can locate a drawing's scalar liner endpoint.
             from cement_chart_model import _segments
@@ -830,6 +831,9 @@ def _payload_string(s: WellString, index_by_id: Mapping[str, int]) -> Dict[str, 
     # it is safe to expose that exact value to the renderer's secondary guardrail.
     if len(ids) == 1 and all(sec.id_in is not None for sec in s.sections):
         row["id_in"] = next(iter(ids))
+    if s.description == "Previous Tie Back Liner Shoe" and len(s.sections) > 1:
+        row["sections"] = [{"top_md": sec.start_md, "shoe_md": sec.end_md,
+                            "size_in": sec.size_in, "id_in": sec.id_in} for sec in s.sections]
     if s.host_id is not None:
         row["host_index"] = index_by_id[s.host_id]
     if s.landing_liner_id is not None:
@@ -914,7 +918,8 @@ def _ct_history_facts(rows, well_md, placement):
     groups = {}
     for fact in facts:
         if fact["description"] in STRUCTURAL_DESCRIPTIONS and fact["size"] is not None:
-            groups.setdefault((fact["description"], fact["size"]), []).append(fact)
+            size = previous_tie["sections"][0]["od_in"] if fact["description"] == "Previous Tie Back Liner Shoe" else fact["size"]
+            groups.setdefault((fact["description"], size), []).append(fact)
     for (desc, size), sections in groups.items():
         first = sections[0]
         top = 0.0 if "Casing" in desc else first["start"]
@@ -960,8 +965,18 @@ def _ct_history_facts(rows, well_md, placement):
     for outer, inner in zip(casings, casings[1:]):
         if inner["size"] >= outer["size"] - SIZE_TOL or (outer["id"] is not None and inner["size"] >= outer["id"] - SIZE_TOL):
             raise ValueError(f"{inner['context']}: casing cannot pass the supplied outer OD/ID")
+    if previous_tie is not None:
+        known = [fact for sections in groups.values() for fact in sections
+                 if fact.get("known_start") is not None and fact["end"] is not None]
+        for section in (f for f in known if f["description"] == "Previous Tie Back Liner Shoe"):
+            for other in (f for f in known if f["description"] != "Previous Tie Back Liner Shoe"):
+                if min(section["end"], other["end"]) <= max(section["known_start"], other["known_start"]):
+                    continue
+                outer, inner = (section, other) if section["size"] > other["size"] else (other, section)
+                if outer["id"] is not None and inner["size"] >= outer["id"] - SIZE_TOL:
+                    raise ValueError(f"{section['context']}: Previous Tie Back section cannot fit the supplied overlapping string ID")
     for (desc, size), sections in groups.items():
-        if desc not in ("Previous Liner Shoe", "Liner Shoe", "Tie Back Liner Shoe", "Previous Tie Back Liner Shoe"):
+        if desc not in ("Previous Liner Shoe", "Liner Shoe", "Tie Back Liner Shoe"):
             continue
         child = sections[0]
         top = child.get("known_top")
@@ -969,7 +984,7 @@ def _ct_history_facts(rows, well_md, placement):
         if top is None or bottom is None:
             continue
         for (outer_desc, outer_size), outer_sections in groups.items():
-            if (outer_desc, outer_size) == (desc, size) or outer_size < size:
+            if outer_desc == "Previous Tie Back Liner Shoe" or (outer_desc, outer_size) == (desc, size) or outer_size < size:
                 continue
             for outer in outer_sections:
                 outer_top = outer["known_start"]

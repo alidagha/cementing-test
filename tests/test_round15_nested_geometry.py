@@ -13,6 +13,268 @@ from engineering_tools import BBL_TO_CUFT
 from placement import hardware_choices, target_descriptions
 
 
+def r18c_tapered_state(previous_top=0., expanding=False):
+    """Synthetic measured previous string; no product or reviewed-lab claim."""
+    state = r18b_previous_state(previous_top=previous_top)
+    table = state['hardware_table']
+    table.at[4,'MD (m)'] = '150'
+    extra = table.iloc[[4]].copy()
+    extra['MD (m)'] = '150-300';extra['Size (in)'] = '6.5';extra['ID (in)'] = 5.8
+    if expanding:
+        table.at[3,'Size (in)'] = table.at[4,'Size (in)'] = '6.5'
+        table.at[4,'ID (in)'] = 5.8
+        extra['Size (in)'] = '7';extra['ID (in)'] = 6.094
+    state['hardware_table'] = pd.concat([table.iloc[:5],extra,table.iloc[5:]],ignore_index=True)
+    return state
+
+
+@pytest.mark.parametrize('previous_top,expanding',[(0.,False),(100.,False),(0.,True),(100.,True)])
+def test_r18c_one_tapered_previous_string_projects_all_measured_sections(previous_top,expanding):
+    import installed_geometry as installed
+    import well_schematic_adapter as schematic
+    state = r18c_tapered_state(previous_top,expanding)
+    before = pickle.dumps(state)
+    physical = next(s for s in installed.physical_strings(state['hardware_table'].to_dict('records'),
+        chart._segments,{'Previous Casing','Previous Liner Shoe'}) if s['description']=='Previous Tie Back Liner Shoe')
+    drawing = schematic.prepare_schematic(state)
+    previous = [c for c in drawing['casings'] if c['type']=='tieback' and c['shoe_md']==300.]
+    assert len(previous)==1
+    assert previous[0]['top_md']==previous_top
+    assert previous[0]['sections']==[{'top_md':s['top_md'],'shoe_md':s['bottom_md'],
+        'size_in':s['od_in'],'id_in':s['id_in']} for s in physical['sections']]
+    host = drawing['casings'][previous[0]['host_index']]
+    receiver = drawing['casings'][previous[0]['landing_liner_index']]
+    assert host['type']=='casing' and host['size_in']==9.625 and host['id_in']==8.535
+    assert receiver['type']=='liner' and (receiver['top_md'],receiver['shoe_md'])==(300.,1000.)
+    assert len([c for c in drawing['casings'] if c['type']=='tieback'])==2
+    assert centralizer_adapter.to_engine_geometry(state)['wellbore']['string_top']==400.
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('expanding',[False,True])
+def test_r18c_real_png_has_connected_measured_taper_walls_and_boundary_labels(expanding,tmp_path,monkeypatch):
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as engine
+    from matplotlib.axes import Axes
+    from matplotlib.colors import to_rgba
+    from matplotlib.patches import Polygon
+    from PIL import Image
+    state = r18c_tapered_state(100.,expanding)
+    before = pickle.dumps(state)
+    drawing = schematic.prepare_schematic(state)
+    walls=[];original=Axes.add_patch
+    def capture(ax,patch):
+        if isinstance(patch,Polygon) and patch.get_zorder()==3.0 and patch.get_facecolor()==to_rgba(engine.C_TUBULAR_FILL):
+            walls.append(patch.get_xy().copy())
+        return original(ax,patch)
+    monkeypatch.setattr(Axes,'add_patch',capture)
+    path=tmp_path/'measured-taper.png'
+    engine.render_well_schematic(drawing,str(path),dpi=150,strict=True)
+    assert len(walls)==2  # One connected polygon per side of one previous string.
+    geo=engine.layout_geometry();c1,c2,_=geo['col_frac'];body=1-geo['header_frac']
+    y=body*(1-150./engine.resolve_depth_axis(drawing)[0])
+    for side,vertices in zip((-1,1),walls):
+        step=[(x,z) for x,z in vertices if abs(z-y)<1e-12]
+        for od in (6.5,7.):
+            expected=c1+c2*(.5+side*od*.385/9.625)
+            assert any(abs(x-expected)<1e-12 for x,_ in step)
+    labels=engine._collect_labels(drawing,drawing['open_holes'])
+    assert len([r for r in labels if '→' in r['text'] and r['depth']==150.])==1
+    assert any('TB LNR Shoe @ 300 m' in r['text'] and r['text'].startswith('7"' if expanding else '6 1/2"') for r in labels)
+    with Image.open(path) as image:
+        assert image.size==(900,1140) and image.info['dpi'][0]==pytest.approx(round(150./.0254)*.0254,abs=1e-10)
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('fault',['empty','missing_field','gap','reversed','end','summary_od','summary_id','bad_id','bad_fit','nonfinite','duplicate','wrong_type'])
+def test_r18c_section_renderer_rejects_invalid_measured_contract(fault,tmp_path):
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as engine
+    data=schematic.prepare_schematic(r18c_tapered_state())
+    previous=next(c for c in data['casings'] if 'sections' in c)
+    if fault=='empty':previous['sections']=[]
+    elif fault=='missing_field':del previous['sections'][1]['id_in']
+    elif fault=='gap':previous['sections'][1]['top_md']=151.
+    elif fault=='reversed':previous['sections'].reverse()
+    elif fault=='end':previous['sections'][1]['shoe_md']=299.
+    elif fault=='summary_od':previous['size_in']=6.75
+    elif fault=='summary_id':previous['id_in']=6.
+    elif fault=='bad_id':previous['sections'][1]['id_in']=6.5
+    elif fault=='bad_fit':previous['sections'][1].update(size_in=9.,id_in=8.)
+    elif fault=='nonfinite':previous['sections'][1]['shoe_md']=float('inf')
+    elif fault=='duplicate':previous['sections'].append(deepcopy(previous['sections'][1]))
+    else:previous['type']='casing'
+    with pytest.raises(ValueError,match='section|Tie Back|fit|clearance'):
+        engine.render_well_schematic(data,str(tmp_path/'invalid.png'),dpi=90,strict=True)
+    assert not (tmp_path/'invalid.png').exists()
+
+
+def r18c_ct_state():
+    import materials_db as db
+    state=r18c_tapered_state()
+    state['fluids_config']={'active':['Main','Displacement Fluid']}
+    state['cement_params']={'Main':{'top_mode':'Depth (m MD)','top_depth':100.,'top_job_type':db.CT_JOB}}
+    state['hardware_table']=pd.concat([state['hardware_table'],hardware(('CT','200','2 3/8',1.9))],ignore_index=True)
+    state['job_type']=db.CT_JOB;state['placement_config']['job_type']=db.CT_JOB
+    return state
+
+
+def test_r18c_ct_and_plug_use_the_actual_previous_section_at_each_depth(tmp_path,monkeypatch):
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as engine
+    from matplotlib.axes import Axes
+    from matplotlib.colors import to_rgba
+    from matplotlib.patches import Polygon
+    state=r18c_ct_state()
+    before=pickle.dumps(state)
+    drawing=schematic.prepare_schematic(state)
+    assert drawing['available'] and drawing['missing_geometry']==[]
+    payload=drawing['payload'];previous=next(c for c in payload['casings'] if 'sections' in c)
+    assert payload['cement_plugs']==[{'top_md':100.,'bottom_md':200.}]
+    assert engine._pipe_at(previous,125.)['size_in']==7.
+    assert engine._pipe_at(previous,175.)['size_in']==6.5
+    plugs=[];original=Axes.add_patch
+    def capture(ax,patch):
+        if isinstance(patch,Polygon) and patch.get_facecolor()==to_rgba(engine.C_PLUG_FILL):plugs.append(patch.get_xy())
+        return original(ax,patch)
+    monkeypatch.setattr(Axes,'add_patch',capture)
+    engine.render_well_schematic(payload,str(tmp_path/'ct-taper.png'),dpi=150,strict=True)
+    assert len(plugs)==1
+    body=1-engine.layout_geometry()['header_frac'];y=body*(1-150./engine.resolve_depth_axis(payload)[0])
+    assert len([v for v in plugs[0] if abs(v[1]-y)<1e-12])>=4
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('fault',['gap','duplicate','bad_id','bad_host_fit'])
+def test_r18c_ct_unknown_other_history_cannot_hide_invalid_previous_sections(fault):
+    import well_schematic_adapter as schematic
+    state=r18c_ct_state();table=state['hardware_table']
+    if fault=='gap':table.at[5,'MD (m)']='151-300'
+    elif fault=='duplicate':table=pd.concat([table,table.iloc[[3]]],ignore_index=True)
+    elif fault=='bad_id':table.at[5,'ID (in)']=6.5
+    else:table.at[5,'Size (in)']='9'
+    missing=hardware(('Previous Casing',None,None,None)).iloc[0].to_dict()
+    state['hardware_table']=pd.DataFrame.from_records([*table.to_dict('records'),missing],columns=table.columns)
+    before=pickle.dumps(state)
+    with pytest.raises(ValueError,match='Previous Tie Back|gap|overlap|ID'):
+        schematic.prepare_schematic(state)
+    assert pickle.dumps(state)==before
+
+
+@pytest.fixture(scope='module')
+def r18c_reference_renderer():
+    import subprocess
+    reference={'__name__':'r18c_archived_renderer'}
+    source=subprocess.check_output(['git','show','cdb58925886d4ee649d583052ea138286f1e6f79:well_schematic_engine.py'])
+    exec(compile(source,'archived-well-schematic-engine','exec'),reference)
+    return reference['render_well_schematic']
+
+
+def test_r18c_section_guards_do_not_reinterpret_unrelated_scalar_admission(r18c_reference_renderer,tmp_path):
+    import well_schematic_engine as engine
+    data=engine.get_preset_schematic_data('tieback_7in')
+    data['casings'][-1]['shoe_md']=3000.  # Existing scalar renderer's interior-landing convention.
+    r18c_reference_renderer(data,str(tmp_path/'scalar-reference.png'),dpi=90,strict=True)
+    data['casings'].extend([
+        {'type':'liner','size_in':8.,'id_in':7.5,'top_md':1000.,'shoe_md':1200.,'host_index':2},
+        {'type':'tieback','size_in':8.,'top_md':500.,'shoe_md':1000.,'host_index':2,'landing_liner_index':5,
+         'sections':[{'size_in':8.,'id_in':7.5,'top_md':500.,'shoe_md':750.},
+                     {'size_in':7.75,'id_in':7.5,'top_md':750.,'shoe_md':1000.}]}])
+    engine.validate_schematic_data(data)
+    assert engine.check_well_design(data)==[]
+    engine.render_well_schematic(data,str(tmp_path/'sectioned-with-scalar-history.png'),dpi=90,strict=True)
+
+
+@pytest.mark.parametrize('job',['CSG 13 3/8"','CSG 9 5/8"','LNR 7"','LNR 5"','LNR 4 1/2"',
+    'TIE BACK LNR 7"','TIE BACK LNR 5"','TIE BACK LNR 4 1/2"','CMT PLUG','CMT SQUEEZE','CMT PLUG WITH CT'])
+def test_r18c_nontapered_job_png_bytes_equal_the_independent_merged_renderer(job,r18c_reference_renderer,tmp_path):
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as engine
+    if job=='CMT PLUG WITH CT':
+        from test_round13b_b3_ct_schematic import state
+        source=state('complete')
+    elif job in ('CMT PLUG','CMT SQUEEZE'):
+        import test_audit_regressions as audit
+        source={'job_type':job,**audit.valid_export_chart_fixture(job)}
+        source['fluids_config']={'active':['Main','Displacement Fluid']}
+        source['cement_params']={'Main':{'top_mode':'Depth (m MD)','top_depth':2000.,'top_job_type':job}}
+    else:source=bug01_geometry_case(job)
+    before=pickle.dumps(source)
+    drawing=schematic.prepare_schematic(source)
+    if job=='CMT PLUG WITH CT':
+        assert drawing['available'];drawing=drawing['payload']
+    assert not any('sections' in c for c in drawing['casings'])
+    r18c_reference_renderer(drawing,str(tmp_path/'original.png'),dpi=90,strict=True)
+    engine.render_well_schematic(drawing,str(tmp_path/'current.png'),dpi=90,strict=True)
+    assert (tmp_path/'current.png').read_bytes()==(tmp_path/'original.png').read_bytes()
+    assert pickle.dumps(source)==before
+
+
+@pytest.mark.parametrize('mode',['ignore','apply'])
+@pytest.mark.parametrize('physics,placement_mode',[('static','direct'),('static','optimize'),('dynamic','direct'),('dynamic','optimize')])
+def test_r18c_tapered_history_uses_full_nominal_flow_and_active_mechanical_domain(mode,physics,placement_mode):
+    import phase_9_centralizer as phase9
+    from placement import slurry_intervals
+    state=bug01_solver_state('TIE BACK LNR 5"');state.update(r18c_tapered_state(100.))
+    state['centralizer_config']['zones'][0].update(top_md=400.,bottom_md=700.)
+    state['centralizer_config'].update(physics_mode=physics,placement_mode=placement_mode)
+    state['placement_config'].update(chart_excess_mode=mode,excess_csg_csg_pct=12.5,excess_csg_oh_pct=20.)
+    source=pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')})
+    chart_geometry=chart.resolve_chart_geometry(state)
+    assert boundary(chart_geometry)==[(0.,100.,8.535),(100.,150.,6.094),(150.,300.,5.8),(300.,700.,6.094)]
+    pumping,_=pumping_simulation._geometry(state,'tieback')
+    assert [(s.z_top,s.z_bot,s.id_in,s.od_in) for s in pumping.pipe_sections]==[
+        (0.,400.,2.764,3.5),(400.,700.,4.276,5.),(700.,1200.,4.276,5.)]
+    for segment in chart_geometry['capacity_segments']:
+        mid=(segment['top_md']+segment['bottom_md'])/2
+        pipe=next(s for s in pumping.pipe_sections if s.z_top<=mid<s.z_bot)
+        wall=next(s for s in pumping.ann_sections if s.z_top<=mid<s.z_bot)
+        assert wall.di_in==pipe.od_in
+        assert chart._capacity(wall.do_in,wall.di_in)==segment['nominal_bbl_per_m']
+        assert segment['bbl_per_m']==pytest.approx(segment['nominal_bbl_per_m']*(1.125 if mode=='apply' else 1.))
+    projected=centralizer_adapter.to_engine_geometry(state)
+    assert projected['wellbore']['string_top']==400. and projected['wellbore']['string_shoe']==700.
+    assert projected['wellbore']['prev_casing_id']==6.094*.0254
+    intervals=slurry_intervals(state['hardware_table'],state['job_type'],state['placement_config'],['Main'],state.get('cement_params',{}),state['fluids_config']['params'])
+    assert intervals['Main']['bottom_depth']==700.
+    assert phase9.execute(state)['profile']
+    assert phase9.result_is_current(state)
+    assert pickle.dumps({k:v for k,v in state.items() if not k.startswith('_')})==source
+
+
+def test_r18c_editor_delete_incomplete_add_repair_and_navigation_keep_measured_identity():
+    import test_audit_regressions as audit
+    import phase_9_centralizer as phase9
+    case=audit.AuditRegressions();app=case.app(r18c_tapered_state())
+    case.phase(app,'phase2_3')
+    original=app.session_state['hardware_table'].copy(deep=True)
+    config=deepcopy(app.session_state['placement_config'])
+    lap_index=int(original.index[original['Description']=='Tie Back Liner Lap'][0])
+    expected=chart.resolve_chart_geometry(app.session_state)
+    case.hardware_event(app,{'deleted_rows':[lap_index]})
+    assert not app.session_state['hardware_table']['Description'].eq('Tie Back Liner Lap').any()
+    with pytest.raises(ValueError,match='Top is missing'):chart.resolve_chart_geometry(app.session_state)
+    incomplete=original.iloc[lap_index].to_dict();incomplete['MD (m)']=None
+    # Mounted Streamlit editors send cumulative edits against their stable source frame.
+    case.hardware_event(app,{'deleted_rows':[lap_index],'added_rows':[incomplete]})
+    row=app.session_state['hardware_table'].iloc[-1]
+    assert row['Description']=='Tie Back Liner Lap' and row['MD (m)']==''
+    assert app.session_state['hardware_table']['Description'].eq('Tie Back Liner Lap').sum()==1
+    assert not phase9.result_is_current(app.session_state)
+    case.phase(app,'phase4');case.phase(app,'phase2_3')
+    index=len(app.session_state['hardware_table'])-1
+    case.hardware_event(app,{'edited_rows':{str(index):{'MD (m)':'400'}}})
+    assert chart.resolve_chart_geometry(app.session_state)==expected
+    assert app.session_state['placement_config']==config
+    source=app.session_state['hardware_table'].copy(deep=True)
+    case.phase(app,'phase4');case.phase(app,'phase2_3')
+    pd.testing.assert_frame_equal(app.session_state['hardware_table'],source)
+    restored=audit.round_trip(app.session_state.to_dict())
+    pd.testing.assert_frame_equal(restored['hardware_table'],source,check_dtype=False)
+    assert restored['placement_config']==config
+    assert chart.resolve_chart_geometry(restored)==expected
+
+
 def r18b_previous_state(top=400., previous_top=0.):
     """Explicitly synthetic measured strings, products/labs supplied separately."""
     rows = hardware(
@@ -184,11 +446,11 @@ def test_r18b_previous_sections_keep_source_order_identity_and_true_dimensions(t
     assert previous['indices'] == [4,5]
     assert [(s['top_md'],s['bottom_md'],s['od_in'],s['id_in']) for s in previous['sections']] == [
         (0.,100.,7.,6.094),(100.,300.,6.5 if taper else 7.,5.8)]
-    if taper:
-        with pytest.raises(ValueError, match='uniform measured OD'):
-            schematic.prepare_schematic(state)
-    else:
-        assert len([c for c in schematic.prepare_schematic(state)['casings'] if c['type']=='tieback']) == 2
+    drawing=schematic.prepare_schematic(state)
+    assert len([c for c in drawing['casings'] if c['type']=='tieback']) == 2
+    previous_drawing=next(c for c in drawing['casings'] if c['shoe_md']==300.)
+    assert previous_drawing['sections']==[{'top_md':s['top_md'],'shoe_md':s['bottom_md'],
+        'size_in':s['od_in'],'id_in':s['id_in']} for s in previous['sections']]
     reversed_rows = list(reversed(previous['rows']))
     rows = state['hardware_table'].to_dict('records')
     rows[4:6] = reversed_rows
@@ -260,7 +522,7 @@ def test_r18b_inside_active_two_ids_and_previous_host_selection_stay_blocked():
         centralizer_adapter.to_engine_geometry(state)
 
 
-@pytest.mark.parametrize('previous', [False, True])
+@pytest.mark.parametrize('previous', [False, True, 'taper', 'expanding_taper'])
 def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base, previous, tmp_path):
     import json
     from io import BytesIO
@@ -272,7 +534,8 @@ def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base
     from test_uat_round9g_centralizer_word import ix_region
     case = audit.AuditRegressions()
     if previous:
-        measured = r18b_previous_state(previous_top=100.)
+        measured = (r18c_tapered_state(100.,previous=='expanding_taper') if isinstance(previous,str)
+                    else r18b_previous_state(previous_top=100.))
         job = 'TIE BACK LNR 5"'
     else:
         measured = synthetic_tieback(top=0.)
@@ -338,6 +601,27 @@ def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base
     rows = state['hardware_table'].to_dict('records')
     assert [r.cells[0].text for r in table.rows[3:3+len(rows)]] == [r['Description'] for r in rows]
     assert any(r.cells[0].text=='Tie Back Liner Lap' and r.cells[1].text==f'{top:.1f}' for r in table.rows)
+    from phase_2_3_well_data import HARDWARE_COLUMNS
+    for rendered,source_row in zip(table.rows[3:3+len(rows)],rows):
+        assert len(rendered.cells)==9
+        for cell,field in zip(rendered.cells,HARDWARE_COLUMNS):
+            value=source_row[field]
+            if source_row['Description']=='Open Hole Size' and field in ('Joint (m)','Weight (ppf)','Grade','Collapse (psi)','Burst (psi)'):
+                expected='-'
+            elif field=='MD (m)' and '-' not in str(value):expected=f'{float(value):.1f}'
+            else:expected=str(value)
+            assert cell.text==expected
+    from zipfile import ZipFile
+    import well_report
+    assert schematic.prepare_schematic(again.session_state)==drawing
+    actual_schematic=well_report.render_schematic_png(drawing)
+    with ZipFile(BytesIO(data)) as archive,ZipFile('master_template.docx') as template:
+        assert actual_schematic in [archive.read(name) for name in archive.namelist() if name.startswith('word/media/')]
+        from lxml import etree
+        for name in ('word/styles.xml','word/fontTable.xml','word/theme/theme1.xml'):
+            # python-docx serializes XML declarations; compare all format/style XML canonically.
+            canonical=lambda raw:etree.tostring(etree.fromstring(raw),method='c14n')
+            assert canonical(archive.read(name))==canonical(template.read(name))
     region = ix_region(document)
     assert any(e.xpath('.//w:drawing') for e in region)
     assert len(region[-1].xpath('.//w:br[@w:type="page"]')) == 1
