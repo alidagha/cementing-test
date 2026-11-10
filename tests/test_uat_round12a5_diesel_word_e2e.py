@@ -517,6 +517,56 @@ def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(
     assert sync(without)['exec_summary_text'] == after
 
 
+def r18_historical_procedure_text(text, job):
+    """Project only the two approved historical Tie Back spelling anchors."""
+    if not str(job).startswith('TIE BACK LNR '):
+        return text
+    anchors = (
+        ('When the Tie back assembly reached ', 'When the Tie Back assembly reached '),
+        ('Select down Tie back seal assembly into Tie Back sleeve.',
+         'Select down Tie Back seal assembly into Tie Back sleeve.'),
+    )
+    assert text.count('Tie back') == 2
+    for old, new in anchors:
+        assert text.count(old) == 1 and text.count(new) == 0
+        text = text.replace(old, new, 1)
+    return text
+
+
+@pytest.mark.parametrize('change', ['omitted', 'duplicated', 'malformed', 'unexpected',
+                                  'word', 'number', 'instruction', 'non_tieback'])
+def test_r18_historical_procedure_projection_rejects_other_changes(change):
+    from test_uat_terminal_precision import wnf02_previous
+    from test_round13b_b4_operational_spacers import operational
+    job = 'CSG 9 5/8"' if change == 'non_tieback' else 'TIE BACK LNR 7"'
+    state = operational(job)
+    state['fluids_config']['active'] = ['Main', 'Displacement Fluid']
+    ps.refresh_fluids(state)
+    args = (job, state['fluid_data'], state['fluids_config']['active'], state['cement_params'],
+            state.get('cement_additives_dfs', {}), state.get('preflush_calc'),
+            state.get('geo_md'), state.get('total_pump_time_min'), state.get('placement_config'))
+    with patch.object(report.st, 'session_state', state):
+        old = wnf02_previous.__wrapped__()['generate_official_procedure'](*args)
+        current = report.generate_official_procedure(*args)
+    assert r18_historical_procedure_text(old, job) == current
+    anchor = 'When the Tie back assembly reached '
+    if change == 'omitted': altered = old.replace(anchor, '', 1)
+    elif change == 'duplicated': altered = old + '\n' + anchor
+    elif change == 'malformed': altered = old.replace(anchor, 'When the Tie back assembly reaches ', 1)
+    elif change == 'unexpected': altered = old + '\nAdditional Tie back text.'
+    elif change == 'number':
+        assert old.count('Tests cement line W/ 3500 psi.') == 1
+        altered = old.replace('Tests cement line W/ 3500 psi.', 'Tests cement line W/ 3501 psi.', 1)
+    elif change == 'instruction': altered = old + '\nUnapproved extra instruction.'
+    else:
+        before = 'Rig down Cement Line.' if change == 'non_tieback' else 'Rig down cement line.'
+        assert old.count(before) == 1
+        altered = old.replace(before, before.replace('down', 'up'), 1)
+    assert altered != old
+    with pytest.raises(AssertionError):
+        assert r18_historical_procedure_text(altered, job) == current
+
+
 @pytest.mark.parametrize('job', JOBS)
 def test_wnf_plug_only_revision_preserves_other_generated_text_and_sources(projects,job):
     from test_uat_terminal_precision import wnf_baseline
@@ -537,7 +587,7 @@ def test_wnf_plug_only_revision_preserves_other_generated_text_and_sources(proje
             expected=expected.replace(line,line.replace('duration 00:12 (HH:MM).',f'duration {format_to_hr_mm(boundary-previous_minutes)} (HH:MM).'))
         previous_minutes=boundary
     if job=='CMT PLUG':expected=expected.replace(', 4 bbl/ min.',', 4.0 bbl/ min.')
-    assert new['procedure_text']['generated']==expected
+    assert new['procedure_text']['generated']==r18_historical_procedure_text(expected,job)
     assert old['procedure_text']['signature']!=new['procedure_text']['signature']
     assert new_state['fluids_config']==old_state['fluids_config']
     assert new_state['fluid_data']==old_state['fluid_data']
