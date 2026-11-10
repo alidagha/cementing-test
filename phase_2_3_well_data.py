@@ -612,7 +612,7 @@ def render():
         host = placement.get("host_row", "")
         host = host if host in host_options else ""
         placement["host_row"] = st.selectbox(
-            "Tie-back host (the existing casing / liner)", host_options,
+            "Tie Back host (the existing casing / liner)", host_options,
             index=host_options.index(host),
             format_func=lambda token: hosts[token]["label"] if token else "Select the actual host",
             key=f"_placement_host_{fingerprint(job_type)[:10]}_{load_sig}",

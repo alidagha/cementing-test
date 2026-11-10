@@ -42,8 +42,8 @@ def prepared(job='CSG 9 5/8"'):
         state.update(audit.chart_fixture(job, 1000.))
     if job.startswith('LNR'):
         state['hardware_table'] = hardware(('Previous Casing','500','13.375',12.25),
-            ('Liner','1000','7',6.276),('Open Hole Size','1000','12.25',12.25),
-            ('Liner Hanger','300','9.625',8.535),('Drill Pipes','300','5',4.276))
+            ('Liner Shoe','1000','7',6.276),('Open Hole Size','1000','12.25',12.25),
+            ('Liner Lap','300','9.625',8.535),('Drill Pipes','300','5',4.276))
     if job.startswith('TIE BACK'):
         from placement import hardware_choices, HOST_DESCRIPTIONS
         state['placement_config']['host_row'] = next(iter(hardware_choices(state['hardware_table'], HOST_DESCRIPTIONS)))
@@ -355,7 +355,7 @@ def test_round8c1_inside_mud_follows_resolved_string_to_collar(job):
         assert all(a.get_y()+a.get_height()==b.get_y() for a,b in zip(mud,mud[1:]))
         assert mud[-1].get_y()+mud[-1].get_height()==m['float_collar_md']
         if job.startswith('LNR'):
-            assert [s['description'] for s in m['active_string']]==['Drill Pipes','Liner']
+            assert [s['description'] for s in m['active_string']]==['Drill Pipes','Liner Shoe']
             assert len(mud)==2
         track=[p for p in axis.patches if p.get_gid()=='shoe-track']
         assert track and track[0].get_y()==m['float_collar_md']

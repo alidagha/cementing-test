@@ -12,7 +12,7 @@ def execute_centralizer(state, *, zones=2, physics="static", mode="direct", cust
         return None
     geometry = adapter.to_engine_geometry(state)
     resolved = resolve_chart_geometry(state)
-    description = {"casing":"Casing", "liner":"Liner", "tieback":"Tie Back"}[geometry["job_type"]]
+    description = {"casing":"Casing", "liner":"Liner Shoe", "tieback":"Tie Back Liner Shoe"}[geometry["job_type"]]
     pipe = next(s["od_in"] for s in resolved["active_string"] if s["description"] == description)
     catalog = adapter.load_official_catalog()
     candidates = [p for p in adapter.filter_official_products(catalog, pipe) if p["kind"] == "rigid"]

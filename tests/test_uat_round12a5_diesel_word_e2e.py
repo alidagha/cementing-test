@@ -377,6 +377,60 @@ NO_DIESEL_A42 = {
 }
 
 
+def r18_historical_report_source(inputs, hardware=None):
+    """Reverse only Hardware names and their selected row tokens in a copy."""
+    assert isinstance(inputs, list) and len(inputs) == 2 and inputs[0] in (1, 2)
+    source = deepcopy(inputs)
+    if inputs[0] == 2:
+        assert len(inputs[1]) == 9
+        hardware = inputs[1][5]
+        placement_index = 7
+    else:
+        assert hardware is not None and 10 <= len(inputs[1]) <= 12
+        placement_index = 8
+    names = {"Previous Liner Lap": "Previous Liner Hanger",
+             "Previous Liner Shoe": "Previous Liner", "Liner Shoe": "Liner",
+             "Liner Lap": "Liner Hanger", "Tie Back Liner Shoe": "Tie Back"}
+    historical = hardware.copy(deep=True)
+    tokens, originals, current = {}, set(), {}
+    for index, row in hardware.iterrows():
+        description = row['Description']
+        assert description not in names.values(), 'obsolete live Hardware Description'
+        md, size = str(row['MD (m)']).strip(), str(row['Size (in)']).strip()
+        live = ps.fingerprint([description, md, size])
+        current[live] = current.get(live, 0) + 1
+        if description in names:
+            old = ps.fingerprint([names[description], md, size])
+            assert live not in tokens and old not in originals, 'ambiguous Hardware token mapping'
+            tokens[live] = old
+            originals.add(old)
+            historical.at[index, 'Description'] = names[description]
+    placement = source[1][placement_index]
+    for field in ('target_row', 'host_row'):
+        token = placement.get(field)
+        if token not in (None, '', '__manual__'):
+            assert current.get(token) == 1, 'missing or ambiguous selected Hardware'
+            if token in tokens:
+                placement[field] = tokens[token]
+    if inputs[0] == 2:
+        source[1][5] = historical
+    return source
+
+
+def r18_summary_source(specs, captured, expected):
+    sources = [v for v in captured if isinstance(v, list) and len(v) == 2 and v[0] == 2]
+    assert len(sources) == 1
+    live = sources[0]
+    original = ps.fingerprint(live)
+    assert specs['exec_summary_text']['signature'] == original
+    assert ps.fingerprint(r18_historical_report_source(live)) == expected
+    assert ps.fingerprint(live) == original  # projection never changes live inputs
+    changed = deepcopy(live)
+    changed[1][5].at[changed[1][5].index[0], 'ID (in)'] -= .001
+    assert ps.fingerprint(changed) != original
+    return live
+
+
 @pytest.mark.parametrize('job', JOBS)
 @pytest.mark.parametrize('mud', ['WBM', 'OBM'])
 def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
@@ -391,10 +445,10 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     with patch.object(report, 'fingerprint', observe):
         specs = sync(state)
     expected_summary, expected_procedure = NO_DIESEL_A42[job]
-    assert specs['exec_summary_text']['signature'] == expected_summary
+    summary = r18_summary_source(specs, captured, expected_summary)
     # Original golds remain untouched. Reverse only approved presentation inputs.
     inputs = next(value for value in captured if isinstance(value,list) and len(value)==2 and value[0]==1)
-    legacy=deepcopy(inputs[1])
+    legacy=r18_historical_report_source(inputs, summary[1][5])[1]
     if job=='CMT PLUG':
         assert legacy[-1]=={'plug_numeric_display_revision':2}
         legacy.pop()
@@ -411,6 +465,38 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     ctx = context(state)
     assert ctx['has_spacer'] and ctx['standalone_spacer']['lab_rows']
     assert ctx['standalone_spacer']['lab']['rheology']['bhct_down']['is_valid_bingham']
+
+
+@pytest.mark.parametrize('change', ['md', 'id', 'size', 'volume', 'placement', 'metadata', 'missing', 'duplicate'])
+def test_r18_historical_source_projection_rejects_nonname_mutations(projects, change):
+    state = projects('LNR 7"', active=False, include_standalone_spacer=True)
+    captured = []
+    fingerprint = report.fingerprint
+    def observe(value):
+        captured.append(deepcopy(value))
+        return fingerprint(value)
+    with patch.object(report, 'fingerprint', observe):
+        specs = sync(state)
+    live = r18_summary_source(specs, captured, NO_DIESEL_A42['LNR 7"'][0])
+    changed = deepcopy(live)
+    source = changed[1]
+    if change == 'md': source[5].at[source[5].index[0], 'MD (m)'] = '500.1'
+    elif change == 'id': source[5].at[source[5].index[0], 'ID (in)'] -= .001
+    elif change == 'size': source[5].at[source[5].index[0], 'Size (in)'] = '13.376'
+    elif change == 'volume': source[2]['Main']['volume'] += .1
+    elif change == 'placement': source[7]['chart_excess_mode'] = 'apply'
+    elif change == 'metadata': source[8]['volume_basis'] = 'client_request'
+    elif change == 'missing': source[7]['target_row'] = 'missing-row'
+    else:
+        import pandas as pd
+        target = source[5].loc[source[5]['Description'] == 'Liner Shoe']
+        source[5] = pd.concat([source[5], target], ignore_index=True)
+    if change in ('missing', 'duplicate'):
+        with pytest.raises(AssertionError, match='missing|ambiguous'):
+            r18_historical_report_source(changed)
+    else:
+        assert ps.fingerprint(r18_historical_report_source(changed)) != NO_DIESEL_A42['LNR 7"'][0]
+    assert ps.fingerprint(live) == specs['exec_summary_text']['signature']
 
 
 def test_excluded_operational_fluids_cannot_leak_cumulative_timing_into_summary(projects):

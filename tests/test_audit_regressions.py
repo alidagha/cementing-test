@@ -75,33 +75,33 @@ def chart_fixture(job, target=3000.0):
                 ("Casing", extent, od, inner), ("Open Hole Size", extent, outer_id, outer_id)]
     elif job == 'LNR 4 1/2"':
         rows = [("Previous Casing", 1500., 7., 6.276),
-                ("Liner", target, 4.5, 4.), ("Open Hole Size", extent, 6., 6.),
-                ("Liner Hanger", 1000., 4.5, 4.), ("Drill Pipes", 1000., 3.5, 2.75)]
+                ("Liner Shoe", target, 4.5, 4.), ("Open Hole Size", extent, 6., 6.),
+                ("Liner Lap", 1000., 4.5, 4.), ("Drill Pipes", 1000., 3.5, 2.75)]
     elif job in liner:
         od, inner = liner[job]
         rows = [("Previous Casing", 1500., 13.375, 12.25),
-                ("Liner", extent, od, inner), ("Open Hole Size", extent, 12.25, 12.25),
-                ("Liner Hanger", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
+                ("Liner Shoe", extent, od, inner), ("Open Hole Size", extent, 12.25, 12.25),
+                ("Liner Lap", 1000., 9.625, 8.535), ("Drill Pipes", 1000., 5., 4.276)]
     elif job == 'TIE BACK LNR 4 1/2"':
         # New-job synthetic prerequisite: measured 7-inch all-cased host and
         # explicit 4.5-inch receiver at the tie-in, not production host defaults.
         extent = max(extent, target + 300.)
-        rows = [("Previous Casing", extent, 7., 6.276), ("Tie Back", f"0-{target}", 4.5, 4.),
-                ("Previous Liner", f"{target}-{extent}", 4.5, 4.)]
+        rows = [("Previous Casing", extent, 7., 6.276), ("Tie Back Liner Shoe", f"0-{target}", 4.5, 4.),
+                ("Previous Liner Shoe", f"{target}-{extent}", 4.5, 4.)]
     elif job in tieback:
         # Synthetic scalar-certification well: receiver starts at the tie-in.
         # It is NOT equivalent to the old 2500-m Top / two-ID receiving liner.
         od, inner = tieback[job]
         extent = max(extent, target + 300.)
-        rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back", f"0-{target}", od, inner),
-                ("Previous Liner", f"{target}-{extent}", 9.625, 8.535)]
+        rows = [("Previous Casing", extent, 13.375, 12.25), ("Tie Back Liner Shoe", f"0-{target}", od, inner),
+                ("Previous Liner Shoe", f"{target}-{extent}", 9.625, 8.535)]
     else:
         rows = [("Previous Casing", target, 20., 18.)]
     table = pd.DataFrame([{"Description": desc, "MD (m)": str(md), "Size (in)": str(size),
                           "ID (in)": inner, "Joint (m)": 12., "Weight (ppf)": 100.,
                           "Grade": "K-55", "Collapse (psi)": 1000., "Burst (psi)": 2000.}
                          for desc, md, size, inner in rows])
-    target_row = next(iter(hardware_choices(table, {"Liner"}))) if job == 'LNR 4 1/2"' else "__manual__"
+    target_row = next(iter(hardware_choices(table, {"Liner Shoe"}))) if job == 'LNR 4 1/2"' else "__manual__"
     return {"hardware_table": table, "pore_gradient_emw_pcf": 70., "frac_gradient_emw_pcf": 160.,
             "placement_config": {"job_type": job, "target_row": target_row, "manual_depth_m": target,
                                  **({"chart_excess_mode": "ignore"} if job in casing or job in liner or job in tieback else {})}}
@@ -124,7 +124,7 @@ def valid_export_chart_fixture(job, target=3000.0):
     descriptions = target_descriptions(job)
     table.loc[table['Description'].isin(descriptions), 'MD (m)'] = str(target)
     if 'TIE BACK' in job:
-        table.loc[table['Description'] == 'Tie Back', 'MD (m)'] = f'0-{target}'
+        table.loc[table['Description'] == 'Tie Back Liner Shoe', 'MD (m)'] = f'0-{target}'
         fixture['placement_config']['host_row'] = next(token for token, row in
             hardware_choices(table, HOST_DESCRIPTIONS).items() if row['description'] == 'Previous Casing')
     fixture['placement_config']['target_row'] = next(iter(hardware_choices(table, descriptions)))
@@ -277,7 +277,7 @@ class AuditRegressions(unittest.TestCase):
         if job in ('CMT PLUG', 'CMT SQUEEZE'):
             next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
         if "TIE BACK" in job:
-            host = next(w for w in app.selectbox if w.label.startswith("Tie-back host"))
+            host = next(w for w in app.selectbox if w.label.startswith("Tie Back host"))
             host.select_index(1).run()
         self.phase(app, "phase4")
         selected = ["Main"]
@@ -360,10 +360,10 @@ class AuditRegressions(unittest.TestCase):
             with self.subTest(factory=factory.__name__):
                 state = {"job_type": job, **factory(job)}
                 config = state["placement_config"]
-                self.assertIn(config["target_row"], hardware_choices(state["hardware_table"], {"Liner"}))
+                self.assertIn(config["target_row"], hardware_choices(state["hardware_table"], {"Liner Shoe"}))
                 self.assertEqual(config["chart_excess_mode"], "ignore")
                 geometry = chart.resolve_chart_geometry(state)
-                liner = next(row for row in geometry["active_string"] if row["description"] == "Liner")
+                liner = next(row for row in geometry["active_string"] if row["description"] == "Liner Shoe")
                 hole = next(row for row in geometry["enclosing_string"] if row["description"] == "Open Hole Size")
                 self.assertEqual((liner["od_in"], liner["id_in"], hole["od_in"]), (4.5, 4., 6.))
                 config.pop("chart_excess_mode")
@@ -586,7 +586,7 @@ class AuditRegressions(unittest.TestCase):
                 next(w for w in app.number_input if w.label == "Excess CSG-OH %").set_value(25.0)
                 next(w for w in app.number_input if w.label == "Excess CSG-CSG %").set_value(10.5)
                 if "TIE BACK" in job:
-                    next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1)
+                    next(w for w in app.selectbox if w.label.startswith("Tie Back host")).select_index(1)
                 app.radio(key="_app_mode_key").set_value("phase4").run()
                 self.healthy(app)
                 well = app.session_state["well_data"]
@@ -620,7 +620,7 @@ class AuditRegressions(unittest.TestCase):
                     if 'TIE BACK' in job:
                         # This synthetic scalar fixture lands at receiver Top;
                         # move that explicit fixture prerequisite with the tie-in.
-                        receiver = table.index[table['Description'] == 'Previous Liner'][0]
+                        receiver = table.index[table['Description'] == 'Previous Liner Shoe'][0]
                         shoe = table.at[receiver, 'MD (m)'].rsplit('-', 1)[1]
                         edits[str(receiver)] = {'MD (m)': '2850.0-' + shoe}
                     self.hardware_event(app, {'edited_rows': edits})
@@ -693,7 +693,7 @@ class AuditRegressions(unittest.TestCase):
                     self.assertFalse(hardware_draft_pending(app.session_state))
                     if "TIE BACK" in job:
                         # A changed/deleted host must be selected again after review.
-                        next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
+                        next(w for w in app.selectbox if w.label.startswith("Tie Back host")).select_index(1).run()
                     if 'deleted_rows' in action and job not in ('CMT PLUG', 'CMT SQUEEZE'):
                         token = next(iter(hardware_choices(app.session_state['hardware_table'], target_descriptions(job))))
                         next(w for w in app.selectbox if w.label == 'Target shoe / treatment depth source').set_value(token).run()
@@ -929,7 +929,7 @@ class AuditRegressions(unittest.TestCase):
                 if next_job in ('CMT PLUG', 'CMT SQUEEZE'):
                     next(w for w in app.number_input if w.label == "Measured target depth (m MD)").set_value(3000.0).run()
                 if "TIE BACK" in next_job:
-                    next(w for w in app.selectbox if w.label.startswith("Tie-back host")).select_index(1).run()
+                    next(w for w in app.selectbox if w.label.startswith("Tie Back host")).select_index(1).run()
                 self.assertEqual(compute_phase_status(app.session_state)["phase2_3"]["level"], "ok")
                 volume_driven = next_job not in ("CMT PLUG", "CMT SQUEEZE")
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok" if volume_driven else "warning")

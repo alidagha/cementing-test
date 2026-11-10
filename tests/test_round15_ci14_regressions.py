@@ -15,7 +15,9 @@ from engineering_tools import BBL_TO_CUFT
 from test_round15_nested_geometry import reference_casing
 from test_uat_round9e_dynamic_solver import dynamic_state, auxiliary
 from test_uat_round9d_static_solver import zones_for
-from test_uat_round12a5_diesel_word_e2e import projects, sync, context, word, NO_DIESEL_A42
+from test_uat_round12a5_diesel_word_e2e import (
+    projects, sync, context, word, NO_DIESEL_A42,
+    r18_summary_source, r18_historical_report_source)
 
 
 @pytest.mark.parametrize("mode", ["direct", "optimize"])
@@ -83,11 +85,11 @@ def test_scalar_tieback_reference_has_verified_sources_repeatable_json_and_real_
     assert [(r["Description"], r["MD (m)"], float(r["Size (in)"]), r["ID (in)"])
             for r in table.to_dict("records")] == [
         ("Previous Casing", "3300.0", 13.375, 12.25),
-        ("Tie Back", "0-3000.0", 7., 6.276),
-        ("Previous Liner", "3000.0-3300.0", 9.625, 8.535)]
+        ("Tie Back Liner Shoe", "0-3000.0", 7., 6.276),
+        ("Previous Liner Shoe", "3000.0-3300.0", 9.625, 8.535)]
     from placement import hardware_choices
     assert state["placement_config"]["host_row"] == next(iter(hardware_choices(table, {"Previous Casing"})))
-    assert state["placement_config"]["target_row"] == next(iter(hardware_choices(table, {"Tie Back"})))
+    assert state["placement_config"]["target_row"] == next(iter(hardware_choices(table, {"Tie Back Liner Shoe"})))
     assert [(s["top_md"], s["bottom_md"], s["id_in"])
             for s in chart.resolve_chart_geometry(state)["enclosing_string"]] == [(0., 3000., 12.25)]
     bounds = adapter.to_engine_geometry(state)["wellbore"]
@@ -105,9 +107,9 @@ def test_scalar_tieback_reference_has_verified_sources_repeatable_json_and_real_
     with patch.object(report, "fingerprint", observe):
         specs = sync(state)
     expected_summary, expected_procedure = NO_DIESEL_A42[job]
-    assert specs["exec_summary_text"]["signature"] == expected_summary
+    summary = r18_summary_source(specs, captured, expected_summary)
     inputs = next(value for value in captured if isinstance(value, list) and len(value) == 2 and value[0] == 1)
-    legacy = deepcopy(inputs[1])
+    legacy = r18_historical_report_source(inputs, summary[1][5])[1]
     revisions = [i for i, value in enumerate(legacy)
                  if isinstance(value, dict) and "operational_spacers_contract" in value]
     assert len(revisions) == 1 and legacy[revisions[0]] == {"operational_spacers_contract": 2}
@@ -170,7 +172,7 @@ def test_original_two_id_tieback_stays_truthful_and_cannot_reuse_scalar_result(p
     assert phase9.result_is_current(state)
     # Restore the exact original receiving liner, with explicit surface Top
     # retained only to remove the old source's independent Top ambiguity.
-    state["hardware_table"].loc[lambda t: t["Description"] == "Previous Liner", "MD (m)"] = "2500.0-3300.0"
+    state["hardware_table"].loc[lambda t: t["Description"] == "Previous Liner Shoe", "MD (m)"] = "2500.0-3300.0"
     before = pickle.dumps(state)
     assert [(s["top_md"], s["bottom_md"], s["id_in"])
             for s in chart.resolve_chart_geometry(state)["enclosing_string"]] == [

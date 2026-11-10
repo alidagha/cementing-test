@@ -32,16 +32,16 @@ DRY = pd.DataFrame([
 
 def hardware():
     return pd.DataFrame([{'Description': desc, 'MD (m)': str(depth), 'Size (in)': size, 'ID (in)': inner}
-                         for desc, depth, size, inner in [('Casing', 3030, '9 5/8', 8.535), ('Liner', 3000, '7', 6.276),
-                            ('Open Hole Size', 3200, '12 1/4', 12.25), ('Tie Back', 2838, '7', 6.276),
+                         for desc, depth, size, inner in [('Casing', 3030, '9 5/8', 8.535), ('Liner Shoe', 3000, '7', 6.276),
+                            ('Open Hole Size', 3200, '12 1/4', 12.25), ('Tie Back Liner Shoe', 2838, '7', 6.276),
                             ('Previous Casing', 1500, '13 3/8', 12.25), ('Drill Pipes', 1000, '5', 4.276),
-                            ('Liner Hanger', 1000, '9 5/8', 8.535), ('Liner', '3000-3300', '7', 6.276),
-                            ('Tie Back', '2838-3300', '7', 6.276)]])
+                            ('Liner Lap', 1000, '9 5/8', 8.535), ('Liner Shoe', '3000-3300', '7', 6.276),
+                            ('Tie Back Liner Shoe', '2838-3300', '7', 6.276)]])
 
 
 def tokens():
     selected = {}
-    for token, row in hardware_choices(hardware(), {'Casing', 'Liner', 'Open Hole Size', 'Tie Back'}).items():
+    for token, row in hardware_choices(hardware(), {'Casing', 'Liner Shoe', 'Open Hole Size', 'Tie Back Liner Shoe'}).items():
         selected.setdefault(row['description'], token)
     return selected
 
@@ -55,19 +55,19 @@ def summary_hardware(job):
         table = table.loc[table['Description'].isin(('Casing', 'Previous Casing', 'Open Hole Size'))].copy()
         size, inner = ('5', 4.276) if job == 'TIE BACK LNR 5"' else ('7', 6.276)
         return pd.concat([table, pd.DataFrame([
-            {'Description': 'Tie Back', 'MD (m)': '0-3300', 'Size (in)': size, 'ID (in)': inner},
-            {'Description': 'Previous Liner', 'MD (m)': '3000-3300', 'Size (in)': '7.625', 'ID (in)': 7.25}
+            {'Description': 'Tie Back Liner Shoe', 'MD (m)': '0-3300', 'Size (in)': size, 'ID (in)': inner},
+            {'Description': 'Previous Liner Shoe', 'MD (m)': '3000-3300', 'Size (in)': '7.625', 'ID (in)': 7.25}
         ])], ignore_index=True)
     if job == 'LNR 7"':
-        table = table.loc[table['Description'] != 'Tie Back'].copy()
-        table.loc[table['Description'] == 'Liner Hanger', ['Size (in)', 'ID (in)']] = ['7', 6.276]
+        table = table.loc[table['Description'] != 'Tie Back Liner Shoe'].copy()
+        table.loc[table['Description'] == 'Liner Lap', ['Size (in)', 'ID (in)']] = ['7', 6.276]
         return table
     if job == 'LNR 5"':
-        table = table.loc[~table['Description'].isin(('Tie Back', 'Liner', 'Liner Hanger'))].copy()
+        table = table.loc[~table['Description'].isin(('Tie Back Liner Shoe', 'Liner Shoe', 'Liner Lap'))].copy()
         return pd.concat([table, pd.DataFrame([
-            {'Description': 'Previous Liner', 'MD (m)': '1000-2800', 'Size (in)': '7', 'ID (in)': 6.276},
-            {'Description': 'Liner', 'MD (m)': '1000-3300', 'Size (in)': '5', 'ID (in)': 4.276},
-            {'Description': 'Liner Hanger', 'MD (m)': '1000', 'Size (in)': '5', 'ID (in)': 4.276}
+            {'Description': 'Previous Liner Shoe', 'MD (m)': '1000-2800', 'Size (in)': '7', 'ID (in)': 6.276},
+            {'Description': 'Liner Shoe', 'MD (m)': '1000-3300', 'Size (in)': '5', 'ID (in)': 4.276},
+            {'Description': 'Liner Lap', 'MD (m)': '1000', 'Size (in)': '5', 'ID (in)': 4.276}
         ])], ignore_index=True)
     if job.startswith(('CSG ', 'LNR ')):
         return audit.chart_fixture(job, target=3030.)['hardware_table']
@@ -201,14 +201,14 @@ class ExecutiveSummaryReferences(unittest.TestCase):
         job = 'LNR 7"'
         cfg = config(job, {'Main': {'volume_basis': 'excess', 'liner_lap_m': 70.,
                                     'liner_lap_host_row': tokens()['Casing']}},
-                     placement_context_rows=[tokens()['Liner'], tokens()['Open Hole Size']])
+                     placement_context_rows=[tokens()['Liner Shoe'], tokens()['Open Hole Size']])
         text = generate(job, ('Main',), cfg)
         self.assertIn('inside 7" Liner and 12 1/4" Open Hole', text)
         self.assertIn('and 70.0 m liner lap inside 9 5/8" Casing', text)
 
     def test_liner_client_request_wet_stands_with_and_without_host(self):
         # The 7-inch wet-stand host is installed history, not the active 5-inch liner.
-        host_token = next(iter(hardware_choices(summary_hardware('LNR 5"'), {'Previous Liner'})))
+        host_token = next(iter(hardware_choices(summary_hardware('LNR 5"'), {'Previous Liner Shoe'})))
         for host in ('', host_token):
             with self.subTest(host=host):
                 cfg = config('LNR 5"', {'Main': {'volume_basis': 'client_request', 'wet_stands': 10., 'wet_inside_host_row': host}})
@@ -218,7 +218,7 @@ class ExecutiveSummaryReferences(unittest.TestCase):
 
     def test_plug_one_and_multiple_contexts(self):
         for contexts, expected in (([tokens()['Open Hole Size']], 'inside 12 1/4" Open Hole'),
-                                   ([tokens()['Liner'], tokens()['Casing']], 'inside 7" Liner and 9 5/8" Casing')):
+                                   ([tokens()['Liner Shoe'], tokens()['Casing']], 'inside 7" Liner and 9 5/8" Casing')):
             with self.subTest(contexts=contexts):
                 text = generate('CMT PLUG', ('Main',), config('CMT PLUG', placement_context_rows=contexts))
                 self.assertIn(expected, text)
@@ -226,8 +226,8 @@ class ExecutiveSummaryReferences(unittest.TestCase):
 
     def test_squeeze_reference_scopes_and_volume_modes(self):
         for scope, token, basis, opening in (
-            ('Liner', tokens()['Liner'], 'direct', '7" Liner will be squeeze cemented'),
-            ('Liner Lap', tokens()['Liner'], 'client_request', '7" Liner Lap Squeeze will be cemented'),
+            ('Liner', tokens()['Liner Shoe'], 'direct', '7" Liner will be squeeze cemented'),
+            ('Liner Lap', tokens()['Liner Shoe'], 'client_request', '7" Liner Lap Squeeze will be cemented'),
             ('Casing Region', tokens()['Casing'], 'client_request', '9 5/8" Casing Region will be squeeze cemented')):
             with self.subTest(scope=scope):
                 cfg = config('CMT SQUEEZE', {'Main': {'volume_basis': basis}}, squeeze_scope=scope, squeeze_context_row=token)
@@ -255,15 +255,15 @@ class ExecutiveSummaryReferences(unittest.TestCase):
         self.assertIn('with 7 stands wet inside 9 5/8" Casing', text)
 
     def test_stale_tokens_omit_optional_labels(self):
-        cfg = config('CMT PLUG', placement_context_rows=[tokens()['Liner']])
+        cfg = config('CMT PLUG', placement_context_rows=[tokens()['Liner Shoe']])
         changed = hardware(); changed.loc[1, 'Size (in)'] = '5'
         text = generate('CMT PLUG', ('Main',), cfg, table=changed)
         self.assertNotIn('7" Liner', text)
         self.assertIn('inside casing / open hole', text)
-        self.assertIsNone(hardware_context_label(changed, tokens()['Liner']))
+        self.assertIsNone(hardware_context_label(changed, tokens()['Liner Shoe']))
 
     def test_selected_target_metadata_uses_shared_tokens(self):
-        row = target_row_metadata(hardware(), 'LNR 7"', {'job_type': 'LNR 7"', 'target_row': tokens()['Liner']})
+        row = target_row_metadata(hardware(), 'LNR 7"', {'job_type': 'LNR 7"', 'target_row': tokens()['Liner Shoe']})
         self.assertEqual((row['size'], row['depth']), ('7', 3000.))
 
     def test_job_provenance_and_inactive_drafts_do_not_change_generated_text(self):

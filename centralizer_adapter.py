@@ -212,7 +212,7 @@ def to_engine_geometry(state):
         survey = {output: frame[column].tolist() for output, column in
                   zip(("md", "inc_deg", "azi_deg"), well_profile.SURVEY_COLUMNS)}
 
-    description = {"casing": "Casing", "liner": "Liner", "tieback": "Tie Back"}[kind]
+    description = {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[kind]
     active = [s for s in geometry["active_string"] if s["description"] == description]
     rows = [r for r in state["hardware_table"].to_dict("records") if r["Description"] == description]
     # resolve_chart_geometry preserves source row order and clips a prefix at

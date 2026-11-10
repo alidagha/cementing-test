@@ -41,7 +41,7 @@ def _tieback_paths(rows, table, config, resolved):
     """Selected-host annulus plus the certified old-liner continuation; no host inference."""
     tie_in = resolved["shoe_md"]
     strings = installed_geometry.physical_strings(rows, chart_model._segments,
-        {"Previous Casing", "Casing", "Previous Liner", "Liner"})
+        {"Previous Casing", "Casing", "Previous Liner Shoe", "Liner Shoe"})
     receiver = installed_geometry.receiving_liner(strings, tie_in)
     # Hanger-inferred Top is sufficient for drawing, not hydraulic admission.
     if not any(top is not None and top <= tie_in < bottom

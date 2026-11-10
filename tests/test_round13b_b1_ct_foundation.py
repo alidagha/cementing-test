@@ -338,9 +338,21 @@ def test_optional_size_default_zero_never_becomes_measured_geometry(size):
 
 
 def r17_original_placement_source(source):
-    """Reverse only the Owner-approved report-metadata validator delta."""
+    """Reverse exact approved report-metadata and R18 Hardware-name deltas."""
     text = source.decode()
     for current, original in (
+        ('HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner Shoe", "Liner Shoe"}',
+         'HOST_DESCRIPTIONS = {"Previous Casing", "Casing", "Previous Liner", "Liner"}'),
+        ('        return {"Tie Back Liner Shoe"}',
+         '        return {"Tie Back"}'),
+        ('        return {"Liner Shoe"}',
+         '        return {"Liner"}'),
+        ('        return {"Casing", "Liner Shoe", "Tie Back Liner Shoe", "Open Hole Size"}',
+         '        return {"Casing", "Liner", "Tie Back", "Open Hole Size"}'),
+        ('    return hardware_choices(table, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back Liner Shoe"}).get(token)',
+         '    return hardware_choices(table, HOST_DESCRIPTIONS | {"Open Hole Size", "Tie Back"}).get(token)'),
+        ('            "Liner" if row["description"] in ("Previous Liner Shoe", "Liner Shoe") else "Tie Back")',
+         '            "Liner" if "Liner" in row["description"] else "Tie Back")'),
         ('"squeeze_context_row", "tie_back_origin", "per_slurry", "volume_basis"}',
          '"squeeze_context_row", "tie_back_origin", "per_slurry"}'),
         ('for field, options in (("volume_basis", ("client_request", "excess")), ("squeeze_scope", SQUEEZE_SCOPES), ("tie_back_origin", TIE_BACK_ORIGINS)):',
@@ -402,7 +414,8 @@ def test_r17_historical_placement_adapter_is_byte_exact_and_fail_closed():
 
 
 @pytest.mark.parametrize("change", ["depth_parser", "legacy_top", "ct_guard", "ct_handler", "import_side_effect", "formatting",
-                                  "report_field", "report_options", "report_validation"])
+                                  "report_field", "report_options", "report_validation",
+                                  "r18_role", "r18_dispatch", "placement_bound", "geometry_delegate"])
 def test_legacy_placement_integrity_rejects_changes_outside_ct_allowlist(change):
     import subprocess
     from pathlib import Path
@@ -419,6 +432,10 @@ def test_legacy_placement_integrity_rejects_changes_outside_ct_allowlist(change)
         "report_field": (b'"per_slurry", "volume_basis"}', b'"per_slurry"}'),
         "report_options": (b'("volume_basis", ("client_request", "excess"))', b'("volume_basis", ("client_request", "auto"))'),
         "report_validation": (b'config[field] not in options', b'False'),
+        "r18_role": (b'return {"Tie Back Liner Shoe"}', b'return {"Liner Shoe"}'),
+        "r18_dispatch": (b'row["description"] in ("Previous Liner Shoe", "Liner Shoe")', b'"Liner" in row["description"]'),
+        "placement_bound": (b'depth >= target', b'depth > target'),
+        "geometry_delegate": (b'rows = resolve_cement_placement(state)', b'rows = []'),
     }
     old, new = mutations[change]
     assert old in source

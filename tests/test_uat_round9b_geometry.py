@@ -27,14 +27,14 @@ def state_for(kind="casing"):
                 ("Previous Casing", "500", "13 3/8", 12.25),
                 ("Open Hole Size", "1000", "12.25", 12.25))
     elif kind == "liner":
-        rows = (("Drill Pipes", "400", "5", 4.), ("Liner", "1000", "7", 6.),
-                ("Liner Hanger", "400", "7", 6.),
+        rows = (("Drill Pipes", "400", "5", 4.), ("Liner Shoe", "1000", "7", 6.),
+                ("Liner Lap", "400", "7", 6.),
                 ("Previous Casing", "500", "9 5/8", 8.535),
                 ("Open Hole Size", "1000", "8.5", 8.5))
     else:
-        rows = (("Tie Back", "1000", "7", 6.),
+        rows = (("Tie Back Liner Shoe", "1000", "7", 6.),
                 ("Previous Casing", "1100", "9 5/8", 8.535),
-                ("Previous Liner", "1000-1200", "7", 6.),
+                ("Previous Liner Shoe", "1000-1200", "7", 6.),
                 ("Open Hole Size", "1100-1200", "8.5", 8.5))
     state = {"job_type": job, "hardware_table": hardware(*rows),
              "well_geometry": {"version": 1, "type": "Vertical", "td_m": 1200.},
@@ -253,10 +253,10 @@ def test_tieback_uses_exact_selected_host_and_continuity_at_shoe():
 
 def test_tieback_host_scalar_variation_blocks_and_identical_segments_pass():
     state = state_for("tieback")
-    state["hardware_table"] = hardware(("Tie Back", "1000", "7", 6.),
+    state["hardware_table"] = hardware(("Tie Back Liner Shoe", "1000", "7", 6.),
         ("Previous Casing", "500", "9 5/8", 8.535),
         ("Previous Casing", "500-1100", "9.625", 8.535),
-        ("Previous Liner", "1000-1200", "7", 6.),
+        ("Previous Liner Shoe", "1000-1200", "7", 6.),
         ("Open Hole Size", "1100-1200", "8.5", 8.5))
     state["placement_config"]["host_row"] = next(iter(hardware_choices(
         state["hardware_table"], {"Previous Casing"})))

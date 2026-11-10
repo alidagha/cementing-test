@@ -43,11 +43,11 @@ def row(description, md=None, size=None, inside=None):
 def state(kind='complete', bottom=3527., top=3470.):
     s = stage_state(20,2)
     history = [row('Previous Casing','3000','13 3/8',12.415),
-               row('Previous Liner','2500-3800','7',6.276)]
+               row('Previous Liner Shoe','2500-3800','7',6.276)]
     if kind == 'casing': history = [row('Previous Casing','3800','7',6.276)]
     if kind == 'hole': history = [row('Previous Casing','2500','13 3/8',12.415),
                                  row('Open Hole Size','2500-4000','12 1/4',12.25)]
-    if kind == 'partial': history = [row('Previous Casing'),row('Previous Liner',size='7'),row('Previous Liner',size='5')]
+    if kind == 'partial': history = [row('Previous Casing'),row('Previous Liner Shoe',size='7'),row('Previous Liner Shoe',size='5')]
     if kind == 'none': history = []
     s.update(well_name='B3 engineering UAT',hardware_table=pd.DataFrame(history+[ct_hardware(str(bottom)).iloc[0].to_dict()],columns=HARDWARE_COLUMNS))
     s['cement_params']['Main'].update(top_depth=top,top_job_type=db.CT_JOB,top_mode='Depth (m MD)')
@@ -131,7 +131,7 @@ def test_missing_lap_is_advisory_but_supplied_lap_conflict_is_invalid():
     s=state();s['hardware_table'].loc[1,'MD (m)']='3800'
     assert schematic.prepare_schematic(s)['message']==PLACEHOLDER
     s['hardware_table'].loc[1,'MD (m)']='2500-3800'
-    s['hardware_table']=pd.DataFrame([*s['hardware_table'].to_dict('records'),row('Previous Liner Hanger','2600','7')],columns=HARDWARE_COLUMNS)
+    s['hardware_table']=pd.DataFrame([*s['hardware_table'].to_dict('records'),row('Previous Liner Lap','2600','7')],columns=HARDWARE_COLUMNS)
     with pytest.raises(ValueError,match='contradict|match'):schematic.prepare_schematic(s)
 
 
@@ -230,12 +230,17 @@ def test_direct_ct_word_gate_is_unchanged(prepared):
     assert '_compiled_doc_bytes' not in s
 
 
-def test_unknown_hanger_size_cannot_assign_a_measured_liner_relationship():
+@pytest.mark.parametrize('description', ['Liner Lap', 'Previous Liner Lap'])
+def test_unknown_hanger_size_cannot_assign_a_measured_liner_relationship(description):
     s=state()
-    s['hardware_table']=pd.DataFrame([*s['hardware_table'].to_dict('records'),row('Previous Liner Hanger','2500')],columns=HARDWARE_COLUMNS)
+    s['hardware_table']=pd.DataFrame([*s['hardware_table'].to_dict('records'),row(description,'2500')],columns=HARDWARE_COLUMNS)
     result=schematic.prepare_schematic(s)
     assert not result['available'] and result['message']==PLACEHOLDER
-    assert any('Hanger' in x and 'Size (in)' in x for x in result['missing_geometry'])
+    assert any(description in x and 'Size (in)' in x for x in result['missing_geometry'])
+    s['hardware_table'].at[len(s['hardware_table'])-1, 'Size (in)'] = '7'
+    s['hardware_table'].at[len(s['hardware_table'])-1, 'MD (m)'] = '2400-2500'
+    with pytest.raises(ValueError, match='Lap MD must be one endpoint'):
+        schematic.prepare_schematic(s)
 
 
 def test_known_later_section_clearance_is_validated_before_missing_fallback():
@@ -243,7 +248,7 @@ def test_known_later_section_clearance_is_validated_before_missing_fallback():
     s['hardware_table']=pd.DataFrame([
         row('Previous Casing','2000','13 3/8',12.415),
         row('Previous Casing','3000','13 3/8',6.5),
-        row('Previous Liner','2500-3800','7',6.276),
+        row('Previous Liner Shoe','2500-3800','7',6.276),
         row('Previous Casing'),*s['hardware_table'].tail(1).to_dict('records')],columns=HARDWARE_COLUMNS)
     with pytest.raises(ValueError,match='fit|ID'):
         schematic.prepare_schematic(s)
@@ -251,10 +256,25 @@ def test_known_later_section_clearance_is_validated_before_missing_fallback():
 
 @pytest.fixture(scope='module')
 def approved_adapter(tmp_path_factory):
-    """Execute the exact approved parent adapter against identical legacy inputs."""
+    """Keep the fixed parent logic; project only its Hardware-name literals."""
     import sys
     path=tmp_path_factory.mktemp('approved-adapter')/'adapter.py'
-    path.write_bytes(subprocess.check_output(['git','show','184cc888552f54df6a1d02fd0bdca16b77e358a4:well_schematic_adapter.py']))
+    original=subprocess.check_output(['git','show','184cc888552f54df6a1d02fd0bdca16b77e358a4:well_schematic_adapter.py'])
+    source=original
+    names=[(b'"Previous Liner Hanger"',b'"Previous Liner Lap"',2),
+           (b'"Previous Liner"',b'"Previous Liner Shoe"',6),
+           (b'"Liner"',b'"Liner Shoe"',5),
+           (b'"Liner Hanger"',b'"Liner Lap"',2),
+           (b'"Tie Back"',b'"Tie Back Liner Shoe"',3)]
+    for old,new,count in names:
+        assert source.count(old)==count and source.count(new)==0
+        source=source.replace(old,new)
+    recovered=source
+    for old,new,count in reversed(names):
+        assert recovered.count(new)==count
+        recovered=recovered.replace(new,old)
+    assert recovered==original  # every non-name source byte stays archived
+    path.write_bytes(source)
     spec=importlib.util.spec_from_file_location('round13b_b3_parent_adapter',path)
     module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
     return module
