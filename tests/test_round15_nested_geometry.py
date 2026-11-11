@@ -1931,7 +1931,7 @@ def test_cfw128_adapter_remains_unimported_by_production_and_research_free():
         modules += [a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
         if path.name == 'cfw128_adapter.py':
             assert set(modules) <= {'__future__','collections.abc','copy','dataclasses','math','re','typing','pandas','cement_chart_model','installed_geometry','placement','project_state','well_profile'}
-        else: assert 'cfw128_adapter' not in modules
+        elif path.name != 'cfw128_er03_contract.py': assert 'cfw128_adapter' not in modules
 
 
 @pytest.mark.parametrize('fault', ['target_type','host_type','description_type','well_record','query_bool','query_nan','query_outside'])
@@ -2912,3 +2912,247 @@ def test_cfw128_b2b_every_other_root_rejects_import_mutation(filename,module,bug
         if module=='cfw128_hb_intake':
             test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_reviewed_report_base,monkeypatch)
         else:test_cfw128_b2b_bridge_no_runtime_callers_or_forbidden_imports()
+
+
+C1_APP_SOURCE_SHA = 'b8293cc8c643916bcad647ca523fb3c747be4de4'
+
+
+def cfw128_c1_uat19_state():
+    # Only these eight descriptions/MD/OD/ID values are owner field evidence.
+    rows=[('Previous Casing','224','20',18.730),('Previous Casing','2547','13 3/8',12.215),
+          ('Previous Casing','4033','9 5/8',8.535),('Previous Liner Lap','3885','7',6.184),
+          ('Previous Liner Shoe','4860','7',6.184),('Tie Back Liner Lap','2800','7',6.004),
+          ('Tie Back Liner Shoe','3885','7',6.004),('Drill Pipes','2800','5',4.276)]
+    table=pd.DataFrame(rows,columns=['Description','MD (m)','Size (in)','ID (in)'])
+    # Synthetic scaffolding only: job taxonomy, vertical trajectory with TD=5000,
+    # and report/chart excess mode. No pressure, fluids, rates or lab facts.
+    job='TIE BACK LNR 7"'
+    state={'job_type':job,'hardware_table':table,'well_geometry':{'version':1,'type':'Vertical','td_m':5000.},
+        'placement_config':{'job_type':job,'chart_excess_mode':'ignore'}}
+    state['placement_config']['target_row']=next(iter(hardware_choices(table,target_descriptions(job))))
+    state['placement_config']['host_row']=next(iter(hardware_choices(table.iloc[[2]],{'Previous Casing'})))
+    return state
+
+
+
+def test_cfw128_c1_uat19_field_geometry_partial_return_preview(tmp_path):
+    import json
+    from dataclasses import asdict
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state=cfw128_c1_uat19_state();frame=state['hardware_table'];before=pickle.dumps(state)
+    snapshot=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    assert snapshot.status=='GEOMETRY_REPRESENTABLE'
+    result=prepare_er03_preview(snapshot,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status=='HOLD_ENGINE_CONTRACT'
+    assert [(s.top_md,s.bottom_md,s.od_in,s.id_in,s.source_rows) for s in result.injection_sections]==[
+        (0.,2800.,5.,4.276,(7,)),(2800.,3885.,7.,6.004,(6,))]
+    assert (result.string_top_md,result.shoe_md)==(2800.,3885.)
+    assert (result.return_top_md,result.return_bottom_md,result.return_travel_md)==(2800.,3885.,(3885.,2800.))
+    assert [(s.top_md,s.bottom_md,s.wall.id_in,s.running.od_in,s.wall.source_rows,s.running.source_rows) for s in result.return_sections]==[(2800.,3885.,8.535,7.,(2,),(6,))]
+    assert result.selected_host.source_rows==(2,) and result.selected_host.sections[0].id_in==8.535
+    assert (result.receiver.top_md,result.receiver.shoe_md,result.receiver.source_rows)==(3885.,4860.,(4,))
+    assert result.target_token==state['placement_config']['target_row'] and result.host_token==state['placement_config']['host_row']
+    assert result.installed_strings==snapshot.installed_strings and result.enclosing_sections==snapshot.enclosing_sections
+    assert all(s.bottom_md<=3885. for s in result.injection_sections)
+    assert all(2800.<=s.top_md<s.bottom_md<=3885. for s in result.return_sections)
+    assert 'Open Hole Size' not in frame.Description.values
+    assert {'TIEBACK_RETURN_TERMINATES_AT_TOP','ER03_SCALAR_PATH_MISMATCH',
+        'UAT19_TIEBACK_PARTIAL_RETURN_ENGINE_NOT_VALIDATED','TIEBACK_OUTLET_PRESSURE_BC_UNDEFINED'}<=set(result.reason_codes)
+    assert not any(k in state for k in ('fluid_data','fluids_config','lab_qc_params','pump_rate','outlet_pressure'))
+    assert frame is state['hardware_table'] and pickle.dumps(state)==before
+    (tmp_path/'uat19-field-topology.json').write_text(json.dumps(asdict(result),indent=2))
+
+
+@pytest.mark.parametrize('fault',['typo_lap','missing_lap','duplicate_lap','missing_shoe','duplicate_shoe',
+    'missing_top','duplicate_top','stale_host','clearance','fake_hole','missing_dp','gap','overlap','tb_top_conflict'])
+def test_cfw128_c1_uat19_invalid_hardware_never_becomes_topology(fault):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state=cfw128_c1_uat19_state();t=state['hardware_table']
+    if fault=='typo_lap':t.at[3,'MD (m)']='3913'  # O19-01 user typo, NOT a product bug.
+    elif fault in ('missing_lap','missing_shoe','missing_top','missing_dp'):
+        state['hardware_table']=t.drop(index={'missing_lap':3,'missing_shoe':4,'missing_top':5,'missing_dp':7}[fault]).reset_index(drop=True)
+    elif fault in ('duplicate_lap','duplicate_shoe','duplicate_top'):
+        state['hardware_table']=pd.concat([t,t.iloc[[{'duplicate_lap':3,'duplicate_shoe':4,'duplicate_top':5}[fault]]]],ignore_index=True)
+    elif fault=='stale_host':state['placement_config']['host_row']='f'*64
+    elif fault=='clearance':t.at[2,'ID (in)']=7.
+    elif fault=='fake_hole':t.at[2,'Description']='Open Hole Size'
+    elif fault=='gap':t.at[7,'MD (m)']='1-2800'
+    elif fault=='overlap':
+        t.at[7,'MD (m)']='0-1700';extra=t.iloc[[7]].copy();extra['MD (m)']='1600-2800'
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    else:t.at[6,'MD (m)']='2801-3885'
+    before=pickle.dumps(state);snap=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    assert snap.status=='INVALID_INPUT',snap.detail
+    result=prepare_er03_preview(snap,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status=='SOURCE_INVALID' and result.upstream_reason_codes==snap.reason_codes
+    assert result.injection_sections==result.return_sections==() and pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c1_all_jobs_preserve_real_paths_and_host_specific_return(job):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state=bug01_geometry_case(job);before=pickle.dumps(state)
+    source=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    result=prepare_er03_preview(source,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status in ('STRUCTURAL_PREVIEW_ONLY','HOLD_ENGINE_CONTRACT'),result.reason_codes
+    assert result.upstream_status==source.status and result.upstream_reason_codes==source.reason_codes
+    assert set(source.reason_codes)<=set(result.reason_codes)
+    assert result.injection_sections==source.active_sections and result.enclosing_sections==source.enclosing_sections
+    assert result.return_top_md==(source.string_top_md if source.kind=='tieback' else 0.)
+    assert result.return_bottom_md==source.shoe_md
+    assert result.return_sections[0].top_md==result.return_top_md and result.return_sections[-1].bottom_md==source.shoe_md
+    if job in ('TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'):
+        assert result.return_sections[0].wall.id_in==6.094  # Actual synthetic installed 7-in liner, not 8.535 default.
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('case',['a_zero','taper','piecewise_active','dp_taper','body_taper'])
+def test_cfw128_c1_unrepresentable_app_geometry_keeps_holds_and_exact_sections(case):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state=synthetic_tieback(top=0.) if case=='a_zero' else r18c_tapered_state(100.) if case in ('taper','piecewise_active') else synthetic_tieback(top=400.)
+    if case=='piecewise_active':
+        state['hardware_table'].loc[state['hardware_table'].Description=='Tie Back Liner Lap','MD (m)']='0'
+        state['hardware_table']=state['hardware_table'][state['hardware_table'].Description!='Drill Pipes'].reset_index(drop=True)
+        state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
+    elif case=='dp_taper':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    elif case=='body_taper':
+        t=state['hardware_table'];t.at[0,'MD (m)']='400-500';extra=t.iloc[[0]].copy()
+        extra['MD (m)']='500-700';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t.iloc[:1],extra,t.iloc[1:]],ignore_index=True)
+        state['placement_config']['target_row']=next(k for k,v in hardware_choices(state['hardware_table'],target_descriptions(state['job_type'])).items() if v['depth']==700.)
+    source=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    assert source.status=='ENGINE_INTERFACE_NOT_REPRESENTABLE',source.detail
+    result=prepare_er03_preview(source,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status=='HOLD_ENGINE_CONTRACT',result.reason_codes
+    assert set(source.reason_codes)<=set(result.reason_codes)
+    assert result.installed_strings==source.installed_strings and result.injection_sections==source.active_sections
+    assert result.return_top_md==source.string_top_md and result.return_travel_md==(source.shoe_md,source.string_top_md)
+    if case=='a_zero':
+        assert 'POINT_A_ZERO' in result.reason_codes and not any(s.description=='Drill Pipes' for s in result.injection_sections)
+    if case=='taper':
+        previous=next(s for s in result.installed_strings if s.description=='Previous Tie Back Liner Shoe')
+        assert len(previous.sections)==2 and previous.sections[0].od_in!=previous.sections[1].od_in
+
+
+def test_cfw128_c1_directional_interior_values_are_app_owned_not_linear_er03():
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state=synthetic_tieback();state['well_geometry']={'type':'Directional','survey':pd.DataFrame(
+        [[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    source=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA,query_md=(50.,))
+    result=prepare_er03_preview(source,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status=='HOLD_ENGINE_CONTRACT' and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' in result.reason_codes
+    assert result.survey==source.survey and result.trajectory==source.trajectory
+    points={p.md:p.tvd for p in result.trajectory}
+    assert points[50.]==pytest.approx(47.7464829275686,abs=1e-12)
+    linear=.5*(points[0.]+points[100.]);assert linear==pytest.approx(41.3496671566,abs=1e-8)
+    assert points[50.]!=pytest.approx(linear,abs=1.)
+
+
+@pytest.mark.parametrize('fault',['gap','overlap','order','missing','diameter','nan','source_rows','body_role',
+    'selected_host','receiver','target','top','outer_provenance','fake_hole','trajectory','job','source_id'])
+def test_cfw128_c1_snapshot_mutations_reject_without_engine(fault):
+    from dataclasses import replace
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    source=snapshot_geometry(cfw128_c1_uat19_state(),app_source_sha=C1_APP_SOURCE_SHA)
+    a=source.active_sections;outer=source.enclosing_sections
+    if fault=='gap':source=replace(source,active_sections=(a[0],replace(a[1],top_md=2801.)))
+    elif fault=='overlap':source=replace(source,active_sections=(a[0],replace(a[1],top_md=2799.)))
+    elif fault=='order':source=replace(source,active_sections=tuple(reversed(a)))
+    elif fault=='missing':source=replace(source,active_sections=a[1:])
+    elif fault=='diameter':source=replace(source,active_sections=(a[0],replace(a[1],od_in=9.)))
+    elif fault=='nan':source=replace(source,active_sections=(replace(a[0],id_in=float('nan')),a[1]))
+    elif fault=='source_rows':source=replace(source,active_sections=(replace(a[0],source_rows=(-1,)),a[1]))
+    elif fault=='body_role':source=replace(source,active_sections=(a[0],replace(a[1],description='Liner Shoe')))
+    elif fault=='selected_host':source=replace(source,selected_host=replace(source.selected_host,shoe_md=3000.))
+    elif fault=='receiver':source=replace(source,receiver=replace(source.receiver,top_md=3913.))
+    elif fault=='target':source=replace(source,target_token='stale-token')
+    elif fault=='top':source=replace(source,string_top_md=2700.)
+    elif fault=='outer_provenance':source=replace(source,enclosing_sections=(replace(outer[0],source_rows=(999,)),))
+    elif fault=='fake_hole':source=replace(source,enclosing_sections=(replace(outer[0],description='Open Hole Size',od_in=8.535,id_in=8.535,source_rows=(99,)),))
+    elif fault=='trajectory':source=replace(source,trajectory=source.trajectory[1:])
+    elif fault=='job':source=replace(source,job='LNR 7"')
+    else:source=replace(source,source_identity='invalid')
+    before=pickle.dumps(source);result=prepare_er03_preview(source,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result.status=='INVALID_SNAPSHOT',result.reason_codes
+    assert result.injection_sections==result.return_sections==() and pickle.dumps(source)==before
+
+
+def test_cfw128_c1_identity_clone_boundary_and_stale_capture_contract():
+    from dataclasses import replace,asdict,FrozenInstanceError,fields,is_dataclass
+    import copy
+    from cfw128_adapter import snapshot_geometry
+    import cfw128_er03_contract as c1
+    state=cfw128_c1_uat19_state();snapshot=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    result=c1.prepare_er03_preview(snapshot,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert result==c1.prepare_er03_preview(snapshot,expected_app_source_sha=C1_APP_SOURCE_SHA)
+    assert copy.copy(result)==copy.deepcopy(result)==pickle.loads(pickle.dumps(result))==result
+    assert all(a is not b for a,b in zip(snapshot.active_sections,result.injection_sections))
+    def frozen(v):
+        if is_dataclass(v):
+            for f in fields(v):frozen(getattr(v,f.name))
+        elif type(v) is tuple:
+            for x in v:frozen(x)
+        else:assert v is None or type(v) in (str,int,float,bool)
+    frozen(result)
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert asdict(result)[flag] is False
+        with pytest.raises(FrozenInstanceError):setattr(result,flag,True)
+        with pytest.raises(ValueError):replace(result,**{flag:True})
+        data=asdict(result);data[flag]=True
+        with pytest.raises(TypeError):type(result)(**data)
+    with pytest.raises(ValueError):replace(result,return_top_md=0.)
+    with pytest.raises(ValueError):replace(result,return_bottom_md=4860.)
+    with pytest.raises(TypeError):c1.prepare_er03_preview({'GeometrySpec':'fake'},expected_app_source_sha=C1_APP_SOURCE_SHA)
+    with pytest.raises(ValueError):c1.prepare_er03_preview(snapshot,expected_app_source_sha='f'*40)
+    for modified in (replace(snapshot,source_identity='a'*64),replace(snapshot,request_identity='b'*64),
+                     replace(snapshot,target_token='c'*64)):
+        changed=c1.prepare_er03_preview(modified,expected_app_source_sha=C1_APP_SOURCE_SHA)
+        assert changed.projection_identity!=result.projection_identity and changed.ready_to_run is False
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert c1.prepare_er03_preview(snapshot,expected_app_source_sha=C1_APP_SOURCE_SHA)==result
+    fresh=snapshot_geometry(state,app_source_sha=C1_APP_SOURCE_SHA)
+    assert c1.prepare_er03_preview(fresh,expected_app_source_sha=C1_APP_SOURCE_SHA).projection_identity!=result.projection_identity
+    invalid=snapshot_geometry({},app_source_sha=C1_APP_SOURCE_SHA)
+    assert c1.prepare_er03_preview(invalid,expected_app_source_sha=C1_APP_SOURCE_SHA).status=='SOURCE_INVALID'
+    na=snapshot_geometry({'job_type':'CMT PLUG'},app_source_sha=C1_APP_SOURCE_SHA)
+    assert c1.prepare_er03_preview(na,expected_app_source_sha=C1_APP_SOURCE_SHA).status=='NOT_APPLICABLE'
+
+
+def test_cfw128_c1_import_call_isolation_and_canonical_metadata():
+    import ast,subprocess,sys
+    from pathlib import Path
+    import cfw128_er03_contract
+    root=Path(__file__).resolve().parents[1]
+    forbidden={'scipy','pumping_simulation','fluids_charts_module_v1_4_2','cement_charts_engine','cement_chart_report',
+        'centralizer_optimizer_engine','centralizer_adapter','cfw128_hb03t_frozen'}
+    for path in root.glob('*.py'):
+        tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
+        imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        if path.name=='cfw128_er03_contract.py':assert not imports & forbidden
+        else:assert 'cfw128_er03_contract' not in imports
+    script='import sys,cfw128_er03_contract; assert not '+repr(forbidden)+' & set(sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
+
+
+_C1_OTHER_ROOTS=sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
+                       if p.name not in ('cfw128_adapter.py','cfw128_er03_contract.py'))
+
+
+@pytest.mark.parametrize('filename',_C1_OTHER_ROOTS)
+@pytest.mark.parametrize('module',['cfw128_adapter','cfw128_er03_contract'])
+def test_cfw128_c1_all_other_roots_reject_import_mutation(filename,module,monkeypatch):
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1];target=root/filename;read=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport '+module+'\n' if p==target else read(p,*a,**k))
+    with pytest.raises(AssertionError):
+        if module=='cfw128_adapter':test_cfw128_adapter_remains_unimported_by_production_and_research_free()
+        else:test_cfw128_c1_import_call_isolation_and_canonical_metadata()
