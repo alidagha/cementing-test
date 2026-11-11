@@ -4939,3 +4939,203 @@ def test_cfw128_c2e5_import_and_no_production_caller_isolation(monkeypatch):
             with pytest.raises(AssertionError):verify()
     forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_c2e3_post_pull_gap','cfw128_c2e4_derived_displacement','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
     subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e5_effective_schedule; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
+
+
+# C2e-6a: post-pull physical-closure diagnostics, no remapping law.
+def cfw128_c2e6a_inputs(state=None,names=('Main','Displacement Fluid')):
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    state,g,d=cfw128_c2e5_inputs(state,names)
+    evidence=cfw128_c2e5_test_composition(state,g,d)
+    gap=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    return state,(g,gap,d,evidence['schedule'],evidence['tracking'],evidence['placement'])
+
+
+def test_cfw128_c2e6a_new_closure_audit_is_not_a_final_toc():
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=cfw128_c2e6a_inputs();r=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_POST_PULL_CLOSURE_AUDIT'
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    assert r.physical_remap_status=='HOLD_POST_PULL_PHYSICAL_REMAP_UNDEFINED'
+    assert r.cement_inventory[0].injection_bbl>0.
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e6a_eight_jobs_captured_compartments_and_physical_holds(job):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=cfw128_c2e6a_inputs(bug01_geometry_case(job),('Main','Lead','Tail','Spacer Behind','Displacement Fluid'))
+    before=pickle.dumps((state,args));r=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    g,b,d,s,t,p=args
+    assert r.preserved_placement_holds==p.reason_codes
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    assert r.terminal_shoe_behavior=='HOLD_25M_TERMINAL_PLACEMENT_BEHAVIOR_UNDEFINED'
+    assert [v.fluid for v in r.cement_inventory]==['Main','Lead','Tail']
+    for v,old in zip(r.cement_inventory,p.stages):
+        assert (v.actually_entered_bbl,v.injection_bbl,v.lower_annulus_bbl,v.upper_pumping_annulus_bbl,v.ideal_returned_bbl)==(old.entered_bbl,old.retained_injection_bbl,old.retained_lower_annulus_bbl,old.retained_upper_annulus_bbl,old.ideal_surface_returned_bbl)
+        assert v.volume_authority=='ENTERED_PHASE_IV' and v.raw_entered_volume==40.
+        assert v.actually_entered_bbl==pytest.approx(v.injection_bbl+v.lower_annulus_bbl+v.upper_pumping_annulus_bbl+v.ideal_returned_bbl,abs=1e-10)
+    assert any(v.fluid=='Spacer Behind' for v in r.noncement_inventory)
+    assert r.nominal_capacity_gap_bbl==b.capacity_gap_bbl
+    if r.kind=='casing':
+        assert r.gap_status=='NOT_APPLICABLE' and r.nominal_capacity_gap_bbl is None and not r.unresolved_decisions
+    else:
+        assert len(r.unresolved_decisions)==4 and r.physical_remap_status=='HOLD_POST_PULL_PHYSICAL_REMAP_UNDEFINED'
+    assert pickle.dumps((state,args))==before
+
+
+def test_cfw128_c2e6a_uat19_injection_cement_is_not_moved_by_post_pull_gap():
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=cfw128_c2e6a_inputs();r=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert (r.active_lap_md,r.active_shoe_md,r.displacement_end_md)==(2800.,3885.,3860.)
+    assert r.derived_displacement_bbl==pytest.approx(284.947218881107,abs=1e-10)
+    assert r.upper_pumping_capacity_bbl==pytest.approx(426.973186160669,abs=1e-10)
+    assert r.upper_post_pull_capacity_bbl==pytest.approx(650.069776414482,abs=1e-10)
+    assert r.nominal_capacity_gap_bbl==pytest.approx(223.096590253813,abs=1e-10)
+    c=r.cement_inventory[0]
+    assert c.injection_bbl==pytest.approx(cfw128_c2e4_manual_bbl(25.,6.004),abs=1e-10)
+    assert c.lower_annulus_bbl>0. and c.upper_pumping_annulus_bbl==c.ideal_returned_bbl==0.
+    assert r.ideal_initial_mud_returned_bbl>0. and not r.surface_cement_return_present
+    assert 'HOLD_CEMENT_REMAINS_IN_INJECTION' in r.preserved_placement_holds
+    assert all(max(a,b)<=3885. for i,a,b,v in r.initial_mud_occupancy)
+
+
+@pytest.mark.parametrize('case',['zero','previous_taper','taper_before','taper_after','lap_cross'])
+def test_cfw128_c2e6a_measured_tapers_zero_lap_and_endpoint(case):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state=synthetic_tieback(top=0. if case=='zero' else 676.) if case in ('zero','lap_cross') else r18c_tapered_state(100.) if case=='previous_taper' else cfw128_c2e5_tapered_state(674. if case=='taper_before' else 676.)
+    state,args=cfw128_c2e6a_inputs(state,('Main','Tail','Displacement Fluid'));r=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.nominal_capacity_gap_bbl==args[1].capacity_gap_bbl
+    assert r.preserved_placement_holds==args[-1].reason_codes
+    assert r.displacement_end_md==r.active_shoe_md-25.
+    if case=='zero':assert r.nominal_capacity_gap_bbl==0. and r.upper_pumping_capacity_bbl==0.
+
+
+@pytest.mark.parametrize('fault',['missing','sha','sibling','gap_hash','gap_volume','derived_endpoint','derived_rows','schedule_hash','schedule_amount','schedule_flag','tracking_hash','occupancy','ledger','placement_hash','placement_partition','geometry_flag','nan','negative','path_rows'])
+def test_cfw128_c2e6a_mutated_or_mixed_receipts_fail_closed(fault):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=deepcopy(cfw128_c2e6a_inputs());args=list(args);g,b,d,s,t,p=args;sha=C2D1_APP_SOURCE_SHA
+    if fault=='missing':args[3]=None
+    elif fault=='sha':sha='0'*40
+    elif fault=='sibling':args[1]=cfw128_c2e6a_inputs(bug01_geometry_case('LNR 7"'))[1][1]
+    elif fault=='gap_hash':object.__setattr__(b,'projection_identity','0'*64)
+    elif fault=='gap_volume':object.__setattr__(b,'capacity_gap_bbl',b.capacity_gap_bbl+1.)
+    elif fault=='derived_endpoint':object.__setattr__(d,'end_md',d.end_md+1.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='derived_rows':object.__setattr__(d.sections[0],'source_rows',());cfw128_c2e5_rebind_derived(d)
+    elif fault=='schedule_hash':object.__setattr__(s,'source_identity','0'*64)
+    elif fault=='schedule_amount':object.__setattr__(s.stages[0],'volume_bbl',41.)
+    elif fault=='schedule_flag':object.__setattr__(s,'enabled',True)
+    elif fault=='tracking_hash':object.__setattr__(t,'source_identity','0'*64)
+    elif fault=='occupancy':object.__setattr__(t.occupancy[0],'volume_bbl',t.occupancy[0].volume_bbl+1.);cfw128_c2e2_rebind(t)
+    elif fault=='ledger':object.__setattr__(t.ledgers[0],'in_path_bbl',39.);cfw128_c2e2_rebind(t)
+    elif fault=='placement_hash':object.__setattr__(p,'projection_identity','0'*64)
+    elif fault=='placement_partition':object.__setattr__(p.stages[0],'retained_injection_bbl',0.)
+    elif fault=='geometry_flag':object.__setattr__(g.captured_geometry,'hydraulic_admissible',True)
+    elif fault in ('nan','negative'):object.__setattr__(t.occupancy[0],'volume_bbl',float('nan') if fault=='nan' else -1.)
+    elif fault=='path_rows':object.__setattr__(t.path[0],'running_source_rows',());cfw128_c2e2_rebind(t)
+    with pytest.raises((ValueError,TypeError)):audit_post_pull_closure(*args,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e6a_immutable_deterministic_replay_never_proves_currentness():
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    from dataclasses import FrozenInstanceError,replace
+    state,args=cfw128_c2e6a_inputs();r=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.loads(pickle.dumps(r))==r
+    assert audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(FrozenInstanceError):r.cement_inventory[0].injection_bbl=0.
+    state['hardware_table'].at[7,'ID (in)']=4.3
+    assert audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    assert r.currentness=='NOT_CURRENTNESS_PROOF'
+
+
+def test_cfw128_c2e6a_import_isolation_has_mutation_negative(monkeypatch):
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path('.');path=root/'cfw128_c2e6a_post_pull_closure.py'
+    def verify():
+        for file in root.glob('*.py'):
+            tree=ast.parse(file.read_text());imports={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+            if file==path:
+                assert imports<={'dataclasses','fractions','math','re','typing','cement_chart_model','engineering_tools','materials_db','project_state'}
+                assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+            else:assert path.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((path,'\nimport cfw128_c2e_volume_tracking\n'),(root/'main.py','\nimport cfw128_c2e6a_post_pull_closure\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:original(p,*a,**k)+addition if p==target else original(p,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e6a_post_pull_closure; assert not any(n.startswith("cfw128") and n!="cfw128_c2e6a_post_pull_closure" for n in sys.modules)'],check=True)
+
+
+def test_cfw128_c2e6a_partial_checkpoint_preserves_holds_and_actual_entered_amounts():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=cfw128_c2e6a_inputs();g,b,d,s,t,p=args
+    overlay=cfw128_c2e5_test_composition(state,g,d)['overlay']
+    partial=preview_fluid_tracking(g,overlay,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=1)
+    placement=assess_cement_placement(partial,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    r=audit_post_pull_closure(g,b,d,s,partial,placement,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.capture_completeness=='HOLD_SCHEDULE_INCOMPLETE'
+    assert r.preserved_placement_holds==placement.reason_codes
+    assert 'HOLD_SCHEDULE_INCOMPLETE' in r.preserved_placement_holds
+    mud=next(v for v in r.noncement_inventory if v.fluid=='Displacement Fluid')
+    assert mud.configured_bbl==d.derived_displacement_bbl and mud.actually_entered_bbl==0.
+    assert r.cement_inventory[0].actually_entered_bbl==40.
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+
+
+def test_cfw128_c2e6a_rehashed_placement_cannot_drop_precision_hold():
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    from dataclasses import fields
+    from project_state import fingerprint
+    state,args=cfw128_c2e6a_inputs(bug01_geometry_case('LNR 5"'),('Main','Lead','Tail','Spacer Behind','Displacement Fluid'))
+    g,b,d,s,t,p=args
+    assert 'HOLD_VOLUME_RECONCILIATION_PRECISION' in p.reason_codes
+    object.__setattr__(p,'reason_codes',tuple(v for v in p.reason_codes if v!='HOLD_VOLUME_RECONCILIATION_PRECISION'))
+    plain=lambda rows:tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in rows)
+    object.__setattr__(p,'projection_identity',fingerprint(['cfw128-c2e2-placement/1',C2D1_APP_SOURCE_SHA,g.source_identity,g.projection_identity,t.source_identity,t.projection_identity,plain(p.stages),plain(p.annular_intervals),p.other_fluid_occupancy,p.pumping_state_toc_candidate_md,p.reason_codes,p.post_pull_reason]))
+    with pytest.raises(ValueError):audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+@pytest.mark.parametrize('fault',['missing_schedule_source','boolean_section_index','boolean_section_top','missing_no_cement_hold'])
+def test_cfw128_c2e6a_continuation_receipt_types_and_all_inherited_holds(fault):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    from dataclasses import fields
+    from project_state import fingerprint
+    names=('Displacement Fluid',) if fault=='missing_no_cement_hold' else ('Main','Displacement Fluid')
+    state,args=cfw128_c2e6a_inputs(names=names);g,b,d,s,t,p=args
+    plain=lambda rows:tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in rows)
+    if fault=='missing_schedule_source':
+        object.__setattr__(s,'source_identity',None)
+        object.__setattr__(s,'projection_identity',fingerprint(['cfw128-c2e5-effective-schedule/1',s.source_identity,plain(s.stages),s.total_volume_bbl,s.total_volume_exact_bbl,s.completion_basis]))
+    elif fault=='boolean_section_index':object.__setattr__(d.sections[0],'source_section_index',False)
+    elif fault=='boolean_section_top':object.__setattr__(d.sections[0],'top_md',False)
+    else:
+        assert 'HOLD_NO_PLACED_CEMENT' in p.reason_codes
+        object.__setattr__(p,'reason_codes',tuple(v for v in p.reason_codes if v!='HOLD_NO_PLACED_CEMENT'))
+        object.__setattr__(p,'projection_identity',fingerprint(['cfw128-c2e2-placement/1',C2D1_APP_SOURCE_SHA,g.source_identity,g.projection_identity,t.source_identity,t.projection_identity,plain(p.stages),plain(p.annular_intervals),p.other_fluid_occupancy,p.pumping_state_toc_candidate_md,p.reason_codes,p.post_pull_reason]))
+    with pytest.raises((ValueError,TypeError)):audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+@pytest.mark.parametrize('case',['no_cement','ideal_cement_return'])
+def test_cfw128_c2e6a_positive_no_cement_and_surface_return_never_resolve_remap(case):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    names=('Displacement Fluid',) if case=='no_cement' else ('Main','Displacement Fluid')
+    state,args=cfw128_c2e6a_inputs(names=names);g,b,d,s,t,p=args
+    if case=='ideal_cement_return':
+        state['fluids_config']['params']['Main']['volume']=1000.
+        e=cfw128_c2e5_test_composition(state,g,d);s,t,p=e['schedule'],e['tracking'],e['placement']
+    r=audit_post_pull_closure(g,b,d,s,t,p,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.preserved_placement_holds==p.reason_codes
+    if case=='no_cement':
+        assert not r.cement_inventory and not r.surface_cement_return_present
+        assert 'HOLD_NO_PLACED_CEMENT' in r.preserved_placement_holds
+    else:
+        c=r.cement_inventory[0]
+        assert c.configured_bbl==c.actually_entered_bbl==1000.
+        assert c.ideal_returned_bbl>0. and r.surface_cement_return_present
+        assert c.actually_entered_bbl==pytest.approx(c.injection_bbl+c.lower_annulus_bbl+c.upper_pumping_annulus_bbl+c.ideal_returned_bbl,abs=1e-10)
+    assert len(r.unresolved_decisions)==4 and r.physical_remap_status=='HOLD_POST_PULL_PHYSICAL_REMAP_UNDEFINED'
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
