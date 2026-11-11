@@ -3970,3 +3970,232 @@ def test_cfw128_c2e_fractional_stage_end_is_exact_without_rounding_source():
     for bad in (True,-1,3):
         with pytest.raises(ValueError):preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=bad)
     with pytest.raises(ValueError):preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=1,cumulative_injected_bbl=.01)
+
+
+# C2e-2: additive, disabled pump-end assessment; prior bytes stay unchanged.
+def cfw128_c2e2_capture(state=None, volumes=None, stage_end=None, injected=None, query_md=()):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c1_uat19_state() if state is None else state
+    volumes={'Main':40.} if volumes is None else dict(volumes)
+    view=cfw128_c2e_view(state,query_md)
+    if 'Displacement Fluid' not in volumes:volumes['Displacement Fluid']=view.nominal_injection_bbl
+    cfw128_c2e_fluids(state,tuple(volumes))
+    for name,volume in volumes.items():state['fluids_config']['params'][name]['volume']=volume
+    kwargs={'stage_end':len(volumes) if stage_end is None else stage_end} if injected is None else {'cumulative_injected_bbl':injected}
+    track=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,**kwargs)
+    return view,track
+
+
+def test_cfw128_c2e2_new_interface_is_a_disabled_pumping_state_candidate_only():
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    view,track=cfw128_c2e2_capture()
+    r=assess_cement_placement(track,view,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_PUMP_END_PLACEMENT_PREVIEW'
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.hydraulics=='HYDRAULICS_NOT_EVALUATED'
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    assert r.post_pull_reason=='HOLD_POST_PULL_REMAP_UNDEFINED'
+    assert r.pumping_state_toc_candidate_md is not None
+
+
+def cfw128_c2e2_rebind(track):
+    from dataclasses import fields
+    from project_state import fingerprint
+    plain=lambda rows:tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in rows)
+    object.__setattr__(track,'projection_identity',fingerprint(['cfw128-c2e-volume/1',track.source_identity,track.cumulative_injected_bbl,
+        plain(track.occupancy),plain(track.ledgers),track.mud_remaining_bbl,track.mud_displaced_bbl]))
+    return track
+
+
+@pytest.mark.parametrize('amount,position',[(40.,'below'),(200.,'above'),(512.,'surface')])
+def test_cfw128_c2e2_uat19_actual_pumping_toc_below_above_lap_and_surface(amount,position):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from cement_chart_model import _capacity
+    state=cfw128_c1_uat19_state();view=cfw128_c2e_view(state)
+    volumes={'Main':amount}
+    # Synthetic, exactly representable source schedule, not a field recommendation.
+    if position=='surface':volumes['Pre Flush']=512.-view.nominal_injection_bbl
+    g,t=cfw128_c2e2_capture(state,volumes);before=pickle.dumps((g,t))
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert g.nominal_injection_bbl==pytest.approx(287.819429400755,abs=1e-10)
+    assert sum(p.nominal_volume_bbl for p in g.lower_annulus)==pytest.approx(82.460178062841,abs=1e-10)
+    assert sum(p.nominal_volume_bbl for p in g.upper_pumping_annulus)==pytest.approx(426.973186160669,abs=1e-10)
+    assert sum(p.nominal_volume_bbl for p in g.upper_post_pull_bore)==pytest.approx(650.069776414482,abs=1e-10)
+    assert not r.reason_codes and r.pumping_state_toc_candidate_md is not None
+    lower=sum(p.nominal_volume_bbl for p in g.lower_annulus)
+    expected=3885.-amount/_capacity(8.535,7.) if position=='below' else 2800.-(amount-lower)/_capacity(8.535,5.) if position=='above' else 0.
+    assert r.pumping_state_toc_candidate_md==pytest.approx(expected,abs=1e-9)
+    assert all(v.bottom_md<=3885. for v in r.annular_intervals)
+    assert r.surface_cement_return_present is (position=='surface')
+    assert r.post_pull_reason=='HOLD_POST_PULL_REMAP_UNDEFINED'
+    assert pickle.dumps((g,t))==before
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e2_all_jobs_preserve_stage_ledgers_and_geometry_roles(job):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    g,t=cfw128_c2e2_capture(bug01_geometry_case(job),{'Main':20.,'Lead':20.,'Tail':20.})
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert tuple(v.fluid for v in r.stages)==('Main','Lead','Tail')
+    for v in r.stages:
+        source=next(x for x in t.ledgers if x.fluid==v.fluid)
+        assert v.entered_bbl==source.entered_bbl and v.ideal_surface_returned_bbl==source.ideal_returned_bbl
+        assert v.retained_injection_bbl+v.retained_lower_annulus_bbl+v.retained_upper_annulus_bbl==pytest.approx(source.in_path_bbl)
+    assert r.post_pull_reason==('NOT_APPLICABLE' if g.captured_geometry.kind=='casing' else 'HOLD_POST_PULL_REMAP_UNDEFINED')
+    # Conservative precision HOLD is explicit, never a rounded TOC acceptance.
+    if r.pumping_state_toc_candidate_md is None:assert r.reason_codes==('HOLD_TERMINAL_VOLUME_PRECISION_UNPROVEN',) or 'HOLD_VOLUME_RECONCILIATION_PRECISION' in r.reason_codes
+    else:assert r.pumping_state_toc_candidate_md==min(v.top_md for v in r.annular_intervals)
+    assert {v.fluid for v in r.annular_intervals}=={'Main','Lead','Tail'}
+
+
+@pytest.mark.parametrize('case',['partial','inside','none','scavenger','spacer_behind','past_shoe','fractional_terminal'])
+def test_cfw128_c2e2_unproved_or_ambiguous_toc_is_held(case):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    state=cfw128_c1_uat19_state()
+    if case=='partial':g,t=cfw128_c2e2_capture(state,stage_end=1)
+    elif case=='inside':g,t=cfw128_c2e2_capture(state,{'Main':40.,'Displacement Fluid':10.})
+    elif case=='none':g,t=cfw128_c2e2_capture(state,{'Displacement Fluid':20.})
+    elif case=='scavenger':g,t=cfw128_c2e2_capture(state,{'Scavenger':40.})
+    elif case=='spacer_behind':g,t=cfw128_c2e2_capture(state,{'Main':40.,'Spacer Behind':10.})
+    elif case=='past_shoe':
+        v=cfw128_c2e_view(state);g,t=cfw128_c2e2_capture(state,{'Main':40.,'Displacement Fluid':v.nominal_injection_bbl+20.})
+    else:g,t=cfw128_c2e2_capture(state,{'Main':.1,'Displacement Fluid':.2})
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.pumping_state_toc_candidate_md is None
+    expected={'partial':'HOLD_SCHEDULE_INCOMPLETE','inside':'HOLD_CEMENT_REMAINS_IN_INJECTION','none':'HOLD_NO_PLACED_CEMENT',
+              'scavenger':'HOLD_NO_PLACED_CEMENT','spacer_behind':'HOLD_CEMENT_NOT_ANCHORED_AT_SHOE','past_shoe':'HOLD_CEMENT_NOT_ANCHORED_AT_SHOE','fractional_terminal':'HOLD_TERMINAL_VOLUME_PRECISION_UNPROVEN'}[case]
+    assert expected in r.reason_codes
+    if case=='scavenger':assert not r.stages and not r.annular_intervals and any(x[0]=='Scavenger' for x in r.other_fluid_occupancy)
+
+
+@pytest.mark.parametrize('case',['zero_top','previous_taper','directional','sectional_dp'])
+def test_cfw128_c2e2_measured_special_cases_remain_captured(case):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    state=synthetic_tieback(top=0. if case=='zero_top' else 400.) if case!='previous_taper' else r18c_tapered_state(100.)
+    if case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    if case=='sectional_dp':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    g,t=cfw128_c2e2_capture(state,{'Main':10.},query_md=(50.,) if case=='directional' else ());before=pickle.dumps((state,g,t))
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.geometry_projection_identity==g.projection_identity and r.tracking_projection_identity==t.projection_identity
+    assert r.post_pull_reason=='HOLD_POST_PULL_REMAP_UNDEFINED'
+    assert all(v.bottom_md<=g.captured_geometry.shoe_md for v in r.annular_intervals)
+    assert pickle.dumps((state,g,t))==before
+    if case=='directional':assert dict(t.trajectory)[50.]==pytest.approx(47.7464829275686,abs=1e-12)
+
+
+@pytest.mark.parametrize('fault',['wrong_sha','wrong_view','source_id','projection_id','flags','view_flags','missing','duplicate','row','path','density','gap','volume','ledger','mud','stage','nan','overflow','underflow'])
+def test_cfw128_c2e2_malformed_or_mismatched_capture_is_rejected(fault):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from dataclasses import replace
+    g,t=deepcopy(cfw128_c2e2_capture());sha=C2D1_APP_SOURCE_SHA
+    if fault=='wrong_sha':sha='0'*40
+    elif fault=='wrong_view':
+        state=cfw128_c1_uat19_state();state['hardware_table'].at[2,'ID (in)']=8.534;g=cfw128_c2e_view(state)
+    elif fault=='source_id':object.__setattr__(t,'source_identity','0'*64)
+    elif fault=='projection_id':object.__setattr__(t,'projection_identity','0'*64)
+    elif fault=='flags':object.__setattr__(t,'enabled',True)
+    elif fault=='view_flags':object.__setattr__(g,'hydraulic_admissible',True)
+    elif fault=='missing':object.__setattr__(t,'occupancy',t.occupancy[1:]);cfw128_c2e2_rebind(t)
+    elif fault=='duplicate':object.__setattr__(t,'occupancy',t.occupancy+t.occupancy[:1]);cfw128_c2e2_rebind(t)
+    elif fault=='row':object.__setattr__(t.path[0],'running_source_rows',(999,))
+    elif fault=='path':object.__setattr__(t.path[-1],'outlet_md',4860.)
+    elif fault=='density':object.__setattr__(t.occupancy[0],'density_pcf',1.);cfw128_c2e2_rebind(t)
+    elif fault=='gap':object.__setattr__(t.occupancy[0],'outlet_md',t.occupancy[0].outlet_md+1.);cfw128_c2e2_rebind(t)
+    elif fault=='volume':object.__setattr__(t.occupancy[0],'volume_bbl',41.);cfw128_c2e2_rebind(t)
+    elif fault=='ledger':object.__setattr__(t.ledgers[0],'in_path_bbl',39.);cfw128_c2e2_rebind(t)
+    elif fault=='mud':object.__setattr__(t,'mud_remaining_bbl',0.);cfw128_c2e2_rebind(t)
+    elif fault=='stage':object.__setattr__(t.stages[0],'volume_bbl',39.)
+    elif fault=='nan':object.__setattr__(t.occupancy[0],'volume_bbl',float('nan'))
+    elif fault=='overflow':object.__setattr__(t.stages[0],'raw_volume',10**1000);object.__setattr__(t.stages[0],'volume_bbl',10**1000)
+    elif fault=='underflow':object.__setattr__(t.occupancy[0],'volume_bbl',5e-324);cfw128_c2e2_rebind(t)
+    with pytest.raises((ValueError,TypeError)):assess_cement_placement(t,g,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e2_capture_edit_freshness_and_immutable_flags():
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from dataclasses import replace,FrozenInstanceError
+    state=cfw128_c1_uat19_state();g,t=cfw128_c2e2_capture(state)
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r  # Replay is NOT_CURRENTNESS_PROOF.
+    fresh,ft=cfw128_c2e2_capture(state)
+    assert assess_cement_placement(ft,fresh,expected_app_source_sha=C2D1_APP_SOURCE_SHA).projection_identity!=r.projection_identity
+    assert pickle.loads(pickle.dumps(r))==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(FrozenInstanceError):r.enabled=True
+    with pytest.raises(TypeError):r.stages[0]=r.stages[0]
+    # Coherently changing an unauthenticated source tag cannot authenticate state.
+    counterfeit=deepcopy(t);object.__setattr__(counterfeit,'source_identity','a'*64);cfw128_c2e2_rebind(counterfeit)
+    cr=assess_cement_placement(counterfeit,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert cr.currentness=='NOT_CURRENTNESS_PROOF' and cr.enabled is False
+
+
+def test_cfw128_c2e2_import_isolation_and_mutation_negatives(monkeypatch):
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path('.');p=root/'cfw128_c2e2_cement_placement.py'
+    def verify():
+        tree=ast.parse(p.read_text());names={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        assert names<={'dataclasses','fractions','math','re','typing','cement_chart_model','engineering_tools','materials_db','project_state'}
+        assert not {'eval','exec','__import__','import_module'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+        for other in root.glob('*.py'):
+            if other==p:continue
+            t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
+            assert p.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((p,'\nimport cfw128_c2e_volume_tracking\n'),(root/'main.py','\nimport cfw128_c2e2_cement_placement\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda path,*a,**k:original(path,*a,**k)+addition if path==target else original(path,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e2_cement_placement; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
+
+
+def test_cfw128_c2e2_disconnected_cement_pockets_never_get_a_toc():
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from dataclasses import replace
+    g,t=deepcopy(cfw128_c2e2_capture(bug01_geometry_case('LNR 5"'),{'Scavenger':40.,'Main':400.}))
+    cement=[(i,o) for i,o in enumerate(t.occupancy) if o.fluid=='Main' and t.path[o.section_index].domain!='injection']
+    assert len(cement)>=3
+    eligible=[v for v in cement[1:-1] if not any(o.fluid=='Scavenger' and o.section_index==v[1].section_index for o in t.occupancy)]
+    assert eligible
+    idx,row=eligible[0];moved=row.volume_bbl
+    occ=list(t.occupancy);occ[idx]=replace(row,fluid='Scavenger')
+    object.__setattr__(t,'occupancy',tuple(occ))
+    stages=[];ledgers=[]
+    for stage,ledger in zip(t.stages,t.ledgers):
+        change=moved if stage.name=='Scavenger' else -moved if stage.name=='Main' else 0.
+        stages.append(replace(stage,volume_bbl=stage.volume_bbl+change,raw_volume=stage.volume_bbl+change))
+        ledgers.append(replace(ledger,entered_bbl=ledger.entered_bbl+change,in_path_bbl=ledger.in_path_bbl+change))
+    object.__setattr__(t,'stages',tuple(stages));object.__setattr__(t,'ledgers',tuple(ledgers));cfw128_c2e2_rebind(t)
+    # A coherent copied ledger cannot authenticate transport. Its interposed
+    # non-cement partition must still prevent a shoe-to-top cement claim.
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.pumping_state_toc_candidate_md is None and 'HOLD_DISCONNECTED_ANNULAR_CEMENT' in r.reason_codes
+
+
+def test_cfw128_c2e2_no_selected_stages_stays_mud_and_no_placement():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state(),());g=cfw128_c2e_view(state)
+    t=preview_fluid_tracking(g,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert not r.stages and not r.annular_intervals and not r.surface_cement_return_present
+    assert r.pumping_state_toc_candidate_md is None and 'HOLD_NO_PLACED_CEMENT' in r.reason_codes
+    assert {x[0] for x in r.other_fluid_occupancy}=={'Mud'}
+
+
+@pytest.mark.parametrize('missing',['tracking','geometry','proof','host','rows'])
+def test_cfw128_c2e2_missing_proofs_and_source_rows_fail_closed(missing):
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    g,t=deepcopy(cfw128_c2e2_capture())
+    if missing=='tracking':t=None
+    elif missing=='geometry':g=None
+    elif missing=='proof':object.__setattr__(g,'historical_capacity_audit',None)
+    elif missing=='host':object.__setattr__(g.captured_geometry,'host_token','stale-token')
+    else:object.__setattr__(t.path[0],'running_source_rows',())
+    with pytest.raises((ValueError,TypeError)):assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
