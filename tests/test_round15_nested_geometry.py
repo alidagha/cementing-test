@@ -3348,15 +3348,241 @@ def test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers():
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
         imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         if path.name=='cfw128_er03_boundary.py':assert not imports & forbidden
-        else:assert 'cfw128_er03_boundary' not in imports
+        elif path.name != 'cfw128_er03_volume.py':assert 'cfw128_er03_boundary' not in imports
     script='import sys,cfw128_er03_boundary; assert not '+repr(forbidden)+' & set(sys.modules)'
     subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
 
 
 @pytest.mark.parametrize('filename',sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
-                                         if p.name!='cfw128_er03_boundary.py'))
+                                         if p.name not in ('cfw128_er03_boundary.py','cfw128_er03_volume.py')))
 def test_cfw128_c2a_unauthorized_root_import_mutation_is_rejected(filename,monkeypatch):
     from pathlib import Path
     target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_er03_boundary\n' if p==target else read(p,*a,**k))
     with pytest.raises(AssertionError):test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers()
+
+
+# C2b is a new nominal geometric audit, not a pre-existing hydraulic bug fix.
+C2B_APP_SOURCE_SHA = 'fd3e387a4a786dba197e89ad7fba293764b22951'
+
+
+def cfw128_c2b_boundary(state=None, query_md=()):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=cfw128_c1_uat19_state() if state is None else state
+    source=snapshot_geometry(state,app_source_sha=C2B_APP_SOURCE_SHA,query_md=query_md)
+    return assess_er03_boundary(prepare_er03_preview(source,expected_app_source_sha=C2B_APP_SOURCE_SHA),
+                               expected_app_source_sha=C2B_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2b_uat19_nominal_sections_app_and_independent_si_oracle(tmp_path):
+    import math,json
+    from dataclasses import asdict
+    from cement_chart_model import _capacity
+    from cfw128_er03_volume import audit_geometric_capacity
+    state=cfw128_c1_uat19_state();frame=state['hardware_table'];before=pickle.dumps(state)
+    boundary=cfw128_c2b_boundary(state);held=pickle.dumps(boundary)
+    r=audit_geometric_capacity(boundary,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert r.status=='HOLD_GEOMETRIC_CAPACITY_ONLY'
+    expected=[('injection',0.,2800.,0.,4.276,(7,),()),
+              ('injection',2800.,3885.,0.,6.004,(6,),()),
+              ('annular_return',2800.,3885.,7.,8.535,(6,),(2,))]
+    assert [(s.leg,s.top_md,s.bottom_md,s.inner_diameter_in,s.outer_diameter_in,
+             s.running_source_rows,s.wall_source_rows) for s in r.sections]==expected
+    si_volumes=[]
+    for s in r.sections:
+        cap=_capacity(s.outer_diameter_in,s.inner_diameter_in)
+        si=math.pi/4*((s.outer_diameter_in*.0254)**2-(s.inner_diameter_in*.0254)**2)/.15898730
+        assert s.nominal_capacity_bbl_per_m==cap
+        assert s.nominal_section_volume_bbl==cap*(s.bottom_md-s.top_md)
+        # Independent SI barrel is rounded: observed relative discrepancy ~2.7822e-8.
+        assert cap!=si and abs(cap-si)/si<3e-8
+        assert (cap-si)/si==pytest.approx(2.7822059e-8,abs=2e-15)
+        si_volumes.append(si*(s.bottom_md-s.top_md))
+    assert [s.nominal_section_volume_bbl for s in r.sections]==pytest.approx(
+        [163.16549284802392,124.65393655273077,82.46017806284104],abs=1e-10,rel=0)
+    assert r.nominal_injection_volume_bbl==_capacity(4.276)*2800+_capacity(6.004)*1085
+    assert r.nominal_annular_return_volume_bbl==_capacity(8.535,7.)*1085
+    assert r.nominal_injection_volume_bbl==pytest.approx(287.8194294007547,abs=1e-10,rel=0)
+    assert r.nominal_injection_volume_bbl!=r.nominal_annular_return_volume_bbl  # Distinct spaces, NOT a leak.
+    assert r.boundary.preview.receiver.shoe_md==4860. and max(s.bottom_md for s in r.sections)==3885.
+    assert r.boundary.preview.selected_host.source_rows==(2,) and r.boundary.physical_ports[-1].md_m==2800.
+    assert r.boundary.return_outlet_pressure=='UNSPECIFIED' and r.boundary.mass_volume_conservation==r.boundary.qout_rate=='NOT_EVALUATED'
+    assert 'Open Hole Size' not in frame.Description.values and frame is state['hardware_table']
+    assert before==pickle.dumps(state) and held==pickle.dumps(boundary)
+    (tmp_path/'uat19-capacity-audit.json').write_text(json.dumps({'audit':asdict(r),'independent_si_section_volumes_bbl':si_volumes,'relative_unit_constant_tolerance':3e-8},indent=2))
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2b_all_jobs_copy_nominal_source_slice_capacity_without_excess(job):
+    from cement_chart_model import _capacity
+    from cfw128_er03_volume import audit_geometric_capacity
+    state=bug01_geometry_case(job);before=pickle.dumps(state);b=cfw128_c2b_boundary(state)
+    r=audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    p=b.preview;injection=tuple(s for s in r.sections if s.leg=='injection');returns=tuple(s for s in r.sections if s.leg=='annular_return')
+    assert len(injection)==len(p.injection_sections) and len(returns)==len(p.return_sections)
+    for out,src in zip(injection,p.injection_sections):
+        assert (out.top_md,out.bottom_md,out.outer_diameter_in,out.running_source_rows)==(src.top_md,src.bottom_md,src.id_in,src.source_rows)
+        assert out.inner_diameter_in==0. and out.nominal_capacity_bbl_per_m==_capacity(src.id_in)
+    for out,src in zip(returns,p.return_sections):
+        assert (out.top_md,out.bottom_md,out.outer_diameter_in,out.inner_diameter_in)==(src.top_md,src.bottom_md,src.wall.id_in,src.running.od_in)
+        assert out.wall_source_rows==src.wall.source_rows and out.running_source_rows==src.running.source_rows
+    assert returns[0].top_md==(p.string_top_md if p.kind=='tieback' else 0.)
+    assert returns[-1].bottom_md==injection[-1].bottom_md==p.shoe_md
+    if job in ('TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'):assert returns[0].outer_diameter_in==6.094
+    assert set(b.reason_codes)<=set(r.reason_codes) and pickle.dumps(state)==before
+    # Chart-excess settings remain source metadata, never a multiplier on nominal geometry.
+    altered=deepcopy(state);altered['placement_config']['chart_excess_mode']='apply'
+    incomplete=audit_geometric_capacity(cfw128_c2b_boundary(altered),expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert incomplete.status=='SOURCE_NOT_READY' and incomplete.sections==()
+    # Explicitly synthetic admission prerequisites; never field measurements.
+    altered['placement_config'].update(excess_csg_oh_pct=12.5,excess_csg_csg_pct=25.)
+    changed=audit_geometric_capacity(cfw128_c2b_boundary(altered),expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert changed.sections==r.sections and changed.nominal_injection_volume_bbl==r.nominal_injection_volume_bbl
+
+
+@pytest.mark.parametrize('case',['a_zero','taper','piecewise_active','dp_taper','body_taper','directional'])
+def test_cfw128_c2b_sectional_and_directional_capacity_preserves_md_provenance(case):
+    from cfw128_er03_volume import audit_geometric_capacity
+    state=synthetic_tieback(top=0.) if case=='a_zero' else r18c_tapered_state(100.) if case in ('taper','piecewise_active') else synthetic_tieback(top=400.)
+    if case=='piecewise_active':
+        state['hardware_table'].loc[state['hardware_table'].Description=='Tie Back Liner Lap','MD (m)']='0'
+        state['hardware_table']=state['hardware_table'][state['hardware_table'].Description!='Drill Pipes'].reset_index(drop=True)
+        state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
+    elif case=='dp_taper':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    elif case=='body_taper':
+        t=state['hardware_table'];t.at[0,'MD (m)']='400-500';extra=t.iloc[[0]].copy()
+        extra['MD (m)']='500-700';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t.iloc[:1],extra,t.iloc[1:]],ignore_index=True)
+        state['placement_config']['target_row']=next(k for k,v in hardware_choices(state['hardware_table'],target_descriptions(state['job_type'])).items() if v['depth']==700.)
+    elif case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame(
+        [[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    b=cfw128_c2b_boundary(state,(50.,) if case=='directional' else ());r=audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert r.boundary==b and len(r.sections)==len(b.preview.injection_sections)+len(b.preview.return_sections)
+    assert set(b.reason_codes)<=set(r.reason_codes)
+    if case=='a_zero':
+        assert 'HOLD_TIEBACK_POINT_A_ZERO_TYPED_INTERFACE' in r.reason_codes
+        assert not any(s.description=='Drill Pipes' for s in b.preview.injection_sections)
+    if case=='directional':
+        pts={v.md:v.tvd for v in r.boundary.preview.trajectory}
+        assert pts[50.]==pytest.approx(47.7464829275686,abs=1e-12)
+        assert .5*pts[100.]==pytest.approx(41.3496671566,abs=1e-8)
+        vertical=deepcopy(state);vertical['well_geometry']={'type':'Vertical','td_m':1200.}
+        assert audit_geometric_capacity(cfw128_c2b_boundary(vertical),expected_app_source_sha=C2B_APP_SOURCE_SHA).sections==r.sections
+
+
+@pytest.mark.parametrize('state',[{}, {'job_type':'CMT PLUG'}, {'job_type':'CMT SQUEEZE'}])
+def test_cfw128_c2b_missing_or_nonapplicable_sources_cannot_mint_zero_inventory(state):
+    from cfw128_er03_volume import audit_geometric_capacity
+    r=audit_geometric_capacity(cfw128_c2b_boundary(state),expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert r.status=='SOURCE_NOT_READY' and r.sections==()
+    assert r.nominal_injection_volume_bbl is r.nominal_annular_return_volume_bbl is None
+    assert r.boundary.physical_ports==() and r.hydraulic_admissible is False
+
+
+@pytest.mark.parametrize('fault',['port_top','port_bottom','port_direction','return_top','return_bottom','missing_dp',
+    'clearance','rows','gap','overlap','duplicate','nan','bool','source_identity','job','mutable','flags','pressure','qout','instrument','unknown_mutable','sha'])
+def test_cfw128_c2b_changed_c2a_or_source_never_yields_capacity(fault):
+    from dataclasses import replace
+    from cfw128_er03_volume import audit_geometric_capacity
+    b=deepcopy(cfw128_c2b_boundary());p=b.preview
+    if fault.startswith('port_'):
+        kwargs={'port_top':{'md_m':0.},'port_bottom':{'md_m':4860.},'port_direction':{'direction':'entry'}}[fault]
+        object.__setattr__(b,'physical_ports',(*b.physical_ports[:-1],replace(b.physical_ports[-1],**kwargs)))
+    elif fault in ('return_top','return_bottom'):object.__setattr__(p,'return_top_md' if fault=='return_top' else 'return_bottom_md',0. if fault=='return_top' else 4860.)
+    elif fault in ('clearance','rows','gap','overlap','nan','bool'):
+        kwargs={'clearance':{'od_in':9.},'rows':{'source_rows':(999,)},'gap':{'top_md':2801.},
+                'overlap':{'top_md':2799.},'nan':{'id_in':float('nan')},'bool':{'top_md':True}}[fault]
+        object.__setattr__(p,'injection_sections',(p.injection_sections[0],replace(p.injection_sections[1],**kwargs)))
+    elif fault=='missing_dp':object.__setattr__(p,'injection_sections',p.injection_sections[1:])
+    elif fault=='duplicate':object.__setattr__(p,'injection_sections',(*p.injection_sections,p.injection_sections[-1]))
+    elif fault=='source_identity':object.__setattr__(b,'projection_identity','a'*64)
+    elif fault=='job':object.__setattr__(p,'job','LNR 7"')
+    elif fault=='mutable':object.__setattr__(b,'physical_ports',list(b.physical_ports))
+    elif fault=='flags':object.__setattr__(b,'hydraulic_admissible',True)
+    elif fault=='pressure':object.__setattr__(b,'return_outlet_pressure',0.)
+    elif fault=='qout':object.__setattr__(b,'qout_rate',1.)
+    elif fault=='instrument':object.__setattr__(b,'instrument_provenance','CERTIFIED')
+    elif fault=='unknown_mutable':object.__setattr__(b,'fluid_inventory_transport',[])
+    else:object.__setattr__(b,'expected_app_source_sha','f'*40)
+    before=pickle.dumps(b)
+    with pytest.raises((ValueError,TypeError)):audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert pickle.dumps(b)==before
+
+
+def test_cfw128_c2b_receipt_clone_flags_totals_sections_and_pressure_fail_closed(monkeypatch):
+    from dataclasses import replace,asdict,FrozenInstanceError
+    from copy import copy
+    from cfw128_er03_volume import audit_geometric_capacity,FrozenCapacityAudit,CapacitySection
+    b=cfw128_c2b_boundary();r=audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert copy(r)==deepcopy(r)==pickle.loads(pickle.dumps(r))==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        monkeypatch.setenv('CFW128_'+flag.upper(),'true');assert getattr(r,flag) is False
+        with pytest.raises(FrozenInstanceError):setattr(r,flag,True)
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+        data=asdict(r);data[flag]=True
+        with pytest.raises(TypeError):FrozenCapacityAudit(**data)
+    for kwargs in ({'nominal_injection_volume_bbl':0.},{'nominal_annular_return_volume_bbl':float('inf')},
+                   {'nominal_injection_volume_bbl':True},{'sections':()}, {'projection_identity':'a'*64},
+                   {'boundary_projection_identity':'b'*64},{'status':'READY'}):
+        with pytest.raises(ValueError):replace(r,**kwargs)
+    with pytest.raises(ValueError):replace(r,method_id='SI')
+    with pytest.raises(TypeError):replace(r,pressure_psi=0.)
+    with pytest.raises(TypeError):replace(r,sections=list(r.sections))
+    class MutableString(str):
+        pass
+    disguised=tuple(MutableString(v) for v in r.reason_codes)
+    disguised[0].mutable=[]
+    with pytest.raises(TypeError):replace(r,reason_codes=disguised)
+    for kwargs in ({'nominal_capacity_bbl_per_m':1.},{'top_md':True},{'inner_diameter_in':float('nan')},
+                   {'nominal_section_volume_bbl':-1.},{'running_source_rows':(True,)}):
+        with pytest.raises(ValueError):replace(r.sections[0],**kwargs)
+    altered=replace(r.sections[0],running_source_rows=(999,))
+    with pytest.raises(ValueError):replace(r,sections=(altered,*r.sections[1:]))
+    with pytest.raises(TypeError):audit_geometric_capacity(asdict(b),expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    for sha in ('f'*40,'BAD',None):
+        with pytest.raises(ValueError):audit_geometric_capacity(b,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2b_fresh_source_edits_change_identity_without_currentness_claim():
+    from cfw128_er03_volume import audit_geometric_capacity
+    state=cfw128_c1_uat19_state();b=cfw128_c2b_boundary(state)
+    a=audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert a==audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert audit_geometric_capacity(b,expected_app_source_sha=C2B_APP_SOURCE_SHA)==a
+    changed=audit_geometric_capacity(cfw128_c2b_boundary(state),expected_app_source_sha=C2B_APP_SOURCE_SHA)
+    assert changed.projection_identity!=a.projection_identity and changed.sections!=a.sections
+    assert changed.nominal_injection_volume_bbl==a.nominal_injection_volume_bbl
+    assert changed.nominal_annular_return_volume_bbl!=a.nominal_annular_return_volume_bbl
+    assert changed.enabled is changed.hydraulic_admissible is False
+    assert 'CAPTURE_ONLY_REQUIRES_FRESH_APP_RESNAPSHOT' in changed.reason_codes
+
+
+def test_cfw128_c2b_import_isolation_in_clean_process_and_all_root_callers():
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]
+    forbidden={'scipy','cfw128_hb03t_frozen','cfw128_hb_numeric','cfw128_hb_intake','pumping_simulation',
+        'fluids_charts_module_v1_4_2','cement_charts_engine','centralizer_optimizer_engine','centralizer_adapter',
+        'streamlit','well_report','phase_10_procedure','cement_chart_report'}
+    for path in root.glob('*.py'):
+        tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
+        imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        if path.name=='cfw128_er03_volume.py':assert not imports & forbidden
+        else:assert 'cfw128_er03_volume' not in imports
+    script='import sys,cfw128_er03_volume; assert not '+repr(forbidden)+' & set(sys.modules); assert not any(n.startswith("streamlit.runtime") for n in sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
+
+
+@pytest.mark.parametrize('filename',sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
+                                         if p.name!='cfw128_er03_volume.py'))
+def test_cfw128_c2b_unauthorized_root_import_mutation_remains_rejected(filename,monkeypatch):
+    from pathlib import Path
+    target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_er03_volume\n' if p==target else read(p,*a,**k))
+    with pytest.raises(AssertionError):test_cfw128_c2b_import_isolation_in_clean_process_and_all_root_callers()
