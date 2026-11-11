@@ -3138,13 +3138,13 @@ def test_cfw128_c1_import_call_isolation_and_canonical_metadata():
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
         imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         if path.name=='cfw128_er03_contract.py':assert not imports & forbidden
-        else:assert 'cfw128_er03_contract' not in imports
+        elif path.name != 'cfw128_er03_boundary.py':assert 'cfw128_er03_contract' not in imports
     script='import sys,cfw128_er03_contract; assert not '+repr(forbidden)+' & set(sys.modules)'
     subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
 
 
 _C1_OTHER_ROOTS=sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
-                       if p.name not in ('cfw128_adapter.py','cfw128_er03_contract.py'))
+                       if p.name not in ('cfw128_adapter.py','cfw128_er03_contract.py','cfw128_er03_boundary.py'))
 
 
 @pytest.mark.parametrize('filename',_C1_OTHER_ROOTS)
@@ -3156,3 +3156,207 @@ def test_cfw128_c1_all_other_roots_reject_import_mutation(filename,module,monkey
     with pytest.raises(AssertionError):
         if module=='cfw128_adapter':test_cfw128_adapter_remains_unimported_by_production_and_research_free()
         else:test_cfw128_c1_import_call_isolation_and_canonical_metadata()
+
+
+# C2a adds only a disabled physical-port/unknown-law hold after accepted C1.
+C2A_APP_SOURCE_SHA = '225eabe0f56d5eae043eaea82d69a45093ae340a'
+
+
+def cfw128_c2a_capture(state=None, query_md=()):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    state = cfw128_c1_uat19_state() if state is None else state
+    return prepare_er03_preview(snapshot_geometry(state,app_source_sha=C2A_APP_SOURCE_SHA,query_md=query_md),
+                                expected_app_source_sha=C2A_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2a_uat19_ports_are_locations_only_with_no_pressure_invention(tmp_path):
+    from dataclasses import asdict
+    import json
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=cfw128_c1_uat19_state();before=pickle.dumps(state);preview=cfw128_c2a_capture(state)
+    result=assess_er03_boundary(preview,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert result.status=='HOLD_ENGINE_BOUNDARY_UNVERIFIED' and result.preview==preview
+    assert [(p.md_m,p.leg,p.direction) for p in result.physical_ports]==[
+        (0.,'injection','entry'),(3885.,'injection','exit'),
+        (3885.,'annular_return','entry'),(2800.,'annular_return','exit')]
+    assert result.qout_location_only.name=='Tie Back Lap (MD=A)' and result.qout_location_only.md_m==2800.
+    assert result.qout_rate==result.mass_volume_conservation==result.fluid_inventory_transport=='NOT_EVALUATED'
+    assert result.return_outlet_pressure==result.pressure_datum==result.pressure_reference=='UNSPECIFIED'
+    assert result.inlet_outlet_pressure_closure==result.shutin_bhsp_reference==result.freefall_tail_interpretation==result.three_chart_labels=='NOT_EVALUATED'
+    assert result.instrument_provenance=='UNVERIFIED'
+    assert set(preview.reason_codes)<=set(result.reason_codes)
+    assert {'HOLD_PARTIAL_RETURN_PRESSURE_BC','HOLD_ER03_SURFACE_UTUBE_MODEL',
+        'HOLD_RETURN_FLOW_AND_INVENTORY_LAW','HOLD_SHUTIN_BHSP_REFERENCE',
+        'UAT19_TIEBACK_PARTIAL_RETURN_ENGINE_NOT_VALIDATED','TIEBACK_OUTLET_PRESSURE_BC_UNDEFINED'}<=set(result.reason_codes)
+    assert preview.selected_host.source_rows==(2,) and preview.selected_host.sections[0].id_in==8.535
+    assert (preview.receiver.top_md,preview.receiver.shoe_md,preview.receiver.sections[0].id_in)==(3885.,4860.,6.184)
+    assert [(v.top_md,v.bottom_md,v.id_in) for v in preview.injection_sections]==[(0.,2800.,4.276),(2800.,3885.,6.004)]
+    assert preview.return_travel_md==(3885.,2800.) and len(preview.return_sections)==1
+    assert not any(v.description=='Open Hole Size' for v in preview.enclosing_sections)
+    assert state['hardware_table'].shape==(8,4) and pickle.dumps(state)==before
+    (tmp_path/'uat19-boundary-hold.json').write_text(json.dumps(asdict(result),indent=2))
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2a_all_jobs_keep_host_specific_ports_and_c1_identity(job):
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=bug01_geometry_case(job);before=pickle.dumps(state);p=cfw128_c2a_capture(state)
+    r=assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert r.preview==p and r.status=='HOLD_ENGINE_BOUNDARY_UNVERIFIED'
+    assert r.physical_ports[0].md_m==0. and r.physical_ports[1].md_m==r.physical_ports[2].md_m==p.shoe_md
+    assert r.physical_ports[-1].md_m==(p.string_top_md if p.kind=='tieback' else 0.)
+    assert r.preview.source_identity==p.source_identity and r.preview.projection_identity==p.projection_identity
+    if job in ('TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'):
+        assert r.preview.return_sections[0].wall.id_in==6.094  # Synthetic measured 7-in host, not field casing.
+    assert pickle.dumps(state)==before and r.instrument_provenance=='UNVERIFIED'
+
+
+@pytest.mark.parametrize('case',['a_zero','taper','piecewise_active','dp_taper','body_taper'])
+def test_cfw128_c2a_segmented_and_zero_cases_remain_explicit_holds(case):
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=synthetic_tieback(top=0.) if case=='a_zero' else r18c_tapered_state(100.) if case in ('taper','piecewise_active') else synthetic_tieback(top=400.)
+    if case=='piecewise_active':
+        state['hardware_table'].loc[state['hardware_table'].Description=='Tie Back Liner Lap','MD (m)']='0'
+        state['hardware_table']=state['hardware_table'][state['hardware_table'].Description!='Drill Pipes'].reset_index(drop=True)
+        state['placement_config']['host_row']=next(iter(hardware_choices(state['hardware_table'],{'Previous Casing'})))
+    elif case=='dp_taper':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    elif case=='body_taper':
+        t=state['hardware_table'];t.at[0,'MD (m)']='400-500';extra=t.iloc[[0]].copy()
+        extra['MD (m)']='500-700';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t.iloc[:1],extra,t.iloc[1:]],ignore_index=True)
+        state['placement_config']['target_row']=next(k for k,v in hardware_choices(state['hardware_table'],target_descriptions(state['job_type'])).items() if v['depth']==700.)
+    p=cfw128_c2a_capture(state);r=assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert p.upstream_status=='ENGINE_INTERFACE_NOT_REPRESENTABLE' and r.preview==p
+    assert r.status=='HOLD_ENGINE_BOUNDARY_UNVERIFIED' and set(p.reason_codes)<=set(r.reason_codes)
+    if p.string_top_md==0.:
+        assert 'HOLD_TIEBACK_POINT_A_ZERO_TYPED_INTERFACE' in r.reason_codes
+        assert r.physical_ports[-1].md_m==0. and all(s.description!='Drill Pipes' for s in p.injection_sections)
+    if case!='a_zero':assert 'HOLD_SEGMENTED_GEOMETRY_INTERFACE' in r.reason_codes
+    if case=='taper':assert len(next(s for s in p.installed_strings if s.description=='Previous Tie Back Liner Shoe').sections)==2
+
+
+def test_cfw128_c2a_directional_interior_convention_is_preserved_not_hydraulic_parity():
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=synthetic_tieback();state['well_geometry']={'type':'Directional','survey':pd.DataFrame(
+        [[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    p=cfw128_c2a_capture(state,(50.,));r=assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    points={v.md:v.tvd for v in r.preview.trajectory}
+    assert points[50.]==pytest.approx(47.7464829275686,abs=1e-12)
+    assert .5*points[100.]==pytest.approx(41.3496671566,abs=1e-8)
+    assert r.preview.survey==p.survey and r.preview.trajectory==p.trajectory
+    assert 'HOLD_DIRECTIONAL_INTERIOR_TVD' in r.reason_codes
+
+
+@pytest.mark.parametrize('state',[{}, {'job_type':'CMT PLUG'}])
+def test_cfw128_c2a_unavailable_sources_have_no_ports_or_fake_laws(state):
+    from cfw128_er03_boundary import assess_er03_boundary
+    p=cfw128_c2a_capture(state);r=assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert r.status=='SOURCE_NOT_READY' and r.preview==p
+    assert r.physical_ports==() and r.qout_location_only is None and 'C1_SOURCE_NOT_READY' in r.reason_codes
+    assert r.return_outlet_pressure=='UNSPECIFIED' and r.qout_rate=='NOT_EVALUATED'
+
+
+@pytest.mark.parametrize('fault',['top','shoe','return_top','return_bottom','missing_dp','gap','clearance','nan','bool',
+    'source_rows','host','receiver','fake_hole','source_identity','upstream_identity','upstream_source','target_token','host_token','projection_identity','reason','mutable','enabled','wrong_sha'])
+def test_cfw128_c2a_forged_c1_members_fail_closed(fault):
+    from copy import deepcopy
+    from dataclasses import replace
+    from cfw128_er03_boundary import assess_er03_boundary
+    p=deepcopy(cfw128_c2a_capture())
+    if fault=='top':object.__setattr__(p,'string_top_md',2799.)
+    elif fault=='shoe':object.__setattr__(p,'shoe_md',4860.)
+    elif fault=='return_top':object.__setattr__(p,'return_top_md',0.)
+    elif fault=='return_bottom':object.__setattr__(p,'return_bottom_md',4860.)
+    elif fault=='missing_dp':object.__setattr__(p,'injection_sections',p.injection_sections[1:])
+    elif fault in ('gap','clearance','nan','bool','source_rows'):
+        s=p.injection_sections[0]
+        kwargs={'gap':{'bottom_md':2799.},'clearance':{'od_in':9.},'nan':{'id_in':float('nan')},
+                'bool':{'top_md':False},'source_rows':{'source_rows':(-1,)}}[fault]
+        object.__setattr__(p,'injection_sections',(replace(s,**kwargs),p.injection_sections[1]))
+    elif fault=='host':object.__setattr__(p,'selected_host',None)
+    elif fault=='receiver':object.__setattr__(p,'receiver',replace(p.receiver,top_md=3913.))
+    elif fault=='fake_hole':object.__setattr__(p,'enclosing_sections',(replace(p.enclosing_sections[0],description='Open Hole Size',od_in=8.535),))
+    elif fault in ('source_identity','projection_identity'):object.__setattr__(p,fault,'a'*64)
+    elif fault=='upstream_identity':object.__setattr__(p,'upstream_request_identity','b'*64)
+    elif fault=='upstream_source':object.__setattr__(p,'upstream_source_identity','b'*64)
+    elif fault in ('target_token','host_token'):object.__setattr__(p,fault,'c'*64)
+    elif fault=='reason':object.__setattr__(p,'reason_codes',('SCALAR_TIEBACK_SOURCE_PROVED',))
+    elif fault=='mutable':object.__setattr__(p,'injection_sections',list(p.injection_sections))
+    elif fault=='enabled':object.__setattr__(p,'enabled',True)
+    else:object.__setattr__(p,'app_source_sha','a'*40)
+    before=pickle.dumps(p)
+    with pytest.raises((ValueError,TypeError)):assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert pickle.dumps(p)==before
+
+
+def test_cfw128_c2a_identities_stale_capture_and_coherent_counterfeit_are_not_authentication():
+    from dataclasses import replace
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    from cfw128_er03_boundary import assess_er03_boundary
+    state=cfw128_c1_uat19_state();p=cfw128_c2a_capture(state)
+    a=assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert a==assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert assess_er03_boundary(p,expected_app_source_sha=C2A_APP_SOURCE_SHA)==a  # Old capture cannot consult new state.
+    b=assess_er03_boundary(cfw128_c2a_capture(state),expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert a.projection_identity!=b.projection_identity and a.preview.return_sections!=b.preview.return_sections
+    source=snapshot_geometry(state,app_source_sha=C2A_APP_SOURCE_SHA)
+    for kwargs in ({'source_identity':'a'*64},{'request_identity':'b'*64},{'target_token':'c'*64}):
+        coherent=prepare_er03_preview(replace(source,**kwargs),expected_app_source_sha=C2A_APP_SOURCE_SHA)
+        r=assess_er03_boundary(coherent,expected_app_source_sha=C2A_APP_SOURCE_SHA)
+        assert r.projection_identity!=b.projection_identity and 'CAPTURE_ONLY_REQUIRES_FRESH_APP_RESNAPSHOT' in r.reason_codes
+        assert r.enabled is r.hydraulic_admissible is False
+
+
+def test_cfw128_c2a_frozen_clone_serialization_and_port_datum_mutations_cannot_enable(monkeypatch):
+    from copy import copy,deepcopy
+    from dataclasses import asdict,replace,FrozenInstanceError
+    from cfw128_er03_boundary import assess_er03_boundary,BoundaryHold
+    r=assess_er03_boundary(cfw128_c2a_capture(),expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    assert copy(r)==deepcopy(r)==pickle.loads(pickle.dumps(r))==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        monkeypatch.setenv('CFW128_'+flag.upper(),'true')
+        assert getattr(r,flag) is False
+        with pytest.raises(FrozenInstanceError):setattr(r,flag,True)
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+        data=asdict(r);data[flag]=True
+        with pytest.raises(TypeError):BoundaryHold(**data)
+    for kwargs in ({'return_outlet_pressure':0.},{'pressure_datum':'surface gauge'},
+                   {'status':'READY'},{'reason_codes':()}, {'projection_identity':'a'*64}):
+        with pytest.raises(ValueError):replace(r,**kwargs)
+    for port in (replace(r.physical_ports[-1],md_m=0.),replace(r.physical_ports[-1],md_m=4860.),
+                 replace(r.physical_ports[-1],direction='entry')):
+        with pytest.raises(ValueError):replace(r,physical_ports=(*r.physical_ports[:-1],port))
+    with pytest.raises(TypeError):assess_er03_boundary(asdict(r.preview),expected_app_source_sha=C2A_APP_SOURCE_SHA)
+    for sha in ('f'*40,'BAD',None):
+        with pytest.raises(ValueError):assess_er03_boundary(r.preview,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers():
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]
+    forbidden={'scipy','pumping_simulation','fluids_charts_module_v1_4_2','cement_charts_engine',
+        'cement_chart_report','well_report','phase_10_procedure','centralizer_optimizer_engine',
+        'centralizer_adapter','cfw128_hb03t_frozen','cfw128_hb_numeric','cfw128_hb_intake'}
+    for path in root.glob('*.py'):
+        tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
+        imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        if path.name=='cfw128_er03_boundary.py':assert not imports & forbidden
+        else:assert 'cfw128_er03_boundary' not in imports
+    script='import sys,cfw128_er03_boundary; assert not '+repr(forbidden)+' & set(sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
+
+
+@pytest.mark.parametrize('filename',sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
+                                         if p.name!='cfw128_er03_boundary.py'))
+def test_cfw128_c2a_unauthorized_root_import_mutation_is_rejected(filename,monkeypatch):
+    from pathlib import Path
+    target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_er03_boundary\n' if p==target else read(p,*a,**k))
+    with pytest.raises(AssertionError):test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers()
