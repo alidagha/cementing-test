@@ -3586,3 +3586,156 @@ def test_cfw128_c2b_unauthorized_root_import_mutation_remains_rejected(filename,
     target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_er03_volume\n' if p==target else read(p,*a,**k))
     with pytest.raises(AssertionError):test_cfw128_c2b_import_isolation_in_clean_process_and_all_root_callers()
+
+
+C2D1_APP_SOURCE_SHA = '9efd9d56429b5346c08a73f125686b7efbe8201f'
+
+
+def cfw128_c2d1_inputs(state=None,query_md=()):
+    from cfw128_adapter import snapshot_geometry
+    from cfw128_er03_contract import prepare_er03_preview
+    from cfw128_er03_boundary import assess_er03_boundary
+    from cfw128_er03_volume import audit_geometric_capacity
+    state=cfw128_c1_uat19_state() if state is None else state
+    s=snapshot_geometry(state,app_source_sha=C2D1_APP_SOURCE_SHA,query_md=query_md)
+    p=prepare_er03_preview(s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    b=assess_er03_boundary(p,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    return s,audit_geometric_capacity(b,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2d1_uat19_surface_corridor_and_post_pull_are_nominal_only():
+    from cfw128_c2d_geometry_view import build_geometry_view
+    from cement_chart_model import _capacity
+    state=cfw128_c1_uat19_state();before=pickle.dumps(state);s,a=cfw128_c2d1_inputs(state);proof=pickle.dumps((s,a))
+    r=build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.corridor_contract=='OWNER_SURFACE_CONNECTED_2026_11_11'
+    assert r.nominal_injection_bbl==a.nominal_injection_volume_bbl==pytest.approx(287.819429400755,abs=1e-10)
+    total=lambda parts:sum(v.nominal_volume_bbl for v in parts)
+    assert total(r.lower_annulus)==a.nominal_annular_return_volume_bbl==pytest.approx(82.460178062841,abs=1e-10)
+    assert total(r.upper_pumping_annulus)==_capacity(8.535,5.)*2800==pytest.approx(426.973186160669,abs=1e-10)
+    assert total(r.upper_post_pull_bore)==_capacity(8.535)*2800==pytest.approx(650.069776414482,abs=1e-10)
+    assert [(v.top_md,v.bottom_md,v.inner_diameter_in,v.outer_diameter_in) for v in r.pumping_return]==[(0.,2800.,5.,8.535),(2800.,3885.,7.,8.535)]
+    assert [(v.top_md,v.bottom_md,v.inner_diameter_in,v.outer_diameter_in) for v in r.post_pull_return]==[(0.,2800.,0.,8.535),(2800.,3885.,7.,8.535)]
+    assert r.upper_post_pull_bore[0].running_source_rows==() and r.upper_post_pull_bore[0].wall_source_rows==(2,)
+    assert a.boundary.physical_ports[-1].md_m==2800.  # Historical scope preserved, not the new discharge.
+    assert a.boundary.preview.receiver.shoe_md==4860. and all(v.bottom_md<=3885. for v in r.injection+r.pumping_return)
+    assert r.hydraulic_inventory_transport_qout_freefall_bhsp_charts_toc=='NOT_EVALUATED'
+    assert pickle.dumps((s,a))==proof and pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2d1_all_jobs_partition_once_without_new_hardware(job):
+    from cfw128_c2d_geometry_view import build_geometry_view
+    state=bug01_geometry_case(job);before=pickle.dumps(state);s,a=cfw128_c2d1_inputs(state)
+    r=build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    volume=lambda parts:sum(v.nominal_volume_bbl for v in parts)
+    assert r.nominal_injection_bbl==a.nominal_injection_volume_bbl
+    assert r.pumping_return[0].top_md==0. and r.pumping_return[-1].bottom_md==s.shoe_md
+    assert all(x.bottom_md==y.top_md for x,y in zip(r.pumping_return,r.pumping_return[1:]))
+    if s.kind=='casing':
+        assert r.upper_pumping_annulus==r.upper_post_pull_bore==() and r.post_pull_return is None
+        assert r.nominal_pumping_return_bbl==a.nominal_annular_return_volume_bbl
+    elif s.kind=='liner':
+        assert r.nominal_pumping_return_bbl==a.nominal_annular_return_volume_bbl
+        assert r.lower_annulus[0].top_md==s.string_top_md and r.upper_pumping_annulus[-1].bottom_md==s.string_top_md
+    else:
+        assert volume(r.lower_annulus)==a.nominal_annular_return_volume_bbl
+        assert r.nominal_pumping_return_bbl==volume(r.upper_pumping_annulus)+volume(r.lower_annulus)
+    if job in ('LNR 5"','TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'):assert len({v.outer_diameter_in for v in r.upper_pumping_annulus})>1
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('case',['a_zero','taper','dp_taper','body_taper','directional'])
+def test_cfw128_c2d1_sectional_upper_walls_and_zero_top_remain_measured(case):
+    from cfw128_c2d_geometry_view import build_geometry_view
+    state=synthetic_tieback(top=0.) if case=='a_zero' else r18c_tapered_state(100.) if case=='taper' else synthetic_tieback(top=400.)
+    if case=='dp_taper':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    elif case=='body_taper':
+        t=state['hardware_table'];t.at[0,'MD (m)']='400-500';extra=t.iloc[[0]].copy();extra['MD (m)']='500-700';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t.iloc[:1],extra,t.iloc[1:]],ignore_index=True)
+        state['placement_config']['target_row']=next(k for k,v in hardware_choices(state['hardware_table'],target_descriptions(state['job_type'])).items() if v['depth']==700.)
+    elif case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    s,a=cfw128_c2d1_inputs(state,(50.,) if case=='directional' else ());r=build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    if case=='directional':assert next(v.tvd for v in s.trajectory if v.md==50.)==pytest.approx(47.7464829275686,abs=1e-12)
+    assert r.captured_geometry.survey==s.survey and r.captured_geometry.trajectory==s.trajectory
+    if case=='a_zero':assert r.upper_pumping_annulus==r.upper_post_pull_bore==() and r.post_pull_return==r.lower_annulus
+    else:assert sum(v.bottom_md-v.top_md for v in r.upper_pumping_annulus)==s.string_top_md
+    if case=='taper':assert len(next(v for v in s.installed_strings if v.description=='Previous Tie Back Liner Shoe').sections)==2
+
+
+@pytest.mark.parametrize('fault',['top','shoe','gap','rows','diameter','host','receiver','identity','flags','mutable','port','proof_total','old_source'])
+def test_cfw128_c2d1_mutated_capture_or_historical_proof_fails_closed(fault):
+    from dataclasses import replace
+    from cfw128_c2d_geometry_view import build_geometry_view
+    s,a=deepcopy(cfw128_c2d1_inputs())
+    if fault=='top':object.__setattr__(s,'string_top_md',2799.)
+    elif fault=='shoe':object.__setattr__(s,'shoe_md',4860.)
+    elif fault in ('gap','rows','diameter'):
+        kwargs={'gap':{'top_md':2801.},'rows':{'source_rows':(999,)},'diameter':{'od_in':9.}}[fault]
+        object.__setattr__(s,'active_sections',(s.active_sections[0],replace(s.active_sections[1],**kwargs)))
+    elif fault=='host':object.__setattr__(s,'selected_host',None)
+    elif fault=='receiver':object.__setattr__(s,'receiver',None)
+    elif fault=='identity':object.__setattr__(a,'projection_identity','f'*64)
+    elif fault=='flags':object.__setattr__(a,'enabled',True)
+    elif fault=='mutable':object.__setattr__(s,'active_sections',list(s.active_sections))
+    elif fault=='port':object.__setattr__(a.boundary,'physical_ports',(*a.boundary.physical_ports[:-1],replace(a.boundary.physical_ports[-1],md_m=0.)))
+    elif fault=='proof_total':object.__setattr__(a,'nominal_injection_volume_bbl',0.)
+    else:
+        state=cfw128_c1_uat19_state();state['hardware_table'].at[2,'ID (in)']=8.534;s,_=cfw128_c2d1_inputs(state)
+    with pytest.raises((ValueError,TypeError)):build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2d1_immutability_and_no_currentness_or_pressure_promotion():
+    from dataclasses import replace,FrozenInstanceError,asdict
+    from cfw128_c2d_geometry_view import build_geometry_view
+    s,a=cfw128_c2d1_inputs();r=build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert deepcopy(r)==pickle.loads(pickle.dumps(r))==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(FrozenInstanceError):setattr(r,flag,True)
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(ValueError):replace(r,currentness='CURRENT')
+    with pytest.raises(ValueError):replace(r,lower_annulus=())
+    with pytest.raises(TypeError):build_geometry_view(asdict(s),a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    with pytest.raises(ValueError):build_geometry_view(s,a,expected_app_source_sha='f'*40)
+    with pytest.raises(TypeError):build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA,current=True)
+    state=cfw128_c1_uat19_state();state['hardware_table'].at[2,'ID (in)']=8.534
+    assert build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    fresh,proof=cfw128_c2d1_inputs(state)
+    assert build_geometry_view(fresh,proof,expected_app_source_sha=C2D1_APP_SOURCE_SHA).projection_identity!=r.projection_identity
+
+
+def test_cfw128_c2d1_import_isolation_no_callbacks_or_runtime_escape():
+    import ast,sys,subprocess
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1];path=root/'cfw128_c2d_geometry_view.py';tree=ast.parse(path.read_text())
+    imports={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+    assert imports<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
+    assert not {'eval','exec','__import__','import_module'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+    for other in root.glob('*.py'):
+        if other==path:continue
+        t=ast.parse(other.read_text());names={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
+        assert 'cfw128_c2d_geometry_view' not in names
+    forbidden={'cfw128_adapter','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','streamlit','pumping_simulation','fluids_charts_module_v1_4_2','cement_charts_engine','centralizer_optimizer_engine','well_report'}
+    script='import sys,cfw128_c2d_geometry_view; assert not '+repr(forbidden)+' & set(sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
+
+
+@pytest.mark.parametrize('state',[{}, {'job_type':'CMT PLUG'}])
+def test_cfw128_c2d1_unavailable_sources_have_no_nominal_payload(state):
+    from cfw128_c2d_geometry_view import build_geometry_view
+    s,a=cfw128_c2d1_inputs(state);r=build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='SOURCE_NOT_READY' and r.injection==r.pumping_return==()
+    assert r.post_pull_return is r.nominal_injection_bbl is r.nominal_pumping_return_bbl is None
+
+
+@pytest.mark.parametrize('filename',sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
+                                         if p.name!='cfw128_c2d_geometry_view.py'))
+def test_cfw128_c2d1_other_roots_reject_import_mutation(filename,monkeypatch):
+    from pathlib import Path
+    target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_c2d_geometry_view\n' if p==target else read(p,*a,**k))
+    with pytest.raises(AssertionError):test_cfw128_c2d1_import_isolation_no_callbacks_or_runtime_escape()
