@@ -2508,3 +2508,187 @@ def test_cfw128_b1m_original_cement_snapshot_remains_byte_equivalent(bug01_revie
     state=deepcopy(bug01_reviewed_report_base)
     for fluid in ('Main','Lead','Scavenger','Diesel','Pre Flush','Spacer'):
         assert pickle.dumps(asdict(current.snapshot_lab_intake(state,fluid,app_source_sha='c'*40)))==pickle.dumps(asdict(old.snapshot_lab_intake(state,fluid,app_source_sha='c'*40)))
+
+
+# B2a historical SOFTWARE benchmarks; not live sample instrument evidence.
+B2A_SOFTWARE_BENCHMARKS = [('HB-T01', (45, 37, 27, 22, 16, 9, 8), (2.089010265509999, 0.7853358920369178, 0.5261585706020849)), ('HB-T02', (45, 40, 32, 27, 22, 15, 13), (3.3526935511535374, 1.7204227058387223, 0.3917889412622261)), ('HB-T03', (67, 50, 31, 22, 14, 5, 3), (0.3669405174698402, 0.412302373383494, 0.7064610493520076)), ('HB-T04', (75, 51, 28, 19, 12, 6, 5), (2.3449862860684094, 0.07205055082398323, 0.9958707344605118)), ('HB-T05', (73, 65, 54, 48, 41, 31, 28), (9.865668980488294, 2.3748041403583895, 0.392237770834758)), ('HB-T06', (97, 67, 36, 23, 13, 3, 2), (0.2674618920188657, 0.17374262431457674, 0.905510321730862)), ('HB-T07', (54, 44, 31, 25, 20, 14, 13), (5.744581796668518, 0.28178872442667724, 0.6984323731258377))]
+
+@pytest.mark.parametrize('case,dials,expected', B2A_SOFTWARE_BENCHMARKS)
+def test_cfw128_b2a_frozen_benchmark_replay_and_exact_unit_boundary(case,dials,expected,tmp_path):
+    import json,hashlib
+    import cfw128_hb03t_frozen as hb
+    # Fixed numerical replay tolerance: 1 ppm relative / 1e-9 SI absolute.
+    # This is binary-environment replay, not a CemCADE or physical acceptance tolerance.
+    instrument=hb.InstrumentConfig('Fann 35','R1B1','1.0')  # Historical TEST ONLY assumption.
+    assert all(type(v) is int for v in dials)
+    result=hb.fit_full_hb(dials,hb.RPM_ORDER,instrument=instrument,ramp_type='bhct_down',reviewed=True)
+    assert result.status=='OK' and result.fail_reason_code is None and result.n_starts==60
+    actual=(result.tau_y_pa,result.k_pa_s_n,result.n_dimensionless)
+    assert actual==pytest.approx(expected,rel=1e-6,abs=1e-9)
+    again=hb.fit_full_hb(tuple(reversed(dials)),tuple(reversed(hb.RPM_ORDER)),instrument=instrument,ramp_type='bhct_down',reviewed=True)
+    assert (again.tau_y_pa,again.k_pa_s_n,again.n_dimensionless)==actual
+    assert again.determinism_receipt==result.determinism_receipt and len(result.determinism_receipt)==64
+    assert result.input_readings_rpm_to_dial=={str(r):v for r,v in zip(hb.RPM_ORDER,dials)}
+    engine=hb.to_engine_field(*actual)
+    assert hb.PA_PER_FIELD_TY==0.47880259
+    assert engine.tau_y_field_lbf_100ft2==actual[0]/0.47880259
+    assert engine.k_pa_s_n==actual[1] and engine.n_dimensionless==actual[2] and engine.mu_p_cp==0.0
+    with pytest.raises(TypeError):hb.to_engine_field(engine,actual[1],actual[2])
+    assert result.scientifically_qualified_for_hydraulic_charts is result.chart_lane_admissible is False
+    for gate in ('scientifically_qualified_for_hydraulic_charts','chart_lane_admissible'):
+        with pytest.raises(AttributeError):setattr(result,gate,True)
+        assert result.to_dict()[gate] is False
+    assert hashlib.sha256(__import__('pathlib').Path(hb.__file__).read_bytes()).hexdigest()=='e62678f87867a1b34261a31114e6c692384f0f753c7cbcc92510dd8a5171194f'
+    (tmp_path/(case+'.json')).write_text(json.dumps(result.to_dict(),indent=2,allow_nan=False))
+
+
+@pytest.mark.parametrize('fault,reason',[('missing','INCOMPLETE_DIAL_SET'),('rpm_duplicate','INCOMPLETE_DIAL_SET'),
+    ('fraction','NONINTEGER_DIAL_ENTRY'),('negative','INVALID_READING_VALUE'),('nan','NONFINITE_READING'),
+    ('nonmonotone','NONMONOTONE_READINGS'),('flat','NEAR_NONIDENTIFIABLE'),('instrument','INSTRUMENT_OR_RAMP_MISMATCH'),
+    ('ramp','INSTRUMENT_OR_RAMP_MISMATCH')])
+def test_cfw128_b2a_frozen_negative_intake_is_fail_closed(fault,reason):
+    import cfw128_hb03t_frozen as hb
+    dials=list(B2A_SOFTWARE_BENCHMARKS[0][1]);rpms=list(hb.RPM_ORDER)
+    inst=hb.InstrumentConfig('Fann 35','R1B1','1.0');ramp='bhct_down'
+    if fault=='missing':dials.pop()
+    elif fault=='rpm_duplicate':rpms[-1]=6
+    elif fault=='fraction':dials[0]=45.5
+    elif fault=='negative':dials[-1]=-1
+    elif fault=='nan':dials[0]=float('nan')
+    elif fault=='nonmonotone':dials[-1]=46
+    elif fault=='flat':dials=[1]*7
+    elif fault=='instrument':inst=hb.InstrumentConfig('unknown','R1B1','1.0')
+    else:ramp='not_a_measured_ramp'
+    before=pickle.dumps((dials,rpms,inst))
+    result=hb.fit_full_hb(dials,rpms,instrument=inst,ramp_type=ramp,reviewed=False)
+    assert result.status=='FAIL_CLOSED' and result.fail_reason_code==reason
+    assert result.tau_y_pa is result.k_pa_s_n is result.n_dimensionless is None
+    assert result.scientifically_qualified_for_hydraulic_charts is result.chart_lane_admissible is False
+    assert pickle.dumps((dials,rpms,inst))==before
+
+
+@pytest.mark.parametrize('raw',[True,'45',None,{'pv_cp':45}])
+def test_cfw128_b2a_frozen_programmer_types_never_become_dials(raw):
+    import cfw128_hb03t_frozen as hb
+    dials=list(B2A_SOFTWARE_BENCHMARKS[0][1]);dials[0]=raw
+    with pytest.raises(TypeError):
+        hb.fit_full_hb(dials,hb.RPM_ORDER,instrument=hb.InstrumentConfig('Fann 35','R1B1','1.0'),ramp_type='bhct_down')
+
+
+@pytest.mark.parametrize('consumer',['ct','chart'])
+@pytest.mark.parametrize('fault',['missing','changed_scipy','duplicate','inserted','numpy','existing','extra'])
+def test_cfw128_b2a_requirements_historical_consumers_reject_mutations(consumer,fault,monkeypatch):
+    from pathlib import Path
+    from test_round13b_b4_ct_report import test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged as ct
+    from test_uat_round8b_report import test_template_dependency_and_protected_sources_identical as chart
+    fn={'ct':ct,'chart':chart}[consumer];fn()
+    path=Path('requirements.txt').resolve();source=path.read_bytes();line=b'scipy==1.14.1\n'
+    if fault=='missing':changed=source[:-len(line)]
+    elif fault=='changed_scipy':changed=source.replace(line,b'scipy==1.14.2\n')
+    elif fault=='duplicate':changed=source+line
+    elif fault=='inserted':changed=line+source[:-len(line)]
+    elif fault=='numpy':changed=source.replace(b'numpy==2.1.3',b'numpy==2.2.0')
+    elif fault=='existing':changed=source.replace(b'pandas==2.2.3',b'pandas==2.2.4')
+    else:changed=source[:-len(line)]+b'new_dependency==1.0\n'+line
+    assert changed!=source
+    original=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda f:changed if f.resolve()==path else original(f))
+    with pytest.raises(AssertionError):fn()
+
+
+@pytest.mark.parametrize('fault',['current','unreviewed','stale','incomplete'])
+def test_cfw128_b2a_unverified_cement_snapshot_cannot_fit_or_enable(bug01_reviewed_report_base,fault,monkeypatch):
+    from dataclasses import replace,asdict
+    from cfw128_hb_intake import snapshot_lab_intake
+    import cfw128_hb03t_frozen as hb
+    def forbidden(*a,**k):raise AssertionError('Live source must never reach the frozen fitter.')
+    monkeypatch.setattr(hb,'fit_full_hb',forbidden)
+    state=deepcopy(bug01_reviewed_report_base)
+    if fault=='unreviewed':state['lab_qc_params']['Main']['reviewed']=False
+    elif fault=='stale':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']='169'
+    elif fault=='incomplete':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings'].pop('3')
+    before=pickle.dumps(state);snapshot=snapshot_lab_intake(state,'Main',app_source_sha='a'*40);intent=snapshot
+    assert intent.instrument_provenance=='UNVERIFIED'
+    assert (intent.status=='CAPTURED_FOR_FUTURE_REVIEW') is (fault=='current')
+    assert intent==snapshot_lab_intake(state,'Main',app_source_sha='a'*40) and pickle.dumps(state)==before
+    if fault!='current':assert intent.readings==()
+    assert not any(k in asdict(intent) for k in ('tau_y_pa','k_pa_s_n','n_dimensionless','pressure'))
+    for name in ('enabled','fit_admissible','hydraulic_admissible','chart_admissible','ready_to_run','scientifically_qualified'):
+        assert getattr(intent,name) is False
+        with pytest.raises((TypeError,AttributeError)):setattr(intent,name,True)
+        with pytest.raises((TypeError,ValueError)):replace(intent,**{name:True})
+        assert getattr(pickle.loads(pickle.dumps(intent)),name) is False
+    with pytest.raises(ValueError):snapshot_lab_intake({'plastic_viscosity':45},'Main',app_source_sha='not-verified')
+
+
+def test_cfw128_b2a_real_reviewed_mud_remains_a_hold(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    case=audit.AuditRegressions();app=case.app(deepcopy(bug01_reviewed_report_base));case.phase(app,'phase7')
+    next(w for w in app.checkbox if w.label=='BHCT — Ramp-Down - Displacement Fluid').check().run()
+    for rpm,value in zip((300,200,100,60,30,6,3),('168','116','64','41','24','8','6')):
+        next(w for w in app.text_input if w.label==f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid').set_value(value).run()
+    next(w for w in app.button if w.label=='Confirm measured Mud lab results').click().run()
+    snapshot=snapshot_lab_intake(app.session_state.to_dict(),'Displacement Fluid',app_source_sha='a'*40)
+    assert snapshot.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    assert tuple(r.raw for r in snapshot.readings)==('168','116','64','41','24','8','6')
+    assert all(type(r.dial) is int for r in snapshot.readings)
+    assert snapshot.instrument_provenance=='UNVERIFIED' and snapshot.fit_admissible is False
+    current=app.session_state.to_dict()
+    for fault in ('unreviewed','stale','incomplete'):
+        state=deepcopy(current);qc=state['lab_qc_params']['Displacement Fluid']
+        if fault=='unreviewed':qc['reviewed']=False
+        elif fault=='stale':qc['rheology']['bhct_down']['readings']['300']='169'
+        else:qc['rheology']['bhct_down']['readings'].pop('3')
+        held=snapshot_lab_intake(state,'Displacement Fluid',app_source_sha='a'*40)
+        assert held.status!='CAPTURED_FOR_FUTURE_REVIEW' and held.readings==()
+        assert held.instrument_provenance=='UNVERIFIED' and held.fit_admissible is False
+
+
+def test_cfw128_b2a_runtime_pins_and_production_import_isolation():
+    import ast,hashlib,sys,subprocess
+    from pathlib import Path
+    import numpy,scipy
+    assert sys.version_info[:3]==(3,12,16)
+    assert numpy.__version__=='2.1.3' and scipy.__version__=='1.14.1'
+    raw=Path('requirements.txt').read_bytes();assert raw.endswith(b'scipy==1.14.1\n') and raw.count(b'scipy==1.14.1\n')==1
+    original=subprocess.check_output(['git','show','4c92e4c9b4eab32d2525a356c4e74272fb9171aa:requirements.txt'])
+    assert raw==original+b'scipy==1.14.1\n'
+    for f in Path('.').glob('*.py'):
+        imports={n.module for n in ast.walk(ast.parse(f.read_text())) if isinstance(n,ast.ImportFrom)}
+        imports|={a.name for n in ast.walk(ast.parse(f.read_text())) if isinstance(n,ast.Import) for a in n.names}
+        if f.name not in ('cfw128_hb03t_frozen.py','cfw128_hb_numeric.py'):
+            assert not {'cfw128_hb03t_frozen','cfw128_hb_numeric'} & imports
+    script='''import sys
+from streamlit.testing.v1 import AppTest
+import phase_7_lab,cfw128_hb_intake
+try:
+ app=AppTest.from_file("main.py",default_timeout=30).run()
+ assert not app.exception
+ assert "scipy" not in sys.modules and "cfw128_hb03t_frozen" not in sys.modules
+finally:
+ import streamlit.testing.v1.app_test as t
+ t.TMP_DIR.cleanup()
+'''
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],check=True,capture_output=True,text=True)
+
+
+def test_cfw128_b2a_immutable_intake_and_frozen_public_gates_reject_forgery(bug01_reviewed_report_base):
+    import copy
+    from dataclasses import replace
+    from cfw128_hb_intake import snapshot_lab_intake
+    import cfw128_hb03t_frozen as hb
+    snapshot=snapshot_lab_intake(deepcopy(bug01_reviewed_report_base),'Main',app_source_sha='b'*40)
+    assert isinstance(snapshot.readings,tuple) and isinstance(snapshot.reason_codes,tuple)
+    assert copy.deepcopy(snapshot)==snapshot
+    with pytest.raises(ValueError):replace(snapshot,instrument_provenance='claimed_verified')
+    for gate in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible','scientifically_qualified'):
+        with pytest.raises(ValueError):replace(snapshot,**{gate:True})
+        assert getattr(snapshot,gate) is False
+    with pytest.raises(AttributeError):hb.SCIENTIFIC_QUALIFICATION_GATE=True
+    with pytest.raises(AttributeError):del hb.SCIENTIFIC_QUALIFICATION_GATE
+    result=hb.HBFitResult()
+    for gate in ('scientifically_qualified_for_hydraulic_charts','chart_lane_admissible'):
+        with pytest.raises(TypeError):replace(result,**{gate:True})
+        assert getattr(pickle.loads(pickle.dumps(result)),gate) is False
+        assert result.to_dict()[gate] is False

@@ -243,6 +243,9 @@ def test_template_dependency_and_protected_sources_identical():
             # Owner-approved B4 smoke-test assertions only; all other guardrails unchanged;
             # retain byte-level protection at this explicitly reviewed checkpoint.
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '7eb9600298277a7665b751f807ddb5fb9b13974e91380bb73478cc442d112384'
+        elif name == 'requirements.txt':
+            from test_round13b_b4_ct_report import b2a_original_requirements
+            assert b2a_original_requirements(Path(name).read_bytes()) == subprocess.check_output(['git','show','a61d61e:'+name])
         elif name == 'placement.py':
             from test_round13b_b1_ct_foundation import legacy_placement_source
             assert legacy_placement_source(Path(name).read_bytes()) == subprocess.check_output(['git','show','a61d61e:'+name])
