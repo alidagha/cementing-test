@@ -4199,3 +4199,230 @@ def test_cfw128_c2e2_missing_proofs_and_source_rows_fail_closed(missing):
     elif missing=='host':object.__setattr__(g.captured_geometry,'host_token','stale-token')
     else:object.__setattr__(t.path[0],'running_source_rows',())
     with pytest.raises((ValueError,TypeError)):assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+# C2e-3 v7: paired nominal geometry only; all earlier test bytes are preserved.
+def test_cfw128_c2e3_new_geometric_gap_interface_requirement():
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    g=cfw128_c2e_view(cfw128_c1_uat19_state())
+    r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_POST_PULL_CAPACITY_GAP_AUDIT'
+    assert r.capacity_gap_bbl==pytest.approx(223.096590253813,abs=1e-10)
+    assert r.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+    assert r.post_pull_fluid_boundary=='HOLD_POST_PULL_FLUID_BOUNDARY_UNDEFINED'
+
+
+CFW128_C2E3_SEGMENTS={
+ 'LNR 7"':((0.,400.,8.535,3.5),),
+ 'TIE BACK LNR 7"':((0.,200.,8.535,3.5),),
+ 'LNR 5"':((0.,2650.,8.535,3.5),(2650.,3419.,6.094,3.5)),
+ 'TIE BACK LNR 5"':((0.,100.,8.535,3.5),(100.,200.,6.094,3.5)),
+ 'LNR 4 1/2"':((0.,200.,8.535,3.5),(200.,400.,6.094,3.5)),
+ 'TIE BACK LNR 4 1/2"':((0.,100.,8.535,3.5),(100.,200.,6.094,3.5)),
+}
+
+
+@pytest.mark.parametrize('job',tuple(CFW128_C2E3_SEGMENTS))
+def test_cfw128_c2e3_six_jobs_exact_piecewise_pairing_and_provenance(job):
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    from cement_chart_model import _capacity
+    state=bug01_geometry_case(job);before=pickle.dumps(state);g=cfw128_c2e_view(state)
+    proof=pickle.dumps(g);r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert tuple((p.top_md,p.bottom_md,p.host_id_in,p.drill_pipe_od_in) for p in r.slices)==CFW128_C2E3_SEGMENTS[job]
+    assert len(r.slices)==len(g.upper_pumping_annulus)==len(g.upper_post_pull_bore)
+    assert r.unchanged_injection_bbl==g.nominal_injection_bbl
+    assert r.unchanged_lower_annulus_bbl==sum(v.nominal_volume_bbl for v in g.lower_annulus)
+    for row,pump,post in zip(r.slices,g.upper_pumping_annulus,g.upper_post_pull_bore):
+        assert (row.top_md,row.bottom_md,row.host_id_in,row.wall_source_rows)==(post.top_md,post.bottom_md,post.outer_diameter_in,post.wall_source_rows)
+        assert (row.drill_pipe_od_in,row.running_source_rows)==(pump.inner_diameter_in,pump.running_source_rows)
+        assert post.inner_diameter_in==0. and not post.running_source_rows
+        assert all(state['hardware_table'].iloc[i].Description=='Drill Pipes' for i in row.running_source_rows)
+        assert all(state['hardware_table'].iloc[i].Description in ('Previous Casing','Previous Liner Shoe') for i in row.wall_source_rows)
+        assert row.pumping_role=='PUMPING_DP_PRESENT' and row.post_pull_role=='POST_PULL_DP_REMOVED'
+        assert row.pumping_capacity_bbl_per_m==_capacity(row.host_id_in,row.drill_pipe_od_in)
+        assert row.post_pull_capacity_bbl_per_m==_capacity(row.host_id_in)
+        length=row.bottom_md-row.top_md
+        assert row.pumping_volume_bbl==length*_capacity(row.host_id_in,row.drill_pipe_od_in)
+        assert row.post_pull_volume_bbl==length*_capacity(row.host_id_in)
+        assert row.capacity_gap_bbl==row.post_pull_volume_bbl-row.pumping_volume_bbl>0.
+        assert row.capacity_gap_bbl==pytest.approx(length*_capacity(row.drill_pipe_od_in),abs=1e-10)
+    if '5"' in job or '4 1/2' in job:
+        assert [(p.host_id_in,q.outer_diameter_in) for p,q in zip(r.slices,g.upper_post_pull_bore)]==[(8.535,8.535),(6.094,6.094)]
+        assert r.slices[0].bottom_md==r.slices[1].top_md
+        assert r.slices[0].wall_source_rows!=r.slices[1].wall_source_rows
+    assert r.capacity_gap_bbl==sum(v.capacity_gap_bbl for v in r.slices)
+    assert r.capacity_gap_bbl==pytest.approx(r.upper_post_pull_bbl-r.upper_pumping_bbl,abs=1e-10)
+    assert pickle.dumps(state)==before and pickle.dumps(g)==proof
+
+
+def test_cfw128_c2e3_uat19_gap_is_geometric_never_derived_displacement():
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    from dataclasses import fields
+    g=cfw128_c2e_view(cfw128_c1_uat19_state());r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.upper_pumping_bbl==pytest.approx(426.973186160669,abs=1e-10)
+    assert r.upper_post_pull_bbl==pytest.approx(650.069776414482,abs=1e-10)
+    assert r.capacity_gap_bbl==pytest.approx(223.096590253813,abs=1e-10)
+    assert r.unchanged_lower_annulus_bbl==pytest.approx(82.460178062841,abs=1e-10)
+    assert r.unchanged_injection_bbl==pytest.approx(287.819429400755,abs=1e-10)
+    assert [(p.top_md,p.bottom_md,p.host_id_in,p.drill_pipe_od_in,p.running_source_rows,p.wall_source_rows) for p in r.slices]==[(0.,2800.,8.535,5.,(7,),(2,))]
+    assert r.shoe_md==3885. and g.captured_geometry.receiver.shoe_md==4860.
+    assert all(v.bottom_md<=3885. for v in g.injection+g.lower_annulus+g.upper_pumping_annulus)
+    assert r.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+    assert r.other_pumped_volume_authority=='ENTERED_PHASE_IV_STAGE_VOLUMES'
+    assert r.post_pull_fluid_boundary=='HOLD_POST_PULL_FLUID_BOUNDARY_UNDEFINED'
+    assert not any(f.name in ('computed_displacement_bbl','final_toc_md','post_pull_fill_bbl') for f in fields(r))
+
+
+@pytest.mark.parametrize('case',['zero_top','dp_taper','previous_taper','directional'])
+def test_cfw128_c2e3_measured_special_geometry_and_zero_lap(case):
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    state=synthetic_tieback(top=0. if case=='zero_top' else 400.) if case!='previous_taper' else r18c_tapered_state(100.)
+    if case=='dp_taper':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    if case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    g=cfw128_c2e_view(state,(50.,) if case=='directional' else ());before=pickle.dumps(g)
+    r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    if case=='zero_top':assert r.upper_pumping_bbl==r.upper_post_pull_bbl==r.capacity_gap_bbl==0. and not r.slices
+    else:assert r.slices[0].top_md==0. and r.slices[-1].bottom_md==r.lap_md
+    if case=='dp_taper':assert [(v.top_md,v.bottom_md,v.drill_pipe_od_in) for v in r.slices]==[(0.,200.,7.),(200.,400.,6.5)]
+    if case=='previous_taper':assert [(v.top_md,v.bottom_md,v.host_id_in) for v in r.slices]==[(0.,100.,8.535),(100.,150.,6.094),(150.,300.,5.8),(300.,400.,6.094)]
+    if case=='directional':assert next(v.tvd for v in g.captured_geometry.trajectory if v.md==50.)==pytest.approx(47.7464829275686,abs=1e-12)
+    assert r.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+    assert pickle.dumps(g)==before
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS[:2])
+def test_cfw128_c2e3_casing_has_no_fictitious_pull_or_unknown_zero(job):
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    g=cfw128_c2e_view(bug01_geometry_case(job));r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status==r.post_pull_fluid_boundary=='NOT_APPLICABLE'
+    assert r.upper_pumping_bbl is r.upper_post_pull_bbl is r.capacity_gap_bbl is None
+    assert not r.slices and r.unchanged_injection_bbl==g.nominal_injection_bbl
+    assert r.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+
+
+@pytest.mark.parametrize('stage,overflow',[('Main',False),('Main',True),('Spacer',False),('Spacer',True),('Displacement Fluid',False)])
+def test_cfw128_c2e3_stage_volume_authority_and_geometry_independence(stage,overflow):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state(),('Spacer','Main','Displacement Fluid'))
+    state['fluids_config']['params']['Main']['volume']=2000. if overflow else 40.
+    state['fluids_config']['params']['Spacer']['volume']=10.
+    state['fluids_config']['params']['Displacement Fluid']['volume']=20.  # Entered what-if only; NOT derived.
+    g=cfw128_c2e_view(state);before=pickle.dumps(g)
+    def preview():return preview_fluid_tracking(g,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=3)
+    a=preview();gap=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    original=state['fluids_config']['params'][stage]['volume'];state['fluids_config']['params'][stage]['volume']=original+20.
+    intended=pickle.dumps(state);b=preview();same=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    la,lb=(next(v for v in r.ledgers if v.fluid==stage) for r in (a,b))
+    assert lb.entered_bbl==la.entered_bbl+20.
+    assert next(v for v in b.stages if v.name==stage).volume_bbl==original+20.
+    if overflow:assert lb.ideal_returned_bbl==pytest.approx(la.ideal_returned_bbl+20.)
+    else:assert lb.in_path_bbl==pytest.approx(la.in_path_bbl+20.)
+    assert a.occupancy!=b.occupancy or a.ledgers!=b.ledgers
+    assert gap==same and pickle.dumps(g)==before and pickle.dumps(state)==intended
+    assert b.source_identity!=a.source_identity
+    assert gap.other_pumped_volume_authority=='ENTERED_PHASE_IV_STAGE_VOLUMES'
+    assert gap.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+    if stage=='Displacement Fluid':
+        assert next(v for v in b.stages if v.name=='Main').volume_bbl==next(v for v in a.stages if v.name=='Main').volume_bbl
+        assert next(v for v in b.stages if v.name=='Displacement Fluid').density_pcf==b.initial_mud_density_pcf
+        assert any(o.fluid=='Mud' for o in b.occupancy) and any(o.fluid=='Displacement Fluid' for o in b.occupancy)
+
+
+def test_cfw128_c2e3_mud_returns_do_not_put_cement_at_surface_or_final_toc():
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    # Existing entered what-if fixture, NOT an approved operational displacement
+    # rule. Main's 40 bbl is its intended pumped amount in this synthetic case.
+    g,t=cfw128_c2e2_capture(cfw128_c1_uat19_state(),{'Main':40.})
+    r=assess_cement_placement(t,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    gap=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert t.mud_displaced_bbl>0. and r.pumping_state_toc_candidate_md>2800.
+    assert not r.surface_cement_return_present
+    assert next(v for v in t.ledgers if v.fluid=='Main').entered_bbl==40.
+    assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    assert gap.final_toc=='NOT_EVALUATED' and gap.displacement_volume_authority=='HOLD_DERIVED_DISPLACEMENT_NOT_IMPLEMENTED'
+
+
+def cfw128_c2e3_rebind_view(g):
+    from cfw128_c2d_geometry_view import _tree,_view_id
+    from project_state import fingerprint
+    source=fingerprint(['c2d1-captured-input/1',g.app_source_sha,_tree(g.captured_geometry),_tree(g.historical_capacity_audit)])
+    object.__setattr__(g,'source_identity',source)
+    values=(g.status,g.injection,g.lower_annulus,g.upper_pumping_annulus,g.upper_post_pull_bore)
+    object.__setattr__(g,'projection_identity',_view_id(source,g.app_source_sha,values))
+    return g
+
+
+@pytest.mark.parametrize('fault',['none','dict','sha','flags','nested_flags','source_hash','projection_hash','proof','host','receiver','unpaired','overlap','running_rows','wall_rows','host_ID','DP_OD','negative_MD','nan','inf','body_ID','old_receiver_flow','wrong_role'])
+def test_cfw128_c2e3_invalid_or_corrupt_geometry_fails_closed(fault):
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    g=deepcopy(cfw128_c2e_view(cfw128_c1_uat19_state()));sha=C2D1_APP_SOURCE_SHA
+    if fault=='none':g=None
+    elif fault=='dict':g={}
+    elif fault=='sha':sha='0'*40
+    elif fault=='flags':object.__setattr__(g,'enabled',True)
+    elif fault=='nested_flags':object.__setattr__(g.captured_geometry,'hydraulic_admissible',True)
+    elif fault=='source_hash':object.__setattr__(g,'source_identity','0'*64)
+    elif fault=='projection_hash':object.__setattr__(g,'projection_identity','0'*64)
+    elif fault=='proof':object.__setattr__(g,'historical_capacity_audit',None)
+    elif fault=='host':object.__setattr__(g.captured_geometry,'host_token','stale-selected-host')
+    elif fault=='receiver':object.__setattr__(g.captured_geometry,'receiver',None)
+    elif fault=='unpaired':object.__setattr__(g,'upper_post_pull_bore',());cfw128_c2e3_rebind_view(g)
+    elif fault=='overlap':object.__setattr__(g.upper_post_pull_bore[0],'top_md',1.);cfw128_c2e3_rebind_view(g)
+    elif fault=='running_rows':object.__setattr__(g.upper_pumping_annulus[0],'running_source_rows',());cfw128_c2e3_rebind_view(g)
+    elif fault=='wall_rows':object.__setattr__(g.upper_post_pull_bore[0],'wall_source_rows',(999,));cfw128_c2e3_rebind_view(g)
+    elif fault=='host_ID':
+        object.__setattr__(g.upper_pumping_annulus[0],'outer_diameter_in',9.);object.__setattr__(g.upper_post_pull_bore[0],'outer_diameter_in',9.);cfw128_c2e3_rebind_view(g)
+    elif fault=='DP_OD':object.__setattr__(g.upper_pumping_annulus[0],'inner_diameter_in',8.535);cfw128_c2e3_rebind_view(g)
+    elif fault=='negative_MD':object.__setattr__(g.upper_pumping_annulus[0],'top_md',-1.)
+    elif fault in ('nan','inf'):object.__setattr__(g.upper_post_pull_bore[0],'outer_diameter_in',float(fault))
+    elif fault=='body_ID':object.__setattr__(g.injection[-1],'outer_diameter_in',5.);cfw128_c2e3_rebind_view(g)
+    elif fault=='old_receiver_flow':object.__setattr__(g.lower_annulus[-1],'bottom_md',4860.);cfw128_c2e3_rebind_view(g)
+    elif fault=='wrong_role':object.__setattr__(g.upper_pumping_annulus[0],'domain','lower_annulus');cfw128_c2e3_rebind_view(g)
+    with pytest.raises((ValueError,TypeError)):audit_post_pull_gap(g,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e3_deep_immutability_and_no_currentness_claim():
+    from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
+    from dataclasses import replace,FrozenInstanceError
+    import inspect
+    assert tuple(inspect.signature(audit_post_pull_gap).parameters)==('view','expected_app_source_sha')
+    state=cfw128_c1_uat19_state();g=cfw128_c2e_view(state);r=audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.loads(pickle.dumps(r))==r and r==audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.hydraulics==r.final_toc=='NOT_EVALUATED' and r.currentness=='NOT_CURRENTNESS_PROOF'
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(FrozenInstanceError):r.slices[0].host_id_in=9.
+    with pytest.raises(FrozenInstanceError):r.enabled=True
+    with pytest.raises(TypeError):r.slices[0]=r.slices[0]
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert audit_post_pull_gap(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r  # A replay cannot prove fresh App state.
+    fresh=audit_post_pull_gap(cfw128_c2e_view(state),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert fresh.projection_identity!=r.projection_identity and fresh.geometry_source_identity!=r.geometry_source_identity
+    assert fresh.capacity_gap_bbl==pytest.approx(r.capacity_gap_bbl,abs=1e-10)
+
+
+def test_cfw128_c2e3_import_and_no_production_caller_isolation(monkeypatch):
+    import ast,sys,subprocess
+    from pathlib import Path
+    root=Path('.');path=root/'cfw128_c2e3_post_pull_gap.py'
+    def verify():
+        tree=ast.parse(path.read_text());names={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        assert names<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
+        assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+        for other in root.glob('*.py'):
+            if other==path:continue
+            t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
+            assert path.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((path,'\nimport cfw128_c2d_geometry_view\n'),(root/'main.py','\nimport cfw128_c2e3_post_pull_gap\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:original(p,*a,**k)+addition if p==target else original(p,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e3_post_pull_gap; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
