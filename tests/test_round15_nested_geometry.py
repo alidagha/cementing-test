@@ -5139,3 +5139,248 @@ def test_cfw128_c2e6a_positive_no_cement_and_surface_return_never_resolve_remap(
         assert c.actually_entered_bbl==pytest.approx(c.injection_bbl+c.lower_annulus_bbl+c.upper_pumping_annulus_bbl+c.ideal_returned_bbl,abs=1e-10)
     assert len(r.unresolved_decisions)==4 and r.physical_remap_status=='HOLD_POST_PULL_PHYSICAL_REMAP_UNDEFINED'
     assert r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+
+
+# C2e-6b: nominal dry-pipe ID Mud recovery versus new make-up, no remapping.
+def cfw128_c2e6b_inputs(state=None,names=('Main','Displacement Fluid')):
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args=cfw128_c2e6a_inputs(state,names)
+    closure=audit_post_pull_closure(*args,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    return state,args,closure
+
+
+def test_cfw128_c2e6b_new_uat19_dry_pipe_ledger_requirement():
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state,args,closure=cfw128_c2e6b_inputs();g,b,d,s,t,p=args
+    result=audit_dry_pipe_makeup(g,b,closure,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert result.status=='DISABLED_DRY_PIPE_MUD_MAKEUP_AUDIT'
+    assert result.removed_pipe_outer_displacement_bbl==pytest.approx(223.096590253813,abs=1e-10)
+    assert result.drained_internal_mud_bbl==pytest.approx(163.165492848024,abs=1e-10)
+    assert result.new_mud_makeup_bbl==pytest.approx(59.931097405789,abs=1e-10)
+    assert result.new_mud_makeup_bbl!=d.derived_displacement_bbl
+    assert result.final_toc=='NOT_EVALUATED' and result.currentness=='NOT_CURRENTNESS_PROOF'
+
+
+def cfw128_c2e6b_rebind_closure(c):
+    from dataclasses import fields
+    from project_state import fingerprint
+    plain=lambda rows:tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in rows)
+    object.__setattr__(c,'projection_identity',fingerprint(['cfw128-c2e6a-closure/1',c.app_source_sha,c.receipt_projection_identities,plain(c.cement_inventory),plain(c.noncement_inventory),c.initial_mud_remaining_bbl,c.ideal_initial_mud_returned_bbl,c.initial_mud_occupancy,c.preserved_placement_holds,c.inventory_evidence,c.capture_completeness,c.physical_remap_status,c.unresolved_decisions,'FINAL_POST_PULL_TOC_NOT_EVALUATED']))
+    return c
+
+
+def cfw128_c2e6b_rebind_gap(b):
+    from dataclasses import fields
+    from project_state import fingerprint
+    plain=lambda rows:tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in rows)
+    object.__setattr__(b,'projection_identity',fingerprint(['cfw128-c2e3-geometric-gap/1',b.app_source_sha,b.geometry_source_identity,b.geometry_projection_identity,b.job,b.kind,b.lap_md,b.shoe_md,b.status,plain(b.slices),b.unchanged_injection_bbl,b.unchanged_lower_annulus_bbl,b.upper_pumping_bbl,b.upper_post_pull_bbl,b.capacity_gap_bbl,b.post_pull_fluid_boundary,b.displacement_volume_authority,b.other_pumped_volume_authority,b.currentness]))
+    return b
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e6b_eight_jobs_dp_only_sections_and_independent_steel_balance(job):
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    from cement_chart_model import _capacity
+    state,args,c=cfw128_c2e6b_inputs(bug01_geometry_case(job),('Spacer','Main','Lead','Tail','Spacer Behind','Displacement Fluid'))
+    g,b,d,s,t,p=args;before=pickle.dumps((state,args,c));r=audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.dumps((state,args,c))==before
+    assert r.preserved_placement_holds==c.preserved_placement_holds==p.reason_codes
+    assert r.preserved_closure_holds==c.unresolved_decisions
+    assert r.original_pumping_displacement_bbl==d.derived_displacement_bbl and r.original_displacement_end_md==d.end_md
+    if r.kind=='casing':
+        assert r.status=='NOT_APPLICABLE' and not r.intervals
+        assert r.removed_pipe_outer_displacement_bbl is r.drained_internal_mud_bbl is r.new_mud_makeup_bbl is r.independent_steel_volume_bbl is None
+    else:
+        assert r.status=='DISABLED_DRY_PIPE_MUD_MAKEUP_AUDIT'
+        assert len(r.intervals)==len(b.slices)
+        cursor=0.;manual_id=manual_od=manual_steel=0.
+        for row,gap in zip(r.intervals,b.slices):
+            assert row.top_md==cursor and row.bottom_md<=g.captured_geometry.string_top_md
+            cursor=row.bottom_md
+            original=next(v for v in g.captured_geometry.active_sections if v.top_md<=row.top_md and row.bottom_md<=v.bottom_md)
+            assert original.description=='Drill Pipes'
+            assert (row.internal_id_in,row.outer_od_in,row.source_rows,row.wall_source_rows)==(original.id_in,original.od_in,original.source_rows,gap.wall_source_rows)
+            assert all(state['hardware_table'].iloc[i]['Description']=='Drill Pipes' for i in row.source_rows)
+            length=row.bottom_md-row.top_md
+            manual_id+=cfw128_c2e4_manual_bbl(length,row.internal_id_in)
+            manual_od+=cfw128_c2e4_manual_bbl(length,row.outer_od_in)
+            manual_steel+=cfw128_c2e4_manual_bbl(length,row.outer_od_in)-cfw128_c2e4_manual_bbl(length,row.internal_id_in)
+            assert row.independent_steel_volume_bbl==length*_capacity(row.outer_od_in,row.internal_id_in)
+            assert row.drained_internal_mud_bbl==length*_capacity(row.internal_id_in)
+            assert row.removed_pipe_outer_displacement_bbl==gap.capacity_gap_bbl
+            assert row.new_mud_makeup_bbl==gap.capacity_gap_bbl-row.drained_internal_mud_bbl>0.
+            assert set(row.captured_mud_stages)<={'Mud','Displacement Fluid'} and row.captured_mud_stages
+        assert cursor==g.captured_geometry.string_top_md
+        assert r.drained_internal_mud_bbl==pytest.approx(manual_id,abs=1e-10)
+        assert r.removed_pipe_outer_displacement_bbl==b.capacity_gap_bbl==pytest.approx(manual_od,abs=1e-10)
+        assert r.new_mud_makeup_bbl==pytest.approx(manual_steel,abs=1e-10)
+        assert r.removed_pipe_outer_displacement_bbl==pytest.approx(r.drained_internal_mud_bbl+r.new_mud_makeup_bbl,abs=1e-10)
+        assert r.new_mud_makeup_bbl<r.removed_pipe_outer_displacement_bbl
+        if '5"' in job or '4 1/2' in job:
+            assert [(v.top_md,v.bottom_md) for v in r.intervals]==[(v[0],v[1]) for v in CFW128_C2E3_SEGMENTS[job]]
+            assert len({v.wall_source_rows for v in r.intervals})==2
+
+
+def test_cfw128_c2e6b_uat19_hand_check_does_not_move_25m_cement_or_double_count_mud():
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state,args,c=cfw128_c2e6b_inputs();g,b,d,s,t,p=args;before=pickle.dumps((state,args,c))
+    r=audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    od=cfw128_c2e4_manual_bbl(2800.,5.);internal=cfw128_c2e4_manual_bbl(2800.,4.276)
+    assert r.removed_pipe_outer_displacement_bbl==pytest.approx(od,abs=1e-10)
+    assert r.drained_internal_mud_bbl==pytest.approx(internal,abs=1e-10)
+    assert r.new_mud_makeup_bbl==pytest.approx(od-internal,abs=1e-10)
+    assert r.new_mud_makeup_bbl+r.drained_internal_mud_bbl==pytest.approx(223.096590253813,abs=1e-10)
+    assert [(v.top_md,v.bottom_md,v.internal_id_in,v.outer_od_in,v.source_rows) for v in r.intervals]==[(0.,2800.,4.276,5.,(7,))]
+    assert r.original_pumping_displacement_bbl==pytest.approx(284.947218881107,abs=1e-10) and r.original_displacement_end_md==3860.
+    cement=c.cement_inventory[0]
+    assert cement.actually_entered_bbl==40. and cement.injection_bbl==pytest.approx(2.872210519648,abs=1e-10)
+    assert cement.lower_annulus_bbl==pytest.approx(37.127789480352,abs=1e-10) and cement.upper_pumping_annulus_bbl==cement.ideal_returned_bbl==0.
+    assert r.active_shoe_md==3885. and c.initial_mud_remaining_bbl>0. and not c.surface_cement_return_present
+    assert 'HOLD_CEMENT_REMAINS_IN_INJECTION' in r.preserved_placement_holds
+    assert len(r.preserved_closure_holds)==4 and r.physical_remap_status=='HOLD_POST_PULL_FLUID_BOUNDARY_AND_TRANSFER_UNPROVEN'
+    assert pickle.dumps((state,args,c))==before
+
+
+@pytest.mark.parametrize('case',['zero','near_zero','sectional_dp','previous_taper'])
+def test_cfw128_c2e6b_zero_lap_tapers_and_actual_piecewise_wall_provenance(case):
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state=synthetic_tieback(top=0. if case=='zero' else .001) if case in ('zero','near_zero') else cfw128_c2e5_tapered_state(674.) if case=='sectional_dp' else r18c_tapered_state(100.)
+    state,args,c=cfw128_c2e6b_inputs(state);g,b,d,s,t,p=args;r=audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    if case=='zero':
+        assert not r.intervals and r.removed_pipe_outer_displacement_bbl==r.drained_internal_mud_bbl==r.new_mud_makeup_bbl==0.
+    else:
+        assert r.intervals[0].top_md==0. and r.intervals[-1].bottom_md==g.captured_geometry.string_top_md
+        assert r.new_mud_makeup_bbl>0.
+    if case=='sectional_dp':
+        assert [(v.top_md,v.bottom_md,v.outer_od_in,v.internal_id_in) for v in r.intervals]==[(0.,200.,5.,4.276),(200.,400.,4.5,4.)]
+    if case=='previous_taper':
+        assert any(v.description=='Previous Tie Back Liner Shoe' for v in g.captured_geometry.installed_strings)
+        assert len(r.intervals)>1 and len({v.wall_source_rows for v in r.intervals})>1
+
+
+@pytest.mark.parametrize('field,value',[('ID (in)',4.3),('Size (in)','5 1/2')])
+def test_cfw128_c2e6b_fresh_dp_id_and_od_edits_change_only_their_true_capacity_contributions(field,value):
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state,args,c=cfw128_c2e6b_inputs();g,b,d,s,t,p=args;a=audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    changed=cfw128_c1_uat19_state();changed['hardware_table'].at[7,field]=value
+    state2,args2,c2=cfw128_c2e6b_inputs(changed);g2,b2,d2,s2,t2,p2=args2
+    z=audit_dry_pipe_makeup(g2,b2,c2,t2,s2,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert z.projection_identity!=a.projection_identity and z.geometry_source_identity!=a.geometry_source_identity
+    if field=='ID (in)':
+        assert z.removed_pipe_outer_displacement_bbl==a.removed_pipe_outer_displacement_bbl
+        assert z.drained_internal_mud_bbl>a.drained_internal_mud_bbl and z.new_mud_makeup_bbl<a.new_mud_makeup_bbl
+        assert d2.derived_displacement_bbl!=d.derived_displacement_bbl  # Fresh measured injection ID changes the separate original calculation too.
+    else:
+        assert z.removed_pipe_outer_displacement_bbl>a.removed_pipe_outer_displacement_bbl and z.new_mud_makeup_bbl>a.new_mud_makeup_bbl
+        assert z.drained_internal_mud_bbl==a.drained_internal_mud_bbl and d2.derived_displacement_bbl==d.derived_displacement_bbl
+    with pytest.raises((ValueError,TypeError)):audit_dry_pipe_makeup(g2,b,c2,t2,s2,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert a.original_pumping_displacement_bbl==d.derived_displacement_bbl
+
+
+@pytest.mark.parametrize('fault',['geometry_none','gap_none','closure_none','tracking_none','schedule_none','wrong_sha','sibling_gap','sibling_closure','sibling_tracking','sibling_schedule','gap_hash','gap_total','gap_rows','gap_host','gap_boolean_MD','closure_hash','closure_parent','closure_stage','closure_inventory','closure_lost_hold','closure_empty_parent','closure_boolean','schedule_hash','schedule_stage','tracking_hash','tracking_volume','tracking_path_rows','tracking_density','geometry_flags','gap_flags','closure_flags','tracking_flags','schedule_flags','bad_ID','bad_OD','nan','inf','wrong_job'])
+def test_cfw128_c2e6b_receipt_source_stage_and_deep_mutations_fail_closed(fault):
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state,args,c=deepcopy(cfw128_c2e6b_inputs());g,b,d,s,t,p=args;values=[g,b,c,t,s];sha=C2D1_APP_SOURCE_SHA
+    mapping={'geometry_none':0,'gap_none':1,'closure_none':2,'tracking_none':3,'schedule_none':4}
+    if fault in mapping:values[mapping[fault]]=None
+    elif fault=='wrong_sha':sha='0'*40
+    elif fault.startswith('sibling_'):
+        other,a2,c2=cfw128_c2e6b_inputs(bug01_geometry_case('LNR 7"'));g2,b2,d2,s2,t2,p2=a2
+        index={'sibling_gap':1,'sibling_closure':2,'sibling_tracking':3,'sibling_schedule':4}[fault];values[index]=[g2,b2,c2,t2,s2][index]
+    elif fault=='gap_hash':object.__setattr__(b,'projection_identity','0'*64)
+    elif fault=='gap_total':object.__setattr__(b,'capacity_gap_bbl',b.capacity_gap_bbl+1.);cfw128_c2e6b_rebind_gap(b)
+    elif fault=='gap_rows':object.__setattr__(b.slices[0],'running_source_rows',());cfw128_c2e6b_rebind_gap(b)
+    elif fault=='gap_host':object.__setattr__(b.slices[0],'host_id_in',9.);cfw128_c2e6b_rebind_gap(b)
+    elif fault=='gap_boolean_MD':object.__setattr__(b.slices[0],'top_md',False);cfw128_c2e6b_rebind_gap(b)
+    elif fault=='closure_hash':object.__setattr__(c,'projection_identity','0'*64)
+    elif fault=='closure_parent':object.__setattr__(c,'receipt_projection_identities',tuple((a,'0'*64 if a=='derived' else v) for a,v in c.receipt_projection_identities));cfw128_c2e6b_rebind_closure(c)
+    elif fault=='closure_stage':object.__setattr__(c.cement_inventory[0],'stage_source_identity','0'*64);cfw128_c2e6b_rebind_closure(c)
+    elif fault=='closure_inventory':object.__setattr__(c.cement_inventory[0],'injection_bbl',0.);cfw128_c2e6b_rebind_closure(c)
+    elif fault=='closure_lost_hold':object.__setattr__(c,'preserved_placement_holds',());cfw128_c2e6b_rebind_closure(c)
+    elif fault=='closure_empty_parent':object.__setattr__(c,'receipt_projection_identities',((),));cfw128_c2e6b_rebind_closure(c)
+    elif fault=='closure_boolean':object.__setattr__(c.cement_inventory[0],'ideal_returned_bbl',False);cfw128_c2e6b_rebind_closure(c)
+    elif fault=='schedule_hash':object.__setattr__(s,'source_identity','0'*64)
+    elif fault=='schedule_stage':object.__setattr__(s.stages[0],'source_identity','0'*64)
+    elif fault=='tracking_hash':object.__setattr__(t,'source_identity','0'*64)
+    elif fault=='tracking_volume':object.__setattr__(t.occupancy[0],'volume_bbl',t.occupancy[0].volume_bbl+1.);cfw128_c2e2_rebind(t)
+    elif fault=='tracking_path_rows':object.__setattr__(t.path[0],'running_source_rows',());cfw128_c2e2_rebind(t)
+    elif fault=='tracking_density':object.__setattr__(t.stages[0],'raw_density',True)
+    elif fault.endswith('_flags'):
+        target={'geometry_flags':g.captured_geometry,'gap_flags':b,'closure_flags':c,'tracking_flags':t,'schedule_flags':s}[fault];object.__setattr__(target,'enabled',True)
+    elif fault=='bad_ID':object.__setattr__(g.captured_geometry.active_sections[0],'id_in',0.)
+    elif fault=='bad_OD':object.__setattr__(g.captured_geometry.active_sections[0],'od_in',g.captured_geometry.active_sections[0].id_in)
+    elif fault in ('nan','inf'):object.__setattr__(g.captured_geometry.active_sections[0],'id_in',float(fault))
+    elif fault=='wrong_job':object.__setattr__(g.captured_geometry,'job','LNR 7"')
+    with pytest.raises((ValueError,TypeError)):audit_dry_pipe_makeup(*values,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e6b_does_not_relabel_dp_cement_or_partial_schedule_as_drained_mud():
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    from cfw128_c2e6a_post_pull_closure import audit_post_pull_closure
+    state,args,c=cfw128_c2e6b_inputs(synthetic_tieback(top=676.));g,b,d,s,t,p=args
+    assert d.end_md==675.<g.captured_geometry.string_top_md
+    assert any(o.fluid=='Main' and t.path[o.section_index].domain=='injection' and min(o.inlet_md,o.outlet_md)<676. for o in t.occupancy)
+    with pytest.raises(ValueError,match='HOLD_DP_INTERNAL_MUD_NOT_PROVEN'):audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    state,args,c=cfw128_c2e6b_inputs();g,b,d,s,t,p=args;overlay=cfw128_c2e5_test_composition(state,g,d)['overlay']
+    partial=preview_fluid_tracking(g,overlay,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=1)
+    place=assess_cement_placement(partial,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    held=audit_post_pull_closure(g,b,d,s,partial,place,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    with pytest.raises(ValueError,match='HOLD_SOURCE_PUMPING_NOT_COMPLETE'):audit_dry_pipe_makeup(g,b,held,partial,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2e6b_source_roundoff_proof_cannot_mask_changed_capacity(monkeypatch):
+    import cfw128_c2e6b_dry_pipe_mud_makeup as module
+    state,args,c=cfw128_c2e6b_inputs();g,b,d,s,t,p=args;original=module._capacity
+    monkeypatch.setattr(module,'_capacity',lambda a,z=0.:original(a,z)*1.01)
+    with pytest.raises(ValueError):module.audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2e6b_frozen_serialization_replay_and_no_source_mutation():
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    from dataclasses import FrozenInstanceError,replace
+    state,args,c=cfw128_c2e6b_inputs();g,b,d,s,t,p=args;before=pickle.dumps((state,args,c));r=audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.dumps((state,args,c))==before and pickle.loads(pickle.dumps(r))==r
+    assert audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(FrozenInstanceError):r.intervals[0].internal_id_in=5.
+    with pytest.raises(TypeError):r.intervals[0]=r.intervals[0]
+    state['hardware_table'].at[7,'ID (in)']=4.3
+    assert audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.hydraulics==r.final_toc=='NOT_EVALUATED'
+
+
+def test_cfw128_c2e6b_import_isolation_and_negative_runtime_caller_mutations(monkeypatch):
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path('.');path=root/'cfw128_c2e6b_dry_pipe_mud_makeup.py'
+    def verify():
+        for file in root.glob('*.py'):
+            tree=ast.parse(file.read_text());imports={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+            if file==path:
+                assert imports<={'dataclasses','fractions','math','re','typing','cement_chart_model','engineering_tools','materials_db','project_state'}
+                assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+            else:assert path.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((path,'\nimport cfw128_c2e6a_post_pull_closure\n'),(root/'main.py','\nimport cfw128_c2e6b_dry_pipe_mud_makeup\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda f,*a,**k:original(f,*a,**k)+addition if f==target else original(f,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    forbidden={'scipy','pumping_simulation','fluids_charts_module_v1_4_2','centralizer_optimizer_engine','cement_charts_engine','streamlit','well_report'}
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e6b_dry_pipe_mud_makeup; assert not any(n.startswith("cfw128") and n!="cfw128_c2e6b_dry_pipe_mud_makeup" for n in sys.modules); assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
+
+
+@pytest.mark.parametrize('fault',['boolean_path_md','boolean_trajectory_md','boolean_gap_lap'])
+def test_cfw128_c2e6b_boolean_numeric_metadata_is_not_an_equivalent_source_record(fault):
+    from cfw128_c2e6b_dry_pipe_mud_makeup import audit_dry_pipe_makeup
+    state,args,c=cfw128_c2e6b_inputs(synthetic_tieback(top=0.) if fault=='boolean_gap_lap' else None)
+    g,b,d,s,t,p=args
+    if fault=='boolean_path_md':object.__setattr__(t.path[0],'inlet_md',False)
+    elif fault=='boolean_trajectory_md':
+        assert t.trajectory[0][0]==0.
+        object.__setattr__(t,'trajectory',((False,t.trajectory[0][1]),)+t.trajectory[1:])
+    else:object.__setattr__(b,'lap_md',False)
+    with pytest.raises((ValueError,TypeError)):audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
