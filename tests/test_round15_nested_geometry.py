@@ -4426,3 +4426,230 @@ def test_cfw128_c2e3_import_and_no_production_caller_isolation(monkeypatch):
             with pytest.raises(AssertionError):verify()
     forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
     subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e3_post_pull_gap; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
+
+
+# C2e-4: disabled capacity MD0..active Shoe-25m, no App integration.
+def test_cfw128_c2e4_new_disabled_derived_displacement_interface():
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    g=cfw128_c2e_view(cfw128_c1_uat19_state())
+    r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_DERIVED_DISPLACEMENT_PREVIEW'
+    assert r.active_shoe_md==3885. and r.end_md==3860. and r.reserved_shoe_interval_m==25.
+    assert r.derived_displacement_bbl==pytest.approx(284.947218881107,abs=1e-10)
+
+
+CFW128_C2E4_PARTS={
+ 'CSG 13 3/8"':((0.,1175.,12.25,(1,)),),
+ 'CSG 9 5/8"':((0.,1175.,8.535,(1,)),),
+ 'LNR 7"':((0.,400.,2.764,(1,)),(400.,1175.,6.094,(3,))),
+ 'LNR 5"':((0.,3419.,2.764,(5,)),(3419.,4475.,4.276,(7,))),
+ 'LNR 4 1/2"':((0.,400.,2.764,(2,)),(400.,1175.,4.,(4,))),
+ 'TIE BACK LNR 7"':((0.,200.,2.764,(2,)),(200.,675.,6.094,(3,))),
+ 'TIE BACK LNR 5"':((0.,200.,2.764,(3,)),(200.,675.,4.276,(4,))),
+ 'TIE BACK LNR 4 1/2"':((0.,200.,2.764,(3,)),(200.,675.,4.,(4,))),
+}
+
+
+def cfw128_c2e4_manual_bbl(length,internal_id):
+    # Independent area_ft2 * length_ft / bbl_ft3, exact published App constants;
+    # no _capacity or production derived-volume function is called here.
+    return math.pi*(internal_id/24.)**2*(length/.3048)/(42./7.48051945)
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e4_eight_jobs_exact_internal_ids_clips_and_rows(job):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=bug01_geometry_case(job);before=pickle.dumps(state);g=cfw128_c2e_view(state);proof=pickle.dumps(g)
+    r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert tuple((p.top_md,p.bottom_md,p.internal_id_in,p.source_rows) for p in r.sections)==CFW128_C2E4_PARTS[job]
+    assert r.end_md==g.captured_geometry.shoe_md-25. and r.sections[-1].bottom_md==r.end_md
+    assert r.sections[0].top_md==0. and all(a.bottom_md==b.top_md for a,b in zip(r.sections,r.sections[1:]))
+    assert r.reserved_shoe_interval_m==25. and r.surface_line_volume=='NONE_ADDED'
+    assert r.volume_basis=='NOMINAL_INTERNAL_STRING_CAPACITY'
+    assert r.derived_displacement_bbl==pytest.approx(sum(cfw128_c2e4_manual_bbl(b-a,diam) for a,b,diam,rows in CFW128_C2E4_PARTS[job]),abs=1e-10)
+    assert r.derived_displacement_bbl==sum(p.nominal_volume_bbl for p in r.sections)
+    for p in r.sections:
+        source=g.injection[p.source_section_index]
+        assert p.original_bottom_md==source.bottom_md and p.internal_id_in==source.outer_diameter_in
+        assert p.source_rows==source.running_source_rows
+        assert all(state['hardware_table'].iloc[i]['ID (in)']==p.internal_id_in for i in p.source_rows)
+        assert p.nominal_volume_bbl==pytest.approx(cfw128_c2e4_manual_bbl(p.bottom_md-p.top_md,p.internal_id_in),abs=1e-10)
+    if job in ('LNR 5"','LNR 4 1/2"','TIE BACK LNR 5"','TIE BACK LNR 4 1/2"'):
+        assert {p.outer_diameter_in for p in g.upper_pumping_annulus}=={8.535,6.094}
+        assert len(r.sections)==2  # Host transitions do not fabricate injection-ID sections.
+    assert pickle.dumps(g)==proof and pickle.dumps(state)==before
+
+
+def test_cfw128_c2e4_uat19_independent_reference_excludes_gap_and_receiver():
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    g=cfw128_c2e_view(cfw128_c1_uat19_state());r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert [(p.top_md,p.bottom_md,p.internal_id_in,p.source_rows) for p in r.sections]==[(0.,2800.,4.276,(7,)),(2800.,3860.,6.004,(6,))]
+    manual=cfw128_c2e4_manual_bbl(2800.,4.276)+cfw128_c2e4_manual_bbl(1060.,6.004)
+    assert r.derived_displacement_bbl==pytest.approx(manual,abs=1e-10)
+    assert r.derived_displacement_bbl==pytest.approx(284.947218881107,abs=1e-10)
+    assert g.nominal_injection_bbl==pytest.approx(287.819429400755,abs=1e-10)
+    assert g.nominal_injection_bbl-r.derived_displacement_bbl==pytest.approx(cfw128_c2e4_manual_bbl(25.,6.004),abs=1e-10)
+    assert r.derived_displacement_bbl!=pytest.approx(223.096590253813,abs=1e-8)
+    assert g.captured_geometry.receiver.shoe_md==4860. and r.active_shoe_md==3885.
+    assert r.hydraulics=='HYDRAULICS_NOT_EVALUATED' and r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+
+
+@pytest.mark.parametrize('top',[674.,675.,676.])
+def test_cfw128_c2e4_endpoint_before_at_after_lap_is_measured_md(top):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=synthetic_tieback(top=top);frame=state['hardware_table'];i=frame.index[frame.Description=='Drill Pipes'][0]
+    frame.at[i,'Size (in)']='5';frame.at[i,'ID (in)']=4.276
+    r=derive_displacement(cfw128_c2e_view(state),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    expected=[(0.,min(top,675.),4.276)]
+    if top<675.:expected.append((top,675.,6.))
+    assert [(p.top_md,p.bottom_md,p.internal_id_in) for p in r.sections]==expected
+    assert r.end_md==675. and r.active_shoe_md==700.
+
+
+@pytest.mark.parametrize('edge',[674.,675.,676.])
+def test_cfw128_c2e4_tapered_dp_and_body_endpoint_partition(edge):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    job='TIE BACK LNR 7"';table=hardware(
+        ('Previous Casing','800','9 5/8',8.535),('Previous Liner Shoe','700-1200','7',6.),
+        ('Drill Pipes','200','5',4.276),('Drill Pipes','200-400','4 1/2',4.),
+        ('Tie Back Liner Shoe',f'400-{edge:g}','7',6.),('Tie Back Liner Shoe',f'{edge:g}-700','6 1/2',5.8),
+        ('Open Hole Size','800-1200','8.5',8.5))
+    state=project(job,table,1200.)
+    state['placement_config']['host_row']=next(iter(hardware_choices(table,{'Previous Casing'})))
+    state['placement_config']['target_row']=next(k for k,v in hardware_choices(table,target_descriptions(job)).items() if v['depth']==700.)
+    g=cfw128_c2e_view(state);r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    expected=[(0.,200.,4.276),(200.,400.,4.),(400.,min(edge,675.),6.)]
+    if edge<675.:expected.append((edge,675.,5.8))
+    assert [(p.top_md,p.bottom_md,p.internal_id_in) for p in r.sections]==expected
+    assert r.derived_displacement_bbl==pytest.approx(sum(cfw128_c2e4_manual_bbl(b-a,d) for a,b,d in expected),abs=1e-10)
+    assert [p.source_rows for p in r.sections]==[(2,),(3,),(4,)]+([(5,)] if edge<675. else [])
+
+
+@pytest.mark.parametrize('case',['zero_top','previous_taper','directional'])
+def test_cfw128_c2e4_nonhydraulic_special_captures(case):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=synthetic_tieback(top=0.) if case=='zero_top' else r18c_tapered_state(100.) if case=='previous_taper' else synthetic_tieback(top=400.)
+    if case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    g=cfw128_c2e_view(state,(50.,) if case=='directional' else ());before=pickle.dumps(g)
+    r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.end_md==g.captured_geometry.shoe_md-25. and pickle.dumps(g)==before
+    if case=='zero_top':assert len(r.sections)==1 and r.sections[0].description=='Tie Back Liner Shoe' and r.sections[0].top_md==0.
+    if case=='directional':
+        assert next(v.tvd for v in g.captured_geometry.trajectory if v.md==50.)==pytest.approx(47.7464829275686,abs=1e-12)
+        vertical=deepcopy(state);vertical['well_geometry']={'version':1,'type':'Vertical','td_m':1200.}
+        assert derive_displacement(cfw128_c2e_view(vertical),expected_app_source_sha=C2D1_APP_SOURCE_SHA).derived_displacement_bbl==r.derived_displacement_bbl
+
+
+@pytest.mark.parametrize('shoe',[24.5,25.])
+def test_cfw128_c2e4_actual_short_shoe_has_no_authorized_endpoint(shoe):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=project('CSG 9 5/8"',hardware(('Previous Casing','5','13 3/8',12.347),('Casing',str(shoe),'9 5/8',8.535),('Open Hole Size',f'5-{shoe:g}','12.25',12.25)),shoe)
+    g=cfw128_c2e_view(state)
+    assert g.status=='DISABLED_GEOMETRY_VIEW'
+    with pytest.raises(ValueError,match='25'):derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+@pytest.mark.parametrize('stage',['Displacement Fluid','Main','Spacer'])
+def test_cfw128_c2e4_entered_volumes_do_not_override_derived_geometry(stage):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state(),('Spacer','Main','Displacement Fluid'))
+    for n,v in (('Spacer',10.),('Main',40.),('Displacement Fluid',20.)):state['fluids_config']['params'][n]['volume']=v
+    g=cfw128_c2e_view(state);r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    a=preview_fluid_tracking(g,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=3)
+    old=state['fluids_config']['params'][stage]['volume'];state['fluids_config']['params'][stage]['volume']=old+20.
+    intended=pickle.dumps(state);b=preview_fluid_tracking(g,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=3)
+    assert derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    assert next(v for v in b.ledgers if v.fluid==stage).entered_bbl==next(v for v in a.ledgers if v.fluid==stage).entered_bbl+20.
+    assert a.occupancy!=b.occupancy and pickle.dumps(state)==intended
+    assert next(v for v in b.stages if v.name==stage).volume_bbl==old+20.  # Existing what-if untouched; other entered pumped volumes authoritative.
+    if stage=='Displacement Fluid':assert next(v for v in b.stages if v.name==stage).volume_bbl!=r.derived_displacement_bbl
+
+
+def test_cfw128_c2e4_actual_injection_id_and_depth_edits_change_source_and_result():
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=bug01_geometry_case('CSG 9 5/8"');g=cfw128_c2e_view(state);r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    changed=deepcopy(state);changed['hardware_table'].at[1,'ID (in)']=8.5
+    fresh=derive_displacement(cfw128_c2e_view(changed),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert fresh.derived_displacement_bbl<r.derived_displacement_bbl and fresh.geometry_source_identity!=r.geometry_source_identity
+    deeper=project('CSG 9 5/8"',hardware(('Previous Casing','400','13 3/8',12.347),('Casing','1250','9 5/8',8.535),('Open Hole Size','400-1250','12.25',12.25)),1250.)
+    deep=derive_displacement(cfw128_c2e_view(deeper),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert deep.derived_displacement_bbl-r.derived_displacement_bbl==pytest.approx(cfw128_c2e4_manual_bbl(50.,8.535),abs=1e-10)
+    assert deep.geometry_source_identity!=r.geometry_source_identity
+    changed_host=deepcopy(state);changed_host['hardware_table'].at[0,'ID (in)']=12.3
+    host=derive_displacement(cfw128_c2e_view(changed_host),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert host.derived_displacement_bbl==r.derived_displacement_bbl  # Host is provenance, never injection ID.
+    assert host.geometry_source_identity!=r.geometry_source_identity
+    assert derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r and r.currentness=='NOT_CURRENTNESS_PROOF'
+
+
+@pytest.mark.parametrize('fault',['none','dict','sha','malformed_sha','flags','nested_flags','source_id','projection_id','proof','missing_section','gap','overlap','id','rows','duplicate_rows','wall_rows','nan','inf','negative_md','wrong_job','kind','role','source_id_changed','missing_slot','old_receiver_end'])
+def test_cfw128_c2e4_invalid_changed_or_incomplete_capture_rejected(fault):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    g=deepcopy(cfw128_c2e_view(cfw128_c1_uat19_state()));sha=C2D1_APP_SOURCE_SHA
+    if fault=='none':g=None
+    elif fault=='dict':g={}
+    elif fault=='sha':sha='0'*40
+    elif fault=='malformed_sha':sha='not-a-sha'
+    elif fault=='flags':object.__setattr__(g,'ready_to_run',True)
+    elif fault=='nested_flags':object.__setattr__(g.captured_geometry,'hydraulic_admissible',True)
+    elif fault=='source_id':object.__setattr__(g,'source_identity','0'*64)
+    elif fault=='projection_id':object.__setattr__(g,'projection_identity','0'*64)
+    elif fault=='proof':object.__setattr__(g,'historical_capacity_audit',None)
+    elif fault=='missing_section':object.__setattr__(g,'injection',g.injection[1:]);cfw128_c2e3_rebind_view(g)
+    elif fault=='gap':object.__setattr__(g.injection[1],'top_md',2801.);cfw128_c2e3_rebind_view(g)
+    elif fault=='overlap':object.__setattr__(g.injection[1],'top_md',2799.);cfw128_c2e3_rebind_view(g)
+    elif fault=='id':object.__setattr__(g.injection[1],'outer_diameter_in',6.184);cfw128_c2e3_rebind_view(g)
+    elif fault=='rows':object.__setattr__(g.injection[0],'running_source_rows',());cfw128_c2e3_rebind_view(g)
+    elif fault=='duplicate_rows':object.__setattr__(g.injection[0],'running_source_rows',(7,7));cfw128_c2e3_rebind_view(g)
+    elif fault=='wall_rows':object.__setattr__(g.injection[0],'wall_source_rows',(2,));cfw128_c2e3_rebind_view(g)
+    elif fault in ('nan','inf'):object.__setattr__(g.injection[0],'outer_diameter_in',float(fault))
+    elif fault=='negative_md':object.__setattr__(g.injection[0],'top_md',-1.)
+    elif fault=='wrong_job':object.__setattr__(g.captured_geometry,'job','CMT PLUG')
+    elif fault=='kind':object.__setattr__(g.captured_geometry,'kind','openhole')
+    elif fault=='role':object.__setattr__(g.captured_geometry.active_sections[0],'description','Previous Liner Shoe');cfw128_c2e3_rebind_view(g)
+    elif fault=='source_id_changed':object.__setattr__(g.captured_geometry.active_sections[0],'id_in',4.5);cfw128_c2e3_rebind_view(g)
+    elif fault=='missing_slot':object.__delattr__(g.injection[0],'outer_diameter_in')
+    elif fault=='old_receiver_end':object.__setattr__(g.injection[-1],'bottom_md',4860.);cfw128_c2e3_rebind_view(g)
+    with pytest.raises((ValueError,TypeError)):derive_displacement(g,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e4_frozen_flags_and_replayed_input_never_prove_liveness():
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    from dataclasses import replace,FrozenInstanceError
+    import inspect
+    assert tuple(inspect.signature(derive_displacement).parameters)==('view','expected_app_source_sha')
+    state=cfw128_c1_uat19_state();g=cfw128_c2e_view(state);r=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.loads(pickle.dumps(r))==r and r==derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(ValueError):replace(r,reserved_shoe_interval_m=0.)
+    with pytest.raises(FrozenInstanceError):r.sections[0].internal_id_in=99.
+    with pytest.raises(TypeError):r.sections[0]=r.sections[0]
+    state['hardware_table'].at[7,'ID (in)']=4.3
+    assert derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    fresh=derive_displacement(cfw128_c2e_view(state),expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert fresh.projection_identity!=r.projection_identity and fresh.derived_displacement_bbl!=r.derived_displacement_bbl
+    assert r.currentness==fresh.currentness=='NOT_CURRENTNESS_PROOF'
+
+
+def test_cfw128_c2e4_import_and_production_caller_isolation(monkeypatch):
+    import ast,sys,subprocess
+    from pathlib import Path
+    root=Path('.');path=root/'cfw128_c2e4_derived_displacement.py'
+    def verify():
+        tree=ast.parse(path.read_text());names={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        assert names<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
+        assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+        for other in root.glob('*.py'):
+            if other==path:continue
+            t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
+            assert path.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((path,'\nimport cfw128_c2e3_post_pull_gap\n'),(root/'main.py','\nimport cfw128_c2e4_derived_displacement\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:original(p,*a,**k)+addition if p==target else original(p,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_c2e3_post_pull_gap','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e4_derived_displacement; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
