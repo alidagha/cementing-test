@@ -26,7 +26,8 @@ from typing import Literal
 import pandas as pd
 import materials_db
 from engineering_tools import lab_review_signature, validate_lab_masses
-from project_state import fingerprint, lab_source_signature, phase7_lab_fluids
+from project_state import (fingerprint, lab_source_signature, phase7_lab_fluids,
+                           mud_lab_source, mud_lab_source_signature, mud_lab_readings)
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 
 
@@ -137,6 +138,8 @@ def snapshot_lab_intake(state: Mapping, fluid_name: str, *, app_source_sha: str)
         raise ValueError('Provide an App state mapping and exact fluid-name string.')
     if not isinstance(app_source_sha, str) or not re.fullmatch('[0-9a-f]{40}', app_source_sha):
         raise ValueError('app_source_sha must be an externally verified 40-character Git SHA.')
+    if fluid_name == materials_db.MUD_LAB_FLUID:
+        return _snapshot_mud_intake(state, app_source_sha)
     source = deepcopy({k: state[k] for k in ('job_type','well_data','mud_type',
                       'material_property_schema','bhct','bhst') if k in state})
     config = state.get('fluids_config', {})
@@ -160,8 +163,8 @@ def snapshot_lab_intake(state: Mapping, fluid_name: str, *, app_source_sha: str)
 
     if duplicate:
         return hold('INVALID_INPUT','DUPLICATE_SOURCE_COLUMNS','Ambiguous source columns; every positional value is retained in invalid identity.')
-    if fluid_name in ('Mud','Displacement Fluid'):
-        return hold('NOT_AVAILABLE','NO_NATIVE_PHASE7_SEVEN_RPM_SOURCE','Mud/Displacement has no native Phase VII seven-Fann source; PV/YP is not a substitute.')
+    if fluid_name == 'Mud':
+        return hold('NOT_AVAILABLE','MUD_ALIAS_NOT_CANONICAL','Use canonical Displacement Fluid; Mud is not another persisted source.')
     if fluid_name in materials_db.RHEOLOGY_ONLY_FLUIDS:
         return hold('NOT_AVAILABLE','UNSUPPORTED_RHEOLOGY_ONLY_FLUID','B1 does not admit Diesel/Pre Flush as reviewed formulation sources.')
     if fluid_name == 'Spacer':
@@ -247,3 +250,80 @@ def snapshot_lab_intake(state: Mapping, fluid_name: str, *, app_source_sha: str)
         'Source captured only; physical instrument evidence and all fitting/release gates remain unresolved.',
         fluid_name, app_source_sha, source_id, request_id, tuple(captured),
         material if isinstance(material,str) else None, current, review)
+
+
+
+def _snapshot_mud_intake(state, app_source_sha):
+    """Mud's one measured record/context; no grid, fitting or automatic review."""
+    name = materials_db.MUD_LAB_FLUID
+    state = deepcopy({key: state[key] for key in ("fluids_config", "fluid_data", "well_data", "mud_type",
+        "mud_density", "bhct", "bhst", "lab_qc_params", "lab_source_signatures") if key in state})
+    context_error = None
+    try:
+        context = mud_lab_source(state)
+    except (ValueError, TypeError) as exc:
+        context_error = str(exc)
+        context = {key: state.get(key) for key in ("fluids_config", "well_data", "mud_density", "mud_type")}
+    labs, signatures = state.get("lab_qc_params", {}), state.get("lab_source_signatures", {})
+    qc = labs.get(name) if isinstance(labs, dict) else labs
+    stored = signatures.get(name) if isinstance(signatures, dict) else signatures
+    source = deepcopy({"context": context, "qc": qc, "stored_signature": stored})
+    duplicate = _duplicate_columns(source)
+    source_id = fingerprint([1, "cfw128-mud-source", _positional_source(source)])
+    request_id = fingerprint([1, app_source_sha, name, source_id])
+    def hold(status, code, detail):
+        return LabIntakeSnapshot(status, (code,), detail, name, app_source_sha, source_id, request_id)
+    if duplicate:
+        return hold("INVALID_INPUT", "DUPLICATE_SOURCE_COLUMNS", "Mud source columns are ambiguous.")
+    if context_error:
+        return hold("INVALID_INPUT", "MUD_CONTEXT_INVALID", context_error)
+    if context["selected"] == 0:
+        return hold("NOT_APPLICABLE", "FLUID_NOT_ACTIVE", "Displacement Fluid is not selected.")
+    if context["selected"] != 1:
+        return hold("INVALID_INPUT", "ACTIVE_FLUIDS_INVALID", "Select one canonical Displacement Fluid.")
+    if qc is None:
+        return hold("INCOMPLETE_INPUT", "MUD_SOURCE_MISSING", "Native Mud editor exists; seven genuine measured dials are still missing, not inferred from PV/YP.")
+    if not isinstance(qc, dict) or not isinstance(qc.get("rheology", {}), dict):
+        return hold("INVALID_INPUT", "RHEOLOGY_RECORD_INVALID", "Mud requires canonical rheology records.")
+    data = qc.get("rheology", {})
+    if set(data) - {"bhct_down"}:
+        return hold("INVALID_INPUT", "MUD_RAMPS_INVALID", "Foreign ramps remain drafts; only Mud BHCT Ramp-Down may be reviewed.")
+    row = data.get("bhct_down", {})
+    if not isinstance(row, dict):
+        return hold("INVALID_INPUT", "RHEOLOGY_RECORD_INVALID", "Mud BHCT-down must be a record.")
+    if row.get("selected", False) is False:
+        return hold("NOT_SELECTED", "BHCT_DOWN_NOT_SELECTED", "Select measured Mud BHCT Ramp-Down explicitly.")
+    if row.get("selected") is not True:
+        return hold("INVALID_INPUT", "SELECTION_INVALID", "Selection must be boolean.")
+    readings = row.get("readings")
+    if not isinstance(readings, dict):
+        return hold("INVALID_INPUT", "RPM_RECORD_INVALID", "A canonical RPM-keyed source is required.")
+    if any(type(k) is not str or k not in {str(r) for r in RPM_ORDER} for k in readings):
+        return hold("INVALID_INPUT", "RPM_KEYS_INVALID", "No duplicate/colliding/noncanonical RPM keys are accepted.")
+    if set(readings) != {str(r) for r in RPM_ORDER}:
+        return hold("INCOMPLETE_INPUT", "RPM_MISSING", "All seven actual Mud dial entries are required.")
+    captured = []
+    for rpm in RPM_ORDER:
+        raw = readings[str(rpm)]
+        try:
+            dial, problem = _dial(raw)
+        except (ValueError, OverflowError):
+            dial, problem = None, "DIAL_INVALID"
+        if problem:
+            return hold("INCOMPLETE_INPUT" if problem == "DIAL_MISSING" else "INVALID_INPUT", problem, f"Mud {rpm} RPM is not a measured nonnegative integer dial.")
+        captured.append(DialReading(rpm, raw, type(raw).__name__, dial))
+    try:
+        mud_lab_readings({"lab_qc_params": {name: qc}})
+        current = mud_lab_source_signature(state)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return hold("INVALID_INPUT", "MUD_CONTEXT_INVALID", str(exc))
+    if qc.get("reviewed") is not True:
+        return hold("REVIEW_REQUIRED", "LAB_NOT_REVIEWED", "Confirm the seven measured Mud dials explicitly.")
+    if stored != current:
+        return hold("STALE_REVIEW", "MUD_CONTEXT_SIGNATURE_MISMATCH", "Mud identity/density/temperature or selection changed since confirmation.")
+    if qc.get("review_signature") != lab_review_signature(qc, None):
+        return hold("STALE_REVIEW", "REVIEW_SIGNATURE_MISMATCH", "Mud readings changed since operator confirmation.")
+    return LabIntakeSnapshot("CAPTURED_FOR_FUTURE_REVIEW",
+        ("INTACT_REVIEWED_BHCT_DOWN_SOURCE", "INSTRUMENT_PROVENANCE_UNVERIFIED"),
+        "Measured Mud source only; physical instrument and every fitting/release gate remain unverified/false.",
+        name, app_source_sha, source_id, request_id, tuple(captured), context["material_name"], current, qc["review_signature"])

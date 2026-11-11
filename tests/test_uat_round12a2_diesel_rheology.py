@@ -67,7 +67,8 @@ def test_active_diesel_tab_reuses_renderer_without_any_cement_lab_path(job):
     with patch.object(lab, "_render_rheology", wraps=lab._render_rheology) as render:
         app = CASE.app(state)
         CASE.phase(app, "phase7")
-        assert [tab.label for tab in app.tabs] == ["Diesel"]
+        assert "Displacement Fluid" in state["fluids_config"]["active"]
+        assert [tab.label for tab in app.tabs] == ["Diesel", "Displacement Fluid (Mud)"]
         assert [call.args[0] for call in render.call_args_list] == ["Diesel"]
     assert not app.error and not app.exception
     labels = [item.label for group in (app.checkbox, app.number_input, app.text_input, app.selectbox, app.button)
@@ -273,14 +274,15 @@ def test_obm_wbm_roundtrip_preserves_exact_draft_and_does_not_reactivate():
     assert "Diesel" not in saved["fluids_config"]["active"]
     restored = CASE.app(saved)
     CASE.phase(restored, "phase7")
-    assert not restored.tabs
+    assert "Displacement Fluid" in saved["fluids_config"]["active"]
+    assert [tab.label for tab in restored.tabs] == ["Displacement Fluid (Mud)"]
     CASE.phase(restored, "phase2_3")
     element(restored, "selectbox", "Mud Type").set_value("OBM").run()
     CASE.phase(restored, "phase4")
     assert not restored.checkbox(key="chk_fluid_Diesel").value
     restored.checkbox(key="chk_fluid_Diesel").check().run()
     CASE.phase(restored, "phase7")
-    assert [tab.label for tab in restored.tabs] == ["Diesel"]
+    assert [tab.label for tab in restored.tabs] == ["Diesel", "Displacement Fluid (Mud)"]
     assert restored.session_state["lab_qc_params"]["Diesel"] == before
     assert status(restored.session_state)["level"] == "ok"
     assert_no_cement_diesel(restored.session_state.to_dict())

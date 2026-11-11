@@ -2198,14 +2198,14 @@ def test_cfw128_b1_bad_or_stale_sources_never_carry_captured_readings(bug01_revi
     assert pickle.dumps(state)==before
 
 
-@pytest.mark.parametrize('fluid,reason', [('Displacement Fluid','NO_NATIVE_PHASE7_SEVEN_RPM_SOURCE'),('Mud','NO_NATIVE_PHASE7_SEVEN_RPM_SOURCE'),
+@pytest.mark.parametrize('fluid,reason', [('Displacement Fluid','MUD_SOURCE_MISSING'),('Mud','MUD_ALIAS_NOT_CANONICAL'),
     ('Diesel','UNSUPPORTED_RHEOLOGY_ONLY_FLUID'),('Pre Flush','UNSUPPORTED_RHEOLOGY_ONLY_FLUID'),
     ('Spacer','UNSUPPORTED_SPACER_SOURCE'),('Spacer Ahead','UNSUPPORTED_FLUID_STAGE'),('unknown','UNSUPPORTED_FLUID')])
 def test_cfw128_b1_unsupported_fluids_do_not_become_measured_from_pv_yp(fluid,reason):
     from cfw128_hb_intake import snapshot_lab_intake
     state={'fluids_config':{'active':[fluid]},'plastic_viscosity':45.,'yield_point':15.,'mud_density':80.}
     result=snapshot_lab_intake(state,fluid,app_source_sha='c'*40)
-    assert result.status=='NOT_AVAILABLE' and result.reason_codes==(reason,)
+    assert result.status==('INCOMPLETE_INPUT' if fluid=='Displacement Fluid' else 'NOT_AVAILABLE') and result.reason_codes==(reason,)
     assert result.readings==() and result.fit_admissible is False
 
 
@@ -2363,3 +2363,148 @@ def test_cfw128_b1_snapshot_pickle_and_clone_cannot_enable_fitting(bug01_reviewe
     for name in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible','scientifically_qualified'):
         assert asdict(result)[name] is False
         with pytest.raises(ValueError):replace(result,**{name:True})
+
+
+def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed_report_base,tmp_path):
+    import test_audit_regressions as audit
+    import project_state as ps
+    import materials_db as db
+    from cfw128_hb_intake import snapshot_lab_intake
+    from engineering_tools import build_lab_rheology,compute_phase_status
+    import phase_9_centralizer as p9
+    case=audit.AuditRegressions();source=deepcopy(bug01_reviewed_report_base)
+    old_status=compute_phase_status(source);old_pump=pumping_simulation.source_signature(source);old_cent=p9.source_signature(source)
+    app=case.app(source);case.phase(app,'phase7')
+    labels=[t.label for t in app.tabs];assert labels.count('Displacement Fluid (Mud)')==1
+    mud=next(t for t in app.tabs if t.label=='Displacement Fluid (Mud)')
+    assert [w.label for w in mud.checkbox]==['BHCT — Ramp-Down - Displacement Fluid']
+    mud.checkbox[0].check().run()
+    dials=('168','116','64','41','24','8','6')
+    for rpm,value in zip((300,200,100,60,30,6,3),dials):
+        next(w for w in app.text_input if w.label==f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid').set_value(value).run()
+    mud=next(t for t in app.tabs if t.label=='Displacement Fluid (Mud)')
+    assert [w.label for w in mud.text_input]==[f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid' for rpm in (300,200,100,60,30,6,3)]
+    assert [(m.label,m.value) for m in mud.metric]==[('PV (cP)','159.218'),('Ty (lbf/100ft²)','9.47')]
+    qc=app.session_state['lab_qc_params']['Displacement Fluid'];fit,issues=build_lab_rheology(qc,'Displacement Fluid');assert not issues
+    assert f"{fit['bhct_down']['pv_cp']:.3f}"=='159.218' and f"{fit['bhct_down']['ty_lbf_100ft2']:.2f}"=='9.47'
+    assert snapshot_lab_intake(app.session_state.to_dict(),'Displacement Fluid',app_source_sha='a'*40).reason_codes==('LAB_NOT_REVIEWED',)
+    next(w for w in app.button if w.label=='Confirm measured Mud lab results').click().run()
+    state=app.session_state.to_dict();before=pickle.dumps(state);result=snapshot_lab_intake(state,'Displacement Fluid',app_source_sha='a'*40)
+    assert result.status=='CAPTURED_FOR_FUTURE_REVIEW' and tuple(r.raw for r in result.readings)==dials
+    assert result.instrument_provenance=='UNVERIFIED'
+    assert all(getattr(result,k) is False for k in ('enabled','fit_admissible','ready_to_run','chart_admissible','hydraulic_admissible','scientifically_qualified'))
+    assert pickle.dumps(state)==before
+    assert 'Displacement Fluid' not in state.get('lab_grid_dfs',{}) and 'Displacement Fluid' not in state.get('cement_params',{})
+    assert db.RHEOLOGY_ONLY_FLUIDS==('Diesel','Pre Flush') and db.RHEOLOGY_LAB_FLUIDS==db.CEMENT_FORMULATION_FLUIDS
+    assert db.PHASE7_LAB_FLUIDS==(*db.CEMENT_FORMULATION_FLUIDS,*db.RHEOLOGY_ONLY_FLUIDS)
+    assert db.PHASE7_VISIBLE_LAB_FLUIDS==(*db.PHASE7_LAB_FLUIDS,'Displacement Fluid')
+    assert ps.phase7_lab_fluids(state)==ps.phase7_lab_fluids(source)
+    assert compute_phase_status(state)==old_status
+    assert pumping_simulation.source_signature(state)==old_pump and p9.source_signature(state)==old_cent
+    case.phase(app,'phase4');case.phase(app,'phase7')
+    assert snapshot_lab_intake(app.session_state.to_dict(),'Displacement Fluid',app_source_sha='a'*40)==result
+    restored=audit.round_trip(app.session_state.to_dict())
+    assert snapshot_lab_intake(restored,'Displacement Fluid',app_source_sha='a'*40)==result
+    second=case.app(restored);case.phase(second,'phase7')
+    assert snapshot_lab_intake(second.session_state.to_dict(),'Displacement Fluid',app_source_sha='a'*40)==result
+    # Two real Build-button exports: measured Mud is deliberately outside cement Word.
+    from test_uat_round10c_integration import build
+    from zipfile import ZipFile
+    from io import BytesIO
+    # Compare identical restored trust boundaries; restore intentionally retires Centralizer.
+    without_mud=deepcopy(restored)
+    without_mud['lab_qc_params'].pop('Displacement Fluid')
+    without_mud['lab_source_signatures'].pop('Displacement Fluid')
+    original_doc=build(case.app(without_mud))
+    measured_doc=build(second)
+    (tmp_path/'before-mud.docx').write_bytes(original_doc)
+    (tmp_path/'reviewed-mud.docx').write_bytes(measured_doc)
+    with ZipFile(BytesIO(original_doc)) as old,ZipFile(BytesIO(measured_doc)) as new:
+        assert old.namelist()==new.namelist()
+        for part in old.namelist():
+            if part!='docProps/core.xml':  # ZIP/core creation time is not report content.
+                assert old.read(part)==new.read(part),part
+    isolated=case.app(deepcopy(bug01_reviewed_report_base));case.phase(isolated,'phase7')
+    assert not isolated.session_state['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['selected']
+    # A dial edit commits before navigation, retires review and compiled Word, but not hydraulic sources.
+    app.session_state['_compiled_doc_bytes']=b'old test document'
+    next(w for w in app.text_input if w.label=='300 RPM - BHCT — Ramp-Down - Displacement Fluid').set_value('169').run()
+    case.phase(app,'phase4');case.phase(app,'phase7')
+    changed=app.session_state.to_dict();assert changed['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['readings']['300']=='169'
+    assert not changed.get('_compiled_doc_bytes')
+    assert snapshot_lab_intake(changed,'Displacement Fluid',app_source_sha='a'*40).status!='CAPTURED_FOR_FUTURE_REVIEW'
+    assert snapshot_lab_intake(restored,'Displacement Fluid',app_source_sha='a'*40)==result
+    next(w for w in app.text_input if w.label=='300 RPM - BHCT — Ramp-Down - Displacement Fluid').set_value('168.5').run()
+    mud=next(t for t in app.tabs if t.label=='Displacement Fluid (Mud)')
+    assert not mud.metric and not any(b.label=='Confirm measured Mud lab results' for b in mud.button)
+    case.phase(app,'phase4');case.phase(app,'phase7')
+    assert app.session_state['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['readings']['300']=='168.5'
+
+
+@pytest.mark.parametrize('fault', ['missing','partial','wrong_ramp','bad_key','bool','fraction','nonfinite','unreviewed','edited',
+    'bhct','density','material','inactive','instrument'])
+def test_cfw128_b1m_mud_negative_source_contract(bug01_reviewed_report_base,fault):
+    import test_audit_regressions as audit
+    import project_state as ps
+    from cfw128_hb_intake import snapshot_lab_intake
+    # Cache only a genuinely UI-confirmed synthetic source, never manufacture its signature.
+    case=audit.AuditRegressions();app=case.app(deepcopy(bug01_reviewed_report_base));case.phase(app,'phase7')
+    next(w for w in app.checkbox if w.label=='BHCT — Ramp-Down - Displacement Fluid').check().run()
+    for rpm,value in zip((300,200,100,60,30,6,3),('168','116','64','41','24','8','6')):
+        next(w for w in app.text_input if w.label==f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid').set_value(value).run()
+    next(w for w in app.button if w.label=='Confirm measured Mud lab results').click().run()
+    state=app.session_state.to_dict();qc=state['lab_qc_params']['Displacement Fluid'];row=qc['rheology']['bhct_down']
+    original=snapshot_lab_intake(state,'Displacement Fluid',app_source_sha='b'*40);assert original.status=='CAPTURED_FOR_FUTURE_REVIEW'
+    if fault=='missing':state['lab_qc_params'].pop('Displacement Fluid')
+    elif fault=='partial':row['readings'].pop('3')
+    elif fault=='wrong_ramp':qc['rheology']['surface_down']=qc['rheology'].pop('bhct_down')
+    elif fault=='bad_key':row['readings'][300]='168'
+    elif fault=='bool':row['readings']['300']=True
+    elif fault=='fraction':row['readings']['300']='168.0000000000001'
+    elif fault=='nonfinite':row['readings']['300']=float('nan')
+    elif fault=='unreviewed':qc['reviewed']=False
+    elif fault=='edited':row['readings']['300']='169'
+    elif fault=='bhct':state['well_data']['bhct']=151.
+    elif fault=='density':state['mud_density']='81'
+    elif fault=='material':state['fluids_config']['params']['Displacement Fluid']['material_name']='different actual mud'
+    elif fault=='inactive':
+        state['fluids_config']['active'].remove('Displacement Fluid');ps.purge_inactive_slurries(state,state['fluids_config']['active'])
+    else:qc['instrument_verified']=True
+    before=pickle.dumps(state);held=snapshot_lab_intake(state,'Displacement Fluid',app_source_sha='b'*40)
+    assert held.status!='CAPTURED_FOR_FUTURE_REVIEW' and held.readings==()
+    assert held.instrument_provenance=='UNVERIFIED' and held.fit_admissible is False
+    assert held.source_identity!=original.source_identity and pickle.dumps(state)==before
+    assert snapshot_lab_intake(state,'Mud',app_source_sha='b'*40).reason_codes==('MUD_ALIAS_NOT_CANONICAL',)
+    if fault=='inactive':
+        state['fluids_config']['active'].append('Displacement Fluid')
+        assert snapshot_lab_intake(state,'Displacement Fluid',app_source_sha='b'*40).reason_codes==('LAB_NOT_REVIEWED',)
+
+
+def test_cfw128_b1m_visible_list_mutation_and_unrelated_context_do_not_bypass_contract(bug01_reviewed_report_base,monkeypatch):
+    import materials_db as db
+    import project_state as ps
+    state=deepcopy(bug01_reviewed_report_base)
+    before=ps.mud_lab_source_signature(state)
+    state['well_name']='unrelated display';state['fluids_config']['params']['Displacement Fluid']['volume']=123.
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']='5'
+    assert ps.mud_lab_source_signature(state)==before
+    expected=(*db.PHASE7_LAB_FLUIDS,'Displacement Fluid')
+    assert db.PHASE7_VISIBLE_LAB_FLUIDS==expected
+    monkeypatch.setattr(db,'PHASE7_VISIBLE_LAB_FLUIDS',db.PHASE7_LAB_FLUIDS)
+    with pytest.raises(AssertionError):assert 'Displacement Fluid' in ps.phase7_lab_fluids(state,include_mud=True)
+
+
+def test_cfw128_b1m_original_cement_snapshot_remains_byte_equivalent(bug01_reviewed_report_base,monkeypatch):
+    import hashlib,subprocess,sys
+    from types import ModuleType
+    from pathlib import Path
+    from dataclasses import asdict
+    import cfw128_hb_intake as current
+    root=Path(__file__).resolve().parents[1]
+    source=subprocess.check_output(['git','show','7b0e42a1561485853ab07d8e66470e5cb782235e:cfw128_hb_intake.py'],cwd=root)
+    assert hashlib.sha256(source).hexdigest()=='b52e466b985936a6fe17ded990537f29253277057125afaf7a304fed01f65d81'
+    old=ModuleType('_b1m_original_cement_reference');monkeypatch.setitem(sys.modules,old.__name__,old)
+    exec(compile(source,'<fixed-B1-reference>','exec'),old.__dict__)
+    state=deepcopy(bug01_reviewed_report_base)
+    for fluid in ('Main','Lead','Scavenger','Diesel','Pre Flush','Spacer'):
+        assert pickle.dumps(asdict(current.snapshot_lab_intake(state,fluid,app_source_sha='c'*40)))==pickle.dumps(asdict(old.snapshot_lab_intake(state,fluid,app_source_sha='c'*40)))

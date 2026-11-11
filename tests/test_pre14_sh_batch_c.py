@@ -112,7 +112,8 @@ def test_real_fann_datasets_navigation_restore_and_document_retirement():
     app = CASE.app(state)
     CASE.phase(app, 'phase7')
     assert 'Pre Flush' not in app.session_state['lab_qc_params']
-    assert [tab.label for tab in app.tabs] == ['Pre Flush']
+    assert state['fluids_config']['active'] == ['Pre Flush', 'Displacement Fluid']
+    assert [tab.label for tab in app.tabs] == ['Pre Flush', 'Displacement Fluid (Mud)']
     assert not app.dataframe
     assert not any(b.label == 'Confirm measured lab results' for b in app.button)
     assert et.compute_phase_status(app.session_state)['phase7']['level'] == 'warning'

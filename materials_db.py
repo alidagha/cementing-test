@@ -66,6 +66,9 @@ RHEOLOGY_ONLY_FLUIDS = ("Diesel", "Pre Flush")
 RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
 # Phase VII can render rheology-only fluids; downstream consumers stay deferred.
 PHASE7_LAB_FLUIDS = (*CEMENT_FORMULATION_FLUIDS, *RHEOLOGY_ONLY_FLUIDS)
+# Display-only opt-in: legacy hydraulic/report eligibility remains above.
+MUD_LAB_FLUID = "Displacement Fluid"
+PHASE7_VISIBLE_LAB_FLUIDS = (*PHASE7_LAB_FLUIDS, MUD_LAB_FLUID)
 HYDRAULIC_EXECUTION_ORDER = (
     "Diesel", "Pre Flush", "Spacer", "Spacer Ahead", *CEMENT_FORMULATION_FLUIDS,
     "Spacer Behind", "Displacement Fluid",
