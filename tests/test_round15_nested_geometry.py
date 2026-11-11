@@ -4653,3 +4653,289 @@ def test_cfw128_c2e4_import_and_production_caller_isolation(monkeypatch):
             with pytest.raises(AssertionError):verify()
     forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_c2e3_post_pull_gap','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
     subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e4_derived_displacement; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
+
+
+# C2e-5: source-bound effective schedule; composition bridge is TEST ONLY.
+def cfw128_c2e5_inputs(state=None,names=('Spacer','Main','Displacement Fluid')):
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    state=cfw128_c1_uat19_state() if state is None else state
+    cfw128_c2e_fluids(state,names,volume=40.)
+    if 'Displacement Fluid' in names:state['fluids_config']['params']['Displacement Fluid']['volume']=20.
+    g=cfw128_c2e_view(state);d=derive_displacement(g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    return state,g,d
+
+
+def test_cfw128_c2e5_new_effective_schedule_receipt_requirement():
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs()
+    r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_EFFECTIVE_PUMPING_SCHEDULE'
+    mud=next(v for v in r.stages if v.name=='Displacement Fluid')
+    assert mud.volume_bbl==pytest.approx(284.947218881107,abs=1e-10)
+    assert mud.volume_authority=='DERIVED_C2E4_INTERNAL_STRING_CAPACITY' and mud.raw_entered_volume is None
+
+
+def cfw128_c2e5_test_composition(state,g,d):
+    """TEST_ONLY_SYNTHETIC_COMPOSITION; never a production/currentness bridge."""
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cfw128_c2e2_cement_placement import assess_cement_placement
+    schedule=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    overlay=deepcopy(state);params=overlay['fluids_config'].setdefault('params',{})
+    params.setdefault('Displacement Fluid',{})['volume']=next(s.volume_bbl for s in schedule.stages if s.name=='Displacement Fluid')
+    tracking=preview_fluid_tracking(g,overlay,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=len(schedule.stages))
+    placement=assess_cement_placement(tracking,g,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    return {'evidence_class':'TEST_ONLY_SYNTHETIC_COMPOSITION','schedule':schedule,'overlay':overlay,'tracking':tracking,'placement':placement}
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e5_eight_jobs_source_amounts_and_test_only_pump_end(job):
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs(bug01_geometry_case(job),('Spacer','Main','Lead','Tail','Spacer Behind','Displacement Fluid'))
+    state['fluids_config']['params']['Main']['volume']=40
+    state['fluids_config']['params']['Main']['density']='110-112'
+    for name in ('Spacer','Lead','Tail','Spacer Behind'):state['fluids_config']['params'][name]['volume']=10.
+    # Twenty entered bbl exceeds the largest fixture's reserved 25m capacity,
+    # so this scenario specifically proves trailing-Spacer shoe separation.
+    state['fluids_config']['params']['Spacer Behind']['volume']=20.
+    before=pickle.dumps((state,g,d));r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    manual=sum(cfw128_c2e4_manual_bbl(b-a,diam) for a,b,diam,rows in CFW128_C2E4_PARTS[job])
+    assert next(v.volume_bbl for v in r.stages if v.name=='Displacement Fluid')==pytest.approx(manual,abs=1e-10)
+    assert [v.name for v in r.stages]==['Spacer','Main','Lead','Tail','Spacer Behind','Displacement Fluid']
+    for v in r.stages:
+        if v.name=='Displacement Fluid':
+            assert v.volume_authority=='DERIVED_C2E4_INTERNAL_STRING_CAPACITY' and v.record_source=='C2E4'
+            assert v.raw_entered_volume is None and v.density_pcf==80.
+        else:
+            row=state['fluids_config']['params'][v.name]
+            assert v.raw_entered_volume==row['volume'] and type(v.raw_entered_volume) is type(row['volume'])
+            assert v.volume_bbl==row['volume'] and v.raw_density==row['density']
+            assert v.volume_authority=='ENTERED_PHASE_IV' and v.record_source=='fluids_config.params'
+    assert next(v.density_pcf for v in r.stages if v.name=='Main')==111.
+    evidence=cfw128_c2e5_test_composition(state,g,d)
+    assert evidence['evidence_class']=='TEST_ONLY_SYNTHETIC_COMPOSITION'
+    assert evidence['placement'].pumping_state_toc_candidate_md is None
+    assert 'HOLD_CEMENT_NOT_ANCHORED_AT_SHOE' in evidence['placement'].reason_codes
+    assert evidence['placement'].final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    for name,row in state['fluids_config']['params'].items():
+        if name!='Displacement Fluid':assert evidence['overlay']['fluids_config']['params'][name]==row
+    assert pickle.dumps((state,g,d))==before
+
+
+@pytest.mark.parametrize('display',['missing',None,0.,-20.,float('nan'),float('inf'),True,'bad volume',{'bad':'volume'},[1,2]])
+def test_cfw128_c2e5_ignored_mud_display_never_changes_schedule_or_composition(display):
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs(names=('Main','Displacement Fluid'))
+    baseline=cfw128_c2e5_test_composition(state,g,d)
+    if type(display) is str and display=='missing':state['fluids_config']['params']['Displacement Fluid'].pop('volume')
+    else:state['fluids_config']['params']['Displacement Fluid']['volume']=display
+    before=pickle.dumps(state);changed=cfw128_c2e5_test_composition(state,g,d)
+    assert changed['schedule']==baseline['schedule']
+    assert changed['tracking']==baseline['tracking'] and changed['placement']==baseline['placement']
+    assert pickle.dumps(state)==before
+    assert changed['schedule'].derived_projection_identity==d.projection_identity
+    assert changed['tracking'].stages[-1].raw_volume==d.derived_displacement_bbl
+    assert changed['schedule'].stages[-1].raw_entered_volume is None  # Never mislabel the derived value as entered.
+
+
+def test_cfw128_c2e5_ignored_displacement_record_is_not_serialized_or_called():
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs();r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    class Trap:
+        def __float__(self):raise AssertionError('ignored display was read')
+        def __repr__(self):raise AssertionError('ignored display was serialized')
+        def __deepcopy__(self,memo):raise AssertionError('ignored display was copied')
+    for ignored in (Trap(),None,{},pd.DataFrame([[1,2]],columns=['duplicate','duplicate'])):
+        state['fluids_config']['params']['Displacement Fluid']=ignored
+        assert build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    state['fluids_config']['params'].pop('Displacement Fluid')
+    assert build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+
+
+@pytest.mark.parametrize('names',[('Main','Displacement Fluid'),('Pre Flush','Scavenger','Lead #1','Lead #2','Tail','Displacement Fluid'),('Diesel','Spacer Ahead','Spacer Behind','Displacement Fluid')])
+def test_cfw128_c2e5_all_selected_stages_source_precedence_and_density_authorities(names):
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    from materials_db import HYDRAULIC_EXECUTION_ORDER
+    state,g,d=cfw128_c2e5_inputs(names=names)
+    state['mud_density']='80-82'
+    nonmud=next(n for n in names if n!='Displacement Fluid')
+    state['fluid_data']={nonmud:{'volume':999.,'density':52. if nonmud=='Diesel' else 120.}}
+    a=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert tuple(v.name for v in a.stages)==tuple(n for n in HYDRAULIC_EXECUTION_ORDER if n in names)
+    assert next(v for v in a.stages if v.name==nonmud).volume_bbl==40.
+    assert a.stages[-1].density_pcf==81. and a.stages[-1].raw_density=='80-82'
+    state['fluids_config']['params'].pop(nonmud)
+    b=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert next(v for v in b.stages if v.name==nonmud).record_source=='fluid_data'
+    assert next(v for v in b.stages if v.name==nonmud).volume_bbl==999.
+    state['mud_density']=None;state['well_data']={'mud_density':'83-85'}
+    c=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert c.stages[-1].density_pcf==84. and c.stages[-1].density_source=='well_data.mud_density'
+
+
+@pytest.mark.parametrize('stage',['Main','Spacer'])
+def test_cfw128_c2e5_entered_nonmud_edits_change_schedule_and_test_composition(stage):
+    state,g,d=cfw128_c2e5_inputs();before=cfw128_c2e5_test_composition(state,g,d)
+    original=state['fluids_config']['params'][stage]['volume'];state['fluids_config']['params'][stage]['volume']=original+20.
+    after=cfw128_c2e5_test_composition(state,g,d)
+    assert next(v for v in after['schedule'].stages if v.name==stage).volume_bbl==original+20.
+    assert after['schedule'].source_identity!=before['schedule'].source_identity and after['schedule'].projection_identity!=before['schedule'].projection_identity
+    assert after['tracking'].occupancy!=before['tracking'].occupancy
+    assert after['schedule'].stages[-1].volume_bbl==before['schedule'].stages[-1].volume_bbl==d.derived_displacement_bbl
+    assert after['placement'].pumping_state_toc_candidate_md is None
+
+
+def test_cfw128_c2e5_uat19_remaining_25m_cement_and_mud_returns_are_not_toc_release():
+    state,g,d=cfw128_c2e5_inputs(names=('Main','Displacement Fluid'));e=cfw128_c2e5_test_composition(state,g,d)
+    r=e['schedule'];t=e['tracking'];p=e['placement']
+    assert r.stages[-1].volume_bbl==pytest.approx(284.947218881107,abs=1e-10)
+    assert r.stages[-1].volume_bbl==pytest.approx(cfw128_c2e4_manual_bbl(2800.,4.276)+cfw128_c2e4_manual_bbl(1060.,6.004),abs=1e-10)
+    assert [(v.domain,v.inlet_md,v.outlet_md) for v in t.path]==[('injection',0.,2800.),('injection',2800.,3885.),('lower_annulus',3885.,2800.),('upper_pumping_annulus',2800.,0.)]
+    assert t.mud_displaced_bbl>0. and not p.surface_cement_return_present
+    assert p.pumping_state_toc_candidate_md is None and 'HOLD_CEMENT_REMAINS_IN_INJECTION' in p.reason_codes
+    assert all(min(v.inlet_md,v.outlet_md)>2800. for v in t.occupancy if v.fluid=='Main')
+    assert p.stages[0].retained_injection_bbl==pytest.approx(cfw128_c2e4_manual_bbl(25.,6.004),abs=1e-10)
+    assert p.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+
+
+def cfw128_c2e5_tapered_state(edge=674.):
+    job='TIE BACK LNR 7"';table=hardware(('Previous Casing','800','9 5/8',8.535),('Previous Liner Shoe','700-1200','7',6.),
+        ('Drill Pipes','200','5',4.276),('Drill Pipes','200-400','4 1/2',4.),('Tie Back Liner Shoe',f'400-{edge:g}','7',6.),
+        ('Tie Back Liner Shoe',f'{edge:g}-700','6 1/2',5.8),('Open Hole Size','800-1200','8.5',8.5))
+    state=project(job,table,1200.);state['placement_config']['host_row']=next(iter(hardware_choices(table,{'Previous Casing'})))
+    state['placement_config']['target_row']=next(k for k,v in hardware_choices(table,target_descriptions(job)).items() if v['depth']==700.)
+    return state
+
+
+@pytest.mark.parametrize('case',['zero_top','previous_taper','taper_before','taper_at','taper_after','lap_cross'])
+def test_cfw128_c2e5_special_endpoints_and_test_only_composition(case):
+    state=synthetic_tieback(top=0. if case=='zero_top' else 676.) if case in ('zero_top','lap_cross') else r18c_tapered_state(100.) if case=='previous_taper' else cfw128_c2e5_tapered_state({'taper_before':674.,'taper_at':675.,'taper_after':676.}[case])
+    state,g,d=cfw128_c2e5_inputs(state,names=('Main','Tail','Displacement Fluid'))
+    e=cfw128_c2e5_test_composition(state,g,d)
+    assert e['schedule'].stages[-1].volume_bbl==d.derived_displacement_bbl
+    assert e['placement'].pumping_state_toc_candidate_md is None
+    assert 'HOLD_CEMENT_REMAINS_IN_INJECTION' in e['placement'].reason_codes
+    assert all(v.bottom_md<=g.captured_geometry.shoe_md for v in d.sections)
+
+
+def test_cfw128_c2e5_small_trailing_spacer_does_not_invent_shoe_separation():
+    state,g,d=cfw128_c2e5_inputs(bug01_geometry_case('CSG 13 3/8"'),('Main','Spacer Behind','Displacement Fluid'))
+    state['fluids_config']['params']['Spacer Behind']['volume']=10.
+    e=cfw128_c2e5_test_composition(state,g,d)
+    assert 'HOLD_CEMENT_REMAINS_IN_INJECTION' in e['placement'].reason_codes
+    assert 'HOLD_CEMENT_NOT_ANCHORED_AT_SHOE' not in e['placement'].reason_codes
+    assert e['placement'].pumping_state_toc_candidate_md is None
+
+
+def cfw128_c2e5_rebind_derived(d):
+    from dataclasses import fields
+    from project_state import fingerprint
+    encoded=tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in d.sections)
+    object.__setattr__(d,'projection_identity',fingerprint(['cfw128-c2e4-derived-displacement/1',d.app_source_sha,d.geometry_source_identity,d.geometry_projection_identity,d.job,d.kind,d.active_shoe_md,d.end_md,25.,encoded,d.derived_displacement_bbl,'NOMINAL_INTERNAL_STRING_CAPACITY','NONE_ADDED']))
+    return d
+
+
+@pytest.mark.parametrize('fault',['geometry_none','derived_none','numeric','sha','sibling','geometry_hash','derived_hash','derived_parent','derived_flags','geometry_nested_flags','endpoint','receiver_shoe','job','reserved','lost_section','section_id','section_rows','section_md','section_capacity','forged_total','nan','inf'])
+def test_cfw128_c2e5_receipt_and_geometry_mutations_fail_closed(fault):
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=deepcopy(cfw128_c2e5_inputs());sha=C2D1_APP_SOURCE_SHA
+    if fault=='geometry_none':g=None
+    elif fault=='derived_none':d=None
+    elif fault=='numeric':d=284.947218881107
+    elif fault=='sha':sha='0'*40
+    elif fault=='sibling':state2,g2,d2=cfw128_c2e5_inputs(bug01_geometry_case('LNR 7"'));d=d2
+    elif fault=='geometry_hash':object.__setattr__(g,'source_identity','0'*64)
+    elif fault=='derived_hash':object.__setattr__(d,'projection_identity','0'*64)
+    elif fault=='derived_parent':object.__setattr__(d,'geometry_projection_identity','0'*64)
+    elif fault=='derived_flags':object.__setattr__(d,'hydraulic_admissible',True)
+    elif fault=='geometry_nested_flags':object.__setattr__(g.captured_geometry,'ready_to_run',True)
+    elif fault=='endpoint':object.__setattr__(d,'end_md',3861.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='receiver_shoe':object.__setattr__(d,'active_shoe_md',4860.);object.__setattr__(d,'end_md',4835.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='job':object.__setattr__(d,'job','TIE BACK LNR 5"')
+    elif fault=='reserved':object.__setattr__(d,'reserved_shoe_interval_m',0.)
+    elif fault=='lost_section':object.__setattr__(d,'sections',d.sections[1:]);cfw128_c2e5_rebind_derived(d)
+    elif fault=='section_id':object.__setattr__(d.sections[0],'internal_id_in',5.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='section_rows':object.__setattr__(d.sections[0],'source_rows',());cfw128_c2e5_rebind_derived(d)
+    elif fault=='section_md':object.__setattr__(d.sections[1],'top_md',2801.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='section_capacity':object.__setattr__(d.sections[0],'capacity_bbl_per_m',1.);cfw128_c2e5_rebind_derived(d)
+    elif fault=='forged_total':object.__setattr__(d,'derived_displacement_bbl',d.derived_displacement_bbl+1.);cfw128_c2e5_rebind_derived(d)
+    elif fault in ('nan','inf'):object.__setattr__(d,'derived_displacement_bbl',float(fault))
+    with pytest.raises((ValueError,TypeError)):build_effective_schedule(g,d,state,expected_app_source_sha=sha)
+
+
+@pytest.mark.parametrize('fault',['no_mud_selection','duplicate','unknown','ineligible','wrong_job','nonmud_none','nonmud_zero','nonmud_negative','nonmud_bool','nonmud_nan','nonmud_inf','nonmud_string','missing_record','bad_record_stale','bad_density','mud_missing','mud_nan','mud_inf','mud_zero','mud_bool','overflow','precision_lost','bad_active','bad_params','bad_legacy','bad_well','mud_type_object'])
+def test_cfw128_c2e5_invalid_selected_source_or_density_is_rejected(fault):
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs()
+    if fault=='no_mud_selection':state['fluids_config']['active'].remove('Displacement Fluid')
+    elif fault=='duplicate':state['fluids_config']['active'].append('Main')
+    elif fault=='unknown':state['fluids_config']['active'].append('Mud')
+    elif fault=='ineligible':state['mud_type']='WBM';state['fluids_config']['active'].append('Diesel')
+    elif fault=='wrong_job':state['job_type']='LNR 7"'
+    elif fault.startswith('nonmud_'):state['fluids_config']['params']['Main']['volume']={'nonmud_none':None,'nonmud_zero':0.,'nonmud_negative':-1.,'nonmud_bool':True,'nonmud_nan':float('nan'),'nonmud_inf':float('inf'),'nonmud_string':'40'}[fault]
+    elif fault=='missing_record':state['fluids_config']['params'].pop('Main')
+    elif fault=='bad_record_stale':state['fluids_config']['params']['Main']=None;state['fluid_data']={'Main':{'volume':40.,'density':110.}}
+    elif fault=='bad_density':state['fluids_config']['params']['Spacer']['density']='110-112'
+    elif fault.startswith('mud_') and fault!='mud_type_object':state['mud_density']={'mud_missing':None,'mud_nan':float('nan'),'mud_inf':float('inf'),'mud_zero':0.,'mud_bool':True}[fault]
+    elif fault=='overflow':state['fluids_config']['params']['Main']['volume']=1e308;state['fluids_config']['active'].append('Tail');state['fluids_config']['params']['Tail']={'volume':1e308,'density':110.}
+    elif fault=='precision_lost':state['fluids_config']['params']['Main']['volume']=1e20
+    elif fault=='bad_active':state['fluids_config']['active']='Main'
+    elif fault=='bad_params':state['fluids_config']['params']=[]
+    elif fault=='bad_legacy':state['fluid_data']=[]
+    elif fault=='bad_well':state['well_data']=[]
+    elif fault=='mud_type_object':state['mud_type']=True
+    before=pickle.dumps(state)
+    with pytest.raises((ValueError,TypeError)):build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_c2e5_short_shoe_and_fresh_measured_id_changes():
+    from cfw128_c2e4_derived_displacement import derive_displacement
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs();r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    changed=deepcopy(state);changed['hardware_table'].at[7,'ID (in)']=4.3
+    fresh=cfw128_c2e_view(changed);nd=derive_displacement(fresh,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    with pytest.raises(ValueError):build_effective_schedule(fresh,d,changed,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    nr=build_effective_schedule(fresh,nd,changed,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert nr.stages[-1].volume_bbl!=r.stages[-1].volume_bbl and nr.source_identity!=r.source_identity
+    short=project('CSG 9 5/8"',hardware(('Previous Casing','5','13 3/8',12.347),('Casing','25','9 5/8',8.535),('Open Hole Size','5-25','12.25',12.25)),25.)
+    sg=cfw128_c2e_view(short);cfw128_c2e_fluids(short,('Main','Displacement Fluid'))
+    with pytest.raises(ValueError):build_effective_schedule(sg,d,short,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def test_cfw128_c2e5_immutable_replay_and_exact_stage_sum():
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    from dataclasses import replace,FrozenInstanceError
+    from fractions import Fraction
+    state,g,d=cfw128_c2e5_inputs();before=pickle.dumps((state,g,d));r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.dumps((state,g,d))==before and pickle.loads(pickle.dumps(r))==r
+    assert Fraction(*r.total_volume_exact_bbl)==sum((Fraction(v.volume_bbl) for v in r.stages),Fraction(0))
+    for flag in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(r,flag) is False
+        with pytest.raises(ValueError):replace(r,**{flag:True})
+    with pytest.raises(FrozenInstanceError):r.stages[0].volume_bbl=999.
+    with pytest.raises(TypeError):r.stages[0]=r.stages[0]
+    state['hardware_table'].at[7,'ID (in)']=4.3
+    assert build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.hydraulics=='HYDRAULICS_NOT_EVALUATED' and r.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+
+
+def test_cfw128_c2e5_import_and_no_production_caller_isolation(monkeypatch):
+    import ast,sys,subprocess
+    from pathlib import Path
+    root=Path('.');path=root/'cfw128_c2e5_effective_schedule.py'
+    def verify():
+        tree=ast.parse(path.read_text());names={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        assert names<={'dataclasses','fractions','math','re','typing','cement_chart_model','project_state','materials_db','engineering_tools'}
+        assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+        for other in root.glob('*.py'):
+            if other==path:continue
+            t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
+            assert path.stem not in imports
+    verify();original=Path.read_text
+    for target,addition in ((path,'\nimport cfw128_c2e4_derived_displacement\n'),(root/'main.py','\nimport cfw128_c2e5_effective_schedule\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:original(p,*a,**k)+addition if p==target else original(p,*a,**k))
+            with pytest.raises(AssertionError):verify()
+    forbidden={'cfw128_adapter','cfw128_c2d_geometry_view','cfw128_c2e_volume_tracking','cfw128_c2e2_cement_placement','cfw128_c2e3_post_pull_gap','cfw128_c2e4_derived_displacement','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen','scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report','centralizer_optimizer_engine','cement_charts_engine'}
+    subprocess.run([sys.executable,'-B','-W','error','-c','import sys,cfw128_c2e5_effective_schedule; assert not '+repr(forbidden)+' & set(sys.modules)'],check=True)
