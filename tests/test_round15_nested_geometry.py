@@ -3739,3 +3739,234 @@ def test_cfw128_c2d1_other_roots_reject_import_mutation(filename,monkeypatch):
     target=Path(__file__).resolve().parents[1]/filename;read=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport cfw128_c2d_geometry_view\n' if p==target else read(p,*a,**k))
     with pytest.raises(AssertionError):test_cfw128_c2d1_import_isolation_no_callbacks_or_runtime_escape()
+
+
+# C2e-1 additive disabled tracking checks; all earlier tests remain byte-exact.
+def cfw128_c2e_view(state=None, query_md=()):
+    from cfw128_c2d_geometry_view import build_geometry_view
+    state=cfw128_c1_uat19_state() if state is None else state
+    s,a=cfw128_c2d1_inputs(state,query_md)
+    return build_geometry_view(s,a,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+def cfw128_c2e_fluids(state,names=('Main','Displacement Fluid'),volume=2000.):
+    state['mud_density']=80.;state['mud_type']='OBM'
+    state['fluids_config']={'active':list(reversed(names)),'params':{
+        n:{'volume':volume,'density':52. if n=='Diesel' else 110.} for n in names}}
+    return state
+
+
+def test_cfw128_c2e_new_disabled_interface_requirement():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());view=cfw128_c2e_view(state)
+    r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.status=='DISABLED_VOLUME_TRACKING_PREVIEW' and r.currentness=='NOT_CURRENTNESS_PROOF'
+    assert r.hydraulics=='HYDRAULICS_NOT_EVALUATED' and r.toc=='TOC_NOT_EVALUATED'
+    assert all(getattr(r,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    assert {v.fluid for v in r.occupancy}=={'Mud'}
+
+
+@pytest.mark.parametrize('milestone',['zero','first','shoe','lap','surface','over','end'])
+def test_cfw128_c2e_uat19_fronts_and_per_stage_conservation(milestone):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from cement_chart_model import _capacity
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());view=cfw128_c2e_view(state)
+    injection=view.nominal_injection_bbl;lower=sum(s.nominal_volume_bbl for s in view.lower_annulus)
+    upper=sum(s.nominal_volume_bbl for s in view.upper_pumping_annulus);total=injection+lower+upper
+    V={'zero':0.,'first':1.,'shoe':injection,'lap':injection+lower,'surface':total,'over':total+10.,'end':4000.}[milestone]
+    before=pickle.dumps((state,view));r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=V)
+    assert injection==pytest.approx(287.819429400755,abs=1e-10)
+    assert lower==pytest.approx(82.460178062841,abs=1e-10) and upper==pytest.approx(426.973186160669,abs=1e-10)
+    assert r.total_nominal_capacity_bbl==pytest.approx(total)
+    assert [(p.domain,p.inlet_md,p.outlet_md) for p in r.path]==[
+        ('injection',0.,2800.),('injection',2800.,3885.),('lower_annulus',3885.,2800.),('upper_pumping_annulus',2800.,0.)]
+    assert not any(p.domain=='upper_post_pull_bore' or max(p.inlet_md,p.outlet_md)>3885. for p in r.path)
+    assert sum(o.volume_bbl for o in r.occupancy)==pytest.approx(total,abs=1e-10)
+    for ledger in r.ledgers:
+        assert ledger.entered_bbl==pytest.approx(ledger.in_path_bbl+ledger.ideal_returned_bbl)
+        assert ledger.in_path_bbl==pytest.approx(sum(o.volume_bbl for o in r.occupancy if o.fluid==ledger.fluid))
+    assert total==pytest.approx(r.mud_remaining_bbl+r.mud_displaced_bbl)
+    assert r.mud_displaced_bbl==pytest.approx(min(V,total))
+    if milestone=='first':assert r.mud_displaced_bbl==1. and r.ledgers[0].ideal_returned_bbl==0.
+    if milestone=='over':assert r.ledgers[0].ideal_returned_bbl==pytest.approx(10.)
+    if milestone in ('shoe','lap'):
+        front=next(o for o in reversed(r.occupancy) if o.fluid=='Main')
+        assert front.outlet_md==pytest.approx(3885. if milestone=='shoe' else 2800.)
+    assert pickle.dumps((state,view))==before
+    assert r==preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=V)
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_c2e_jobs_sections_and_equal_density_identity(job):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from materials_db import HYDRAULIC_EXECUTION_ORDER
+    state=cfw128_c2e_fluids(bug01_geometry_case(job),HYDRAULIC_EXECUTION_ORDER,100.)
+    view=cfw128_c2e_view(state);r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=500.)
+    assert tuple(s.name for s in r.stages)==HYDRAULIC_EXECUTION_ORDER
+    assert 'Spacer Behind' in tuple(s.name for s in r.stages)
+    assert len({s.name for s in r.stages})==len(r.stages)
+    assert r.stages[-1].name=='Displacement Fluid' and r.stages[-1].density_pcf==r.initial_mud_density_pcf
+    assert sum(o.volume_bbl for o in r.occupancy)==pytest.approx(r.total_nominal_capacity_bbl)
+    assert all(a.outlet_md==b.inlet_md for a,b in zip(r.path,r.path[1:]))
+    assert r.path[0].inlet_md==r.path[-1].outlet_md==0.
+    assert sum(p.end_bbl-p.start_bbl for p in r.path)==pytest.approx(view.nominal_injection_bbl+view.nominal_pumping_return_bbl)
+
+
+@pytest.mark.parametrize('case',['zero','taper','directional','dp_sections'])
+def test_cfw128_c2e_measured_special_sections_and_trajectory(case):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=synthetic_tieback(top=0. if case=='zero' else 400.) if case!='taper' else r18c_tapered_state(100.)
+    if case=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    if case=='dp_sections':
+        t=state['hardware_table'];i=t.index[t.Description=='Drill Pipes'][0];t.at[i,'MD (m)']='200'
+        extra=t.iloc[[i]].copy();extra['MD (m)']='200-400';extra['Size (in)']='6.5';extra['ID (in)']=5.8
+        state['hardware_table']=pd.concat([t,extra],ignore_index=True)
+    cfw128_c2e_fluids(state);view=cfw128_c2e_view(state,(50.,) if case=='directional' else ())
+    r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=20.)
+    if case=='zero':assert not any(p.domain=='upper_pumping_annulus' for p in r.path)
+    if case=='directional':assert dict(r.trajectory)[50.]==pytest.approx(47.7464829275686,abs=1e-12)
+    if case=='taper':assert len(next(s for s in view.captured_geometry.installed_strings if s.description=='Previous Tie Back Liner Shoe').sections)==2
+    if case=='dp_sections':assert [(p.inlet_md,p.outlet_md) for p in r.path[:2]]==[(0.,200.),(200.,400.)]
+
+
+@pytest.mark.parametrize('fault',['duplicate','unknown','diesel_wbm','missing','invalid_canonical','bool','fraction_text','nan','negative','density','mud','job','too_far','overflow','swallowed'])
+def test_cfw128_c2e_invalid_fluid_sources_fail_closed(fault):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());view=cfw128_c2e_view(state);V=0.
+    if fault=='duplicate':state['fluids_config']['active'].append('Main')
+    elif fault=='unknown':state['fluids_config']['active'].append('Mud')
+    elif fault=='diesel_wbm':state['mud_type']='WBM';state['fluids_config']['active'].append('Diesel')
+    elif fault=='missing':del state['fluids_config']['params']['Main']
+    elif fault=='invalid_canonical':state['fluid_data']={'Main':{'volume':20.,'density':110.}};state['fluids_config']['params']['Main']=None
+    elif fault in ('bool','fraction_text','nan','negative'):state['fluids_config']['params']['Main']['volume']={'bool':True,'fraction_text':'1/2','nan':float('nan'),'negative':-1.}[fault]
+    elif fault=='density':state['fluids_config']['params']['Main']['density']=False
+    elif fault=='mud':state['mud_density']=float('inf')
+    elif fault=='job':state['job_type']='CSG 20"'
+    elif fault=='too_far':V=4001.
+    elif fault=='overflow':state['fluids_config']['params']['Main']['volume']=1e308;state['fluids_config']['params']['Displacement Fluid']['volume']=1e308
+    elif fault=='swallowed':state['fluids_config']['params']['Main']['volume']=1e20;state['fluids_config']['params']['Displacement Fluid']['volume']=1.
+    before=pickle.dumps(state)
+    with pytest.raises((ValueError,TypeError)):preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=V)
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('fault',['sha','identity','projection','rows','diameter','gap','flags','source_pair','postpull','mutable'])
+def test_cfw128_c2e_changed_capture_and_forged_gate_rejected(fault):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());view=deepcopy(cfw128_c2e_view(state));sha=C2D1_APP_SOURCE_SHA
+    if fault=='sha':sha='0'*40
+    elif fault=='identity':object.__setattr__(view,'source_identity','0'*64)
+    elif fault=='projection':object.__setattr__(view,'projection_identity','0'*64)
+    elif fault=='rows':object.__setattr__(view.injection[0],'running_source_rows',(999,))
+    elif fault=='diameter':object.__setattr__(view.lower_annulus[0],'outer_diameter_in',100.)
+    elif fault=='gap':object.__setattr__(view.injection[0],'bottom_md',2799.)
+    elif fault=='flags':object.__setattr__(view,'enabled',True)
+    elif fault=='source_pair':object.__setattr__(view.captured_geometry,'host_token','unrelated')
+    elif fault=='postpull':object.__setattr__(view,'lower_annulus',view.upper_post_pull_bore)
+    elif fault=='mutable':object.__setattr__(view,'injection',list(view.injection))
+    with pytest.raises((ValueError,TypeError)):preview_fluid_tracking(view,state,expected_app_source_sha=sha)
+
+
+def test_cfw128_c2e_mutation_currentness_legacy_fallback_and_immutable_receipt():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from dataclasses import replace,FrozenInstanceError
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());view=cfw128_c2e_view(state)
+    kwargs={'expected_app_source_sha':C2D1_APP_SOURCE_SHA,'cumulative_injected_bbl':10.}
+    r=preview_fluid_tracking(view,state,**kwargs)
+    state['hardware_table'].at[2,'ID (in)']=8.534
+    assert preview_fluid_tracking(view,state,**kwargs)==r  # Replay cannot detect unseen Hardware; NEVER currentness proof.
+    assert preview_fluid_tracking(cfw128_c2e_view(state),state,**kwargs).source_identity!=r.source_identity
+    state['fluids_config']['params']['Main']['volume']=2001.
+    assert preview_fluid_tracking(view,state,**kwargs).source_identity!=r.source_identity
+    state['fluid_data']={'Main':state['fluids_config']['params'].pop('Main')}
+    legacy=preview_fluid_tracking(view,state,**kwargs)
+    assert next(s for s in legacy.stages if s.name=='Main').source=='fluid_data'
+    assert pickle.loads(pickle.dumps(r))==r
+    with pytest.raises(FrozenInstanceError):r.enabled=True
+    with pytest.raises(ValueError):replace(r,enabled=True)
+    with pytest.raises(TypeError):r.stages[0]=r.stages[0]
+
+
+def test_cfw128_c2e_no_selection_and_resolution_limits():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state(),());view=cfw128_c2e_view(state)
+    r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert not r.stages and r.mud_displaced_bbl==0. and all(o.fluid=='Mud' for o in r.occupancy)
+    cfw128_c2e_fluids(state,('Main',),1e-300)
+    tiny=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=1e-300)
+    assert tiny.ledgers[0].entered_bbl==tiny.ledgers[0].in_path_bbl==1e-300
+    assert tiny.occupancy[0].inlet_md<tiny.occupancy[0].outlet_md
+
+
+def test_cfw128_c2e_import_isolation_and_mutation_negative(monkeypatch):
+    import ast
+    from pathlib import Path
+    path=Path('cfw128_c2e_volume_tracking.py');tree=ast.parse(path.read_text())
+    imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
+    imports.update(a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names)
+    assert not any(n.startswith('cfw128') or n in ('scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report') for n in imports)
+    for root in Path('.').glob('*.py'):
+        if root==path:continue
+        t=ast.parse(root.read_text(encoding='utf-8-sig'))
+        assert not any(isinstance(n,ast.ImportFrom) and n.module==path.stem or isinstance(n,ast.Import) and any(a.name==path.stem for a in n.names) for n in ast.walk(t))
+    original=Path.read_text
+    with monkeypatch.context() as m:
+        m.setattr(Path,'read_text',lambda p,*a,**k:original(p,*a,**k)+'\nimport cfw128_adapter\n' if p==path else original(p,*a,**k))
+        with pytest.raises(AssertionError):test_cfw128_c2e_import_isolation_and_mutation_negative_no_recursion(path)
+
+
+def test_cfw128_c2e_import_isolation_and_mutation_negative_no_recursion(path=None):
+    import ast
+    from pathlib import Path
+    p=Path('cfw128_c2e_volume_tracking.py') if path is None else path
+    tree=ast.parse(p.read_text())
+    assert not any(isinstance(n,ast.Import) and any(a.name.startswith('cfw128') for a in n.names) or isinstance(n,ast.ImportFrom) and (n.module or '').startswith('cfw128') for n in ast.walk(tree))
+
+
+@pytest.mark.parametrize('main_volume',[20.,30000.])
+def test_cfw128_c2e_equivalent_supported_round9c_accounting(main_volume):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    from centralizer_adapter import build_fluid_snapshot
+    state=cfw128_c2e_fluids(synthetic_tieback(top=400.))
+    state['fluids_config']['params']['Main']['volume']=main_volume
+    state['fluids_config']['params']['Displacement Fluid']['volume']=10.
+    before=pickle.dumps(state);view=cfw128_c2e_view(state)
+    r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=main_volume+10.)
+    old=build_fluid_snapshot(state)
+    assert r.total_nominal_capacity_bbl==pytest.approx(old['capacity_bbl']['total'])
+    for v in r.ledgers:
+        assert v.entered_bbl==pytest.approx(old['per_fluid'][v.fluid]['entered_bbl'])
+        assert v.in_path_bbl==pytest.approx(old['per_fluid'][v.fluid]['in_path_bbl'])
+        assert v.ideal_returned_bbl==pytest.approx(old['per_fluid'][v.fluid]['returned_bbl'])
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_c2e_clean_process_has_no_engine_capture_or_ui_imports():
+    import subprocess,sys
+    forbidden={'cfw128_adapter','cfw128_er03_contract','cfw128_er03_boundary','cfw128_er03_volume',
+               'cfw128_c2d_geometry_view','cfw128_hb_intake','cfw128_hb_numeric','cfw128_hb03t_frozen',
+               'scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report',
+               'centralizer_optimizer_engine','cement_charts_engine'}
+    script='import sys,cfw128_c2e_volume_tracking; assert not '+repr(forbidden)+' & set(sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],check=True)
+
+
+@pytest.mark.parametrize('kind',['request','stage'])
+def test_cfw128_c2e_nonrepresentable_integer_volume_is_not_coerced(kind):
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state(),volume=1e20);view=cfw128_c2e_view(state)
+    if kind=='stage':state['fluids_config']['params']['Main']['volume']=10**20+1
+    with pytest.raises(ValueError,match='Nonrepresentable'):
+        preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,cumulative_injected_bbl=10**20+1 if kind=='request' else 0.)
+
+
+def test_cfw128_c2e_fractional_stage_end_is_exact_without_rounding_source():
+    from cfw128_c2e_volume_tracking import preview_fluid_tracking
+    state=cfw128_c2e_fluids(cfw128_c1_uat19_state());state['fluids_config']['params']['Main']['volume']=.1
+    state['fluids_config']['params']['Displacement Fluid']['volume']=.2;view=cfw128_c2e_view(state)
+    r=preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=2)
+    assert [v.entered_bbl for v in r.ledgers]==[.1,.2]
+    assert [v.in_path_bbl for v in r.ledgers]==[.1,.2]
+    for bad in (True,-1,3):
+        with pytest.raises(ValueError):preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=bad)
+    with pytest.raises(ValueError):preview_fluid_tracking(view,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=1,cumulative_injected_bbl=.01)
