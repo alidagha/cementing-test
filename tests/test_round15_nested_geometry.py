@@ -2281,7 +2281,7 @@ def test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_rev
     root=Path(__file__).resolve().parents[1]
     for file in root.glob('*.py'):
         tree=ast.parse(file.read_text());imports=[n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]+[a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
-        if file.name!='cfw128_hb_intake.py':assert 'cfw128_hb_intake' not in imports
+        if file.name not in ('cfw128_hb_intake.py','cfw128_hb_numeric.py'):assert 'cfw128_hb_intake' not in imports
     code='import sys, cfw128_hb_intake; assert not any(n in sys.modules for n in ("scipy", "pumping_simulation", "fluids_charts_module_v1_4_2"))'
     subprocess.run([sys.executable,'-B','-W','error','-c',code],cwd=root,check=True)
 
@@ -2692,3 +2692,223 @@ def test_cfw128_b2a_immutable_intake_and_frozen_public_gates_reject_forgery(bug0
         with pytest.raises(TypeError):replace(result,**{gate:True})
         assert getattr(pickle.loads(pickle.dumps(result)),gate) is False
         assert result.to_dict()[gate] is False
+
+
+B2B_APP_SOURCE_SHA = '0391def0bfe859249331bdb9d94744cc94607af0'
+
+
+@pytest.fixture(scope='module')
+def cfw128_b2b_reviewed_sources(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    case=audit.AuditRegressions();state=deepcopy(bug01_reviewed_report_base)
+    state['lab_qc_params']['Main']['reviewed']=False
+    app=case.app(state);case.phase(app,'phase7')
+    next(b for b in app.button if b.label=='Confirm measured lab results').click().run()
+    cement=app.session_state.to_dict()
+    next(w for w in app.checkbox if w.label=='BHCT — Ramp-Down - Displacement Fluid').check().run()
+    for rpm,value in zip((300,200,100,60,30,6,3),('168','116','64','41','24','8','6')):
+        next(w for w in app.text_input if w.label==f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid').set_value(value).run()
+    next(b for b in app.button if b.label=='Confirm measured Mud lab results').click().run()
+    mud=app.session_state.to_dict()
+    result={}
+    for fluid,source in [('Main',cement),('Displacement Fluid',mud)]:
+        snapshot=snapshot_lab_intake(source,fluid,app_source_sha=B2B_APP_SOURCE_SHA)
+        assert snapshot.status=='CAPTURED_FOR_FUTURE_REVIEW'
+        result[fluid]=(source,snapshot)
+    return result
+
+
+@pytest.mark.parametrize('fluid',['Main','Displacement Fluid'])
+def test_cfw128_b2b_real_reviewed_sources_raw_pairing_restore_and_no_fit(cfw128_b2b_reviewed_sources,fluid,monkeypatch,tmp_path):
+    from dataclasses import asdict
+    from project_state import fingerprint
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    from cfw128_hb_numeric import prepare_hb_intent
+    import cfw128_hb03t_frozen as hb
+    def forbidden(*a,**kw):raise AssertionError('A handoff cannot fit or convert engine units.')
+    monkeypatch.setattr(hb,'fit_full_hb',forbidden);monkeypatch.setattr(hb,'to_engine_field',forbidden)
+    state,snapshot=deepcopy(cfw128_b2b_reviewed_sources[fluid]);before=pickle.dumps((state,snapshot))
+    intent=prepare_hb_intent(snapshot,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    assert intent.status=='HOLD_INSTRUMENT_PROVENANCE_UNVERIFIED' and intent.instrument_provenance=='UNVERIFIED'
+    assert intent.rpm_order==snapshot.rpm_order==hb.RPM_ORDER==(300,200,100,60,30,6,3)
+    assert intent.dials==tuple(r.dial for r in snapshot.readings)
+    assert tuple((r.rpm,r.raw,r.raw_type,r.dial) for r in intent.readings)==tuple((r.rpm,r.raw,r.raw_type,r.dial) for r in snapshot.readings)
+    assert all(type(r.dial) is int and r is not old for r,old in zip(intent.readings,snapshot.readings))
+    assert intent.upstream_status==snapshot.status and intent.upstream_reason_codes==snapshot.reason_codes
+    assert intent.upstream_source_identity==snapshot.source_identity and intent.upstream_request_identity==snapshot.request_identity
+    assert intent.request_identity==fingerprint(['cfw128-b2b-request/1',intent.source_identity,B2B_APP_SOURCE_SHA])
+    assert intent==prepare_hb_intent(snapshot,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    restored=snapshot_lab_intake(audit.round_trip(state),fluid,app_source_sha=B2B_APP_SOURCE_SHA)
+    assert prepare_hb_intent(restored,expected_app_source_sha=B2B_APP_SOURCE_SHA)==intent
+    assert pickle.dumps((state,snapshot))==before
+    for gate in ('enabled','fit_admissible','ready_to_run','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(intent,gate) is False and asdict(intent)[gate] is False
+    assert not {'tau_y_pa','k_pa_s_n','n_dimensionless','pressure','qout','pv_cp'} & asdict(intent).keys()
+    # Preview is capture-time data, not a currentness receipt for subsequently edited state.
+    state['lab_qc_params'][fluid]['rheology']['bhct_down']['readings']['300']='169'
+    assert prepare_hb_intent(snapshot,expected_app_source_sha=B2B_APP_SOURCE_SHA)==intent
+    stale=snapshot_lab_intake(state,fluid,app_source_sha=B2B_APP_SOURCE_SHA)
+    held=prepare_hb_intent(stale,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    assert held.status=='SOURCE_NOT_READY' and held.dials==held.readings==()
+    import json
+    (tmp_path/(fluid.replace(' ','-')+'-intent.json')).write_text(json.dumps(asdict(intent),indent=2))
+
+
+@pytest.mark.parametrize('fault,upstream',[('unselected','NOT_SELECTED'),('incomplete','INCOMPLETE_INPUT'),
+    ('invalid','INVALID_INPUT'),('unreviewed','REVIEW_REQUIRED'),('stale','STALE_REVIEW'),
+    ('inactive','NOT_APPLICABLE'),('unavailable','NOT_AVAILABLE')])
+def test_cfw128_b2b_upstream_holds_are_exact_and_empty(cfw128_b2b_reviewed_sources,fault,upstream,monkeypatch):
+    from cfw128_hb_intake import snapshot_lab_intake
+    from cfw128_hb_numeric import prepare_hb_intent
+    import cfw128_hb03t_frozen as hb
+    monkeypatch.setattr(hb,'fit_full_hb',lambda *a,**k:pytest.fail('No live fitting'))
+    monkeypatch.setattr(hb,'to_engine_field',lambda *a,**k:pytest.fail('No live field conversion'))
+    state,_=deepcopy(cfw128_b2b_reviewed_sources['Main']);qc=state['lab_qc_params']['Main'];fluid='Main'
+    if fault=='unselected':qc['rheology']['bhct_down']['selected']=False
+    elif fault=='incomplete':qc['rheology']['bhct_down']['readings'].pop('3')
+    elif fault=='invalid':qc['rheology']['bhct_down']['readings']['300']=True
+    elif fault=='unreviewed':qc['reviewed']=False
+    elif fault=='stale':qc['rheology']['bhct_down']['readings']['300']='169'
+    elif fault=='inactive':state['fluids_config']['active'].remove('Main')
+    else:fluid='Mud'
+    snapshot=snapshot_lab_intake(state,fluid,app_source_sha=B2B_APP_SOURCE_SHA);assert snapshot.status==upstream
+    before=pickle.dumps((state,snapshot));held=prepare_hb_intent(snapshot,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    assert held.status=='SOURCE_NOT_READY' and held.readings==held.dials==held.rpm_order==()
+    assert held.upstream_status==upstream and held.upstream_reason_codes==snapshot.reason_codes
+    assert pickle.dumps((state,snapshot))==before
+
+
+@pytest.mark.parametrize('fault',['dial','raw_type','fraction','negative','nan','bool','dial_float','rpm_duplicate',
+    'rpm_order','rpm_type','missing','dataset','alias','review_missing','request','instrument','authorization'])
+def test_cfw128_b2b_captured_source_mutations_fail_closed(cfw128_b2b_reviewed_sources,fault):
+    from dataclasses import replace
+    from cfw128_hb_numeric import prepare_hb_intent
+    _,original=cfw128_b2b_reviewed_sources['Main'];source=deepcopy(original);rows=list(source.readings)
+    if fault=='dial':rows[0]=replace(rows[0],dial=rows[0].dial+1)
+    elif fault=='raw_type':rows[0]=replace(rows[0],raw_type='float')
+    elif fault=='fraction':rows[0]=replace(rows[0],raw='168.0000000000001')
+    elif fault=='negative':rows[0]=replace(rows[0],raw=-1,raw_type='int',dial=-1)
+    elif fault=='nan':rows[0]=replace(rows[0],raw=float('nan'),raw_type='float')
+    elif fault=='bool':rows[0]=replace(rows[0],raw=True,raw_type='bool')
+    elif fault=='dial_float':rows[0]=replace(rows[0],dial=float(rows[0].dial))
+    elif fault=='rpm_duplicate':rows[1]=replace(rows[1],rpm=rows[0].rpm)
+    elif fault=='rpm_type':rows[0]=replace(rows[0],rpm=float(rows[0].rpm))
+    elif fault=='missing':rows.pop()
+    elif fault=='dataset':object.__setattr__(source,'dataset','surface_down')
+    elif fault=='rpm_order':object.__setattr__(source,'rpm_order',tuple(reversed(source.rpm_order)))
+    elif fault=='alias':source=replace(source,fluid_name='Mud')
+    elif fault=='review_missing':source=replace(source,review_signature=None)
+    elif fault=='request':source=replace(source,request_identity='a'*64)
+    elif fault=='instrument':object.__setattr__(source,'instrument_provenance','claimed_Fann35_verified')
+    else:object.__setattr__(source,'enabled',True)
+    if fault in ('dial','raw_type','fraction','negative','nan','bool','dial_float','rpm_duplicate','rpm_type','missing'):
+        source=replace(source,readings=tuple(rows))
+    before=pickle.dumps(source);held=prepare_hb_intent(source,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    assert held.status=='INVALID_SNAPSHOT' and held.readings==held.dials==()
+    assert held.instrument_provenance=='UNVERIFIED'
+    assert pickle.dumps(source)==before
+    assert all(getattr(held,g) is False for g in ('enabled','fit_admissible','ready_to_run','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+
+
+@pytest.mark.parametrize('value',[2**53+1,2**53+3,10**400,2**20000],ids=['2pow53plus1','2pow53plus3','tenpow400','2pow20000'])
+def test_cfw128_b2b_precision_unsafe_integer_hold_is_lossless(cfw128_b2b_reviewed_sources,value):
+    from dataclasses import replace
+    from cfw128_hb_numeric import prepare_hb_intent
+    _,source=cfw128_b2b_reviewed_sources['Main'];r=source.readings[0]
+    changed=replace(source,readings=(replace(r,raw=value,raw_type='int',dial=value),*source.readings[1:]))
+    first=prepare_hb_intent(changed,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    assert first.status=='HOLD_NUMERIC_REPRESENTATION' and first.reason_codes==('FLOAT_REPRESENTATION_UNSAFE',)
+    assert first.readings==first.dials==()
+    assert first==prepare_hb_intent(changed,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    other=replace(changed,readings=(replace(changed.readings[0],raw=value+2,dial=value+2),*changed.readings[1:]))
+    assert prepare_hb_intent(other,expected_app_source_sha=B2B_APP_SOURCE_SHA).source_identity!=first.source_identity
+
+
+def test_cfw128_b2b_identities_preserve_raw_types_spelling_and_upstream_provenance(cfw128_b2b_reviewed_sources):
+    from dataclasses import replace
+    from project_state import fingerprint
+    from cfw128_hb_numeric import prepare_hb_intent
+    _,source=cfw128_b2b_reviewed_sources['Main'];r=source.readings[0];identities=[]
+    for raw in (r.dial,float(r.dial),str(r.dial),' 00'+str(r.dial)+'.00 '):
+        changed=replace(source,readings=(replace(r,raw=raw,raw_type=type(raw).__name__),*source.readings[1:]))
+        intent=prepare_hb_intent(changed,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+        assert intent.status=='HOLD_INSTRUMENT_PROVENANCE_UNVERIFIED' and intent.readings[0].raw==raw
+        assert intent.readings[0].raw_type==type(raw).__name__
+        identities.append((intent.source_identity,intent.request_identity,intent.projection_identity))
+    assert all(len({ids[i] for ids in identities})==4 for i in range(3))
+    changed=replace(source,source_identity='b'*64,request_identity=fingerprint([1,B2B_APP_SOURCE_SHA,'Main','b'*64]))
+    assert prepare_hb_intent(changed,expected_app_source_sha=B2B_APP_SOURCE_SHA).source_identity!=prepare_hb_intent(source,expected_app_source_sha=B2B_APP_SOURCE_SHA).source_identity
+    # A coherent edit cannot be authenticated from a receipt-only snapshot: it is
+    # explicitly still a hold, with changed identities, never revalidated review.
+    changed=replace(source,readings=(replace(r,raw=str(r.dial+1),raw_type='str',dial=r.dial+1),*source.readings[1:]))
+    assert prepare_hb_intent(changed,expected_app_source_sha=B2B_APP_SOURCE_SHA).status=='HOLD_INSTRUMENT_PROVENANCE_UNVERIFIED'
+
+
+def test_cfw128_b2b_counterfeit_sha_and_clone_authorization_negatives(cfw128_b2b_reviewed_sources,monkeypatch):
+    import copy
+    from dataclasses import asdict,replace,fields,is_dataclass,FrozenInstanceError
+    from types import SimpleNamespace
+    from cfw128_hb_intake import LabIntakeSnapshot
+    import cfw128_hb_numeric as bridge
+    _,source=cfw128_b2b_reviewed_sources['Main']
+    for counterfeit in ({'pv_cp':45,'yield_point':15},SimpleNamespace(**asdict(source))):
+        with pytest.raises(TypeError):bridge.prepare_hb_intent(counterfeit,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    class Counterfeit(LabIntakeSnapshot):pass
+    fake=Counterfeit(**{f.name:getattr(source,f.name) for f in fields(source) if f.init})
+    with pytest.raises(TypeError):bridge.prepare_hb_intent(fake,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    for sha in ('wrong',B2B_APP_SOURCE_SHA.upper(),'b'*40,True):
+        with pytest.raises(ValueError):bridge.prepare_hb_intent(source,expected_app_source_sha=sha)
+    with pytest.raises(TypeError):bridge.prepare_hb_intent(source,expected_app_source_sha=B2B_APP_SOURCE_SHA,instrument='Fann 35')
+    monkeypatch.setenv('CFW128_HB_ENABLED','True');monkeypatch.setattr(bridge,'enabled',True,raising=False)
+    result=bridge.prepare_hb_intent(source,expected_app_source_sha=B2B_APP_SOURCE_SHA)
+    def immutable(v):
+        if is_dataclass(v):
+            for f in fields(v):immutable(getattr(v,f.name))
+        elif type(v) is tuple:
+            for x in v:immutable(x)
+        else:assert v is None or type(v) in (str,int,float,bool)
+    immutable(result)
+    assert copy.copy(result)==copy.deepcopy(result)==pickle.loads(pickle.dumps(result))==result
+    for gate in ('enabled','fit_admissible','ready_to_run','hydraulic_admissible','chart_admissible','scientifically_qualified'):
+        assert getattr(result,gate) is False and asdict(result)[gate] is False
+        with pytest.raises(FrozenInstanceError):setattr(result,gate,True)
+        with pytest.raises(ValueError):replace(result,**{gate:True})
+        changed=asdict(result);changed[gate]=True
+        with pytest.raises(TypeError):type(result)(**changed)
+    with pytest.raises(FrozenInstanceError):result.readings[0].dial=0
+    with pytest.raises(TypeError):replace(result,readings=[*result.readings])
+    with pytest.raises(ValueError):replace(result,status='OK')
+
+
+def test_cfw128_b2b_bridge_no_runtime_callers_or_forbidden_imports():
+    import ast,subprocess,sys
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]
+    forbidden={'scipy','cfw128_hb03t_frozen','pumping_simulation','cement_chart_model','cement_charts_engine',
+               'cement_chart_report','fluids_charts_module_v1_4_2','centralizer_adapter','centralizer_optimizer_engine'}
+    for f in root.glob('*.py'):
+        nodes=list(ast.walk(ast.parse(f.read_text())))
+        imports={n.module.split('.')[0] for n in nodes if isinstance(n,ast.ImportFrom) and n.module}
+        imports|={a.name.split('.')[0] for n in nodes if isinstance(n,ast.Import) for a in n.names}
+        if f.name=='cfw128_hb_numeric.py':assert not imports & forbidden
+        else:assert 'cfw128_hb_numeric' not in imports
+    script='import sys,cfw128_hb_numeric; assert not '+repr(forbidden)+' & set(sys.modules)'
+    subprocess.run([sys.executable,'-B','-W','error','-c',script],cwd=root,check=True)
+
+
+_B2B_OTHER_ROOTS=sorted(p.name for p in __import__('pathlib').Path(__file__).resolve().parents[1].glob('*.py')
+                       if p.name not in ('cfw128_hb_intake.py','cfw128_hb_numeric.py'))
+
+
+@pytest.mark.parametrize('filename',_B2B_OTHER_ROOTS)
+@pytest.mark.parametrize('module',['cfw128_hb_intake','cfw128_hb_numeric'])
+def test_cfw128_b2b_every_other_root_rejects_import_mutation(filename,module,bug01_reviewed_report_base,monkeypatch):
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1];target=root/filename;original=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda path,*a,**kw:original(path,*a,**kw)+'\nimport '+module+'\n' if path==target else original(path,*a,**kw))
+    with pytest.raises(AssertionError):
+        if module=='cfw128_hb_intake':
+            test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_reviewed_report_base,monkeypatch)
+        else:test_cfw128_b2b_bridge_no_runtime_callers_or_forbidden_imports()
