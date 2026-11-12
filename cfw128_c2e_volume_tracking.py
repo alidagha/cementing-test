@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from fractions import Fraction
 import math
 import re
-from typing import Literal
+from typing import Literal, Protocol
 
 from cement_chart_model import _capacity, _number
 from engineering_tools import require_fluid_density, require_positive_density
@@ -155,6 +155,15 @@ class StageLedger:
     ideal_returned_bbl: float
 
 
+class EffectiveStageRecord(Protocol):
+    """Read-only structural stage interface; no CFW runtime import."""
+    name: str
+    volume_bbl: float
+    density_pcf: float
+    volume_authority: str
+    source_identity: str
+
+
 @dataclass(frozen=True,slots=True)
 class TrackingPreview:
     app_source_sha: str
@@ -165,7 +174,7 @@ class TrackingPreview:
     cumulative_injected_bbl: float
     total_nominal_capacity_bbl: float
     initial_mud_density_pcf: float
-    stages: tuple[Stage,...]
+    stages: tuple[Stage | EffectiveStageRecord,...]
     path: tuple[PathSection,...]
     occupancy: tuple[Occupancy,...]
     ledgers: tuple[StageLedger,...]
@@ -241,6 +250,13 @@ def preview_fluid_tracking(view: object, state: dict, *, expected_app_source_sha
         origin='fluids_config.params' if name in params else 'fluid_data'
         stages.append(Stage(name,volume,density,origin,rawv,rawd));consumed.append((name,origin,rawv,rawd))
     stages=tuple(stages)
+    source=fingerprint(['cfw128-c2e-source/1',view.source_identity,view.projection_identity,expected_app_source_sha,
+                        s.job,tuple(consumed),mudraw])
+    return _track(view,s,stages,mud,source,expected_app_source_sha,cumulative_injected_bbl,stage_end)
+
+
+def _track(view,s,stages,mud,source,expected_app_source_sha,cumulative_injected_bbl,stage_end):
+    """One unchanged nominal occupancy kernel for both input authorities."""
     V=_volume(cumulative_injected_bbl,'Cumulative injected volume')
     if V<0:raise ValueError('Injected volume cannot be negative.')
     F=Fraction;intervals=[];cursor=F(0)
@@ -289,10 +305,82 @@ def preview_fluid_tracking(view: object, state: dict, *, expected_app_source_sha
         occupy(stage.name,stage.density_pcf,left,right)
         ledgers.append(StageLedger(stage.name,_float(entered),_float(retained),_float(entered-retained)))
     remain=max(F(0),total-v);occupy('Mud',mud,min(v,total),total)
-    source=fingerprint(['cfw128-c2e-source/1',view.source_identity,view.projection_identity,expected_app_source_sha,
-                        s.job,tuple(consumed),mudraw])
     projection=fingerprint(['cfw128-c2e-volume/1',source,V,tuple(tuple(getattr(x,f.name) for f in fields(x)) for x in occupancy),
                             tuple(tuple(getattr(x,f.name) for f in fields(x)) for x in ledgers),_float(remain),_float(total-remain)])
     return TrackingPreview(expected_app_source_sha,view.source_identity,view.projection_identity,source,projection,V,_float(total),mud,
                            stages,tuple(path),tuple(occupancy),tuple(ledgers),_float(remain),_float(total-remain),
                            tuple((p.md,p.tvd) for p in s.trajectory))
+
+
+def preview_effective_schedule(view: object, schedule: object, *, expected_app_source_sha: str,
+                               mud_type: str, cumulative_injected_bbl: float=0.,
+                               stage_end: int | None=None) -> TrackingPreview:
+    """Receipt-native C2e5 authority; consistency checks are NOT currentness proof.
+
+    No App state or stage overlay is accepted. The caller must freshly build the
+    schedule from the same project; coherent forged/replayed receipts cannot
+    authenticate it. C2e2/closure source contracts are deliberately not composed.
+    """
+    s=_view(view,expected_app_source_sha)
+    tags={**_TAGS,'cfw128_c2e5_effective_schedule':('EffectiveSchedule','EffectiveStage')}
+    # Reuse the primitive walker with an explicit additional schema, never hooks.
+    _schedule_tree(schedule,tags)
+    if (type(schedule).__module__,type(schedule).__name__)!=('cfw128_c2e5_effective_schedule','EffectiveSchedule'):
+        raise TypeError('Frozen EffectiveSchedule required.')
+    if type(mud_type) is not str:raise TypeError('Canonical Mud Type required.')
+    if (schedule.app_source_sha,schedule.geometry_source_identity,schedule.geometry_projection_identity,schedule.job,schedule.kind)!=(expected_app_source_sha,view.source_identity,view.projection_identity,s.job,s.kind):
+        raise ValueError('Schedule/geometry source differs.')
+    if (schedule.status!='DISABLED_EFFECTIVE_PUMPING_SCHEDULE' or schedule.currentness!='NOT_CURRENTNESS_PROOF'
+            or schedule.hydraulics!='HYDRAULICS_NOT_EVALUATED' or schedule.final_post_pull_toc!='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+            or schedule.completion_basis!='ALL_SELECTED_EFFECTIVE_STAGE_VOLUMES'):
+        raise ValueError('Schedule HOLD/authority differs.')
+    for identity in (schedule.source_identity,schedule.projection_identity,schedule.derived_projection_identity):
+        if type(identity) is not str or not re.fullmatch('[0-9a-f]{64}',identity):raise ValueError('Invalid schedule identity.')
+    if type(schedule.total_volume_bbl) not in (int,float) or type(schedule.total_volume_exact_bbl) is not tuple or len(schedule.total_volume_exact_bbl)!=2 or any(type(x) is not int for x in schedule.total_volume_exact_bbl):
+        raise ValueError('Exact schedule total format differs.')
+    stages=schedule.stages;names=tuple(v.name for v in stages)
+    if not stages or len(set(names))!=len(names) or any(n not in HYDRAULIC_EXECUTION_ORDER for n in names) or names!=tuple(n for n in HYDRAULIC_EXECUTION_ORDER if n in names) or 'Displacement Fluid' not in names:
+        raise ValueError('Invalid effective stage order/selection.')
+    exact=Fraction(0);mud=None
+    for v in stages:
+        if (type(v).__module__,type(v).__name__)!=('cfw128_c2e5_effective_schedule','EffectiveStage'):raise TypeError('EffectiveStage required.')
+        if type(v.volume_bbl) not in (int,float) or type(v.density_pcf) not in (int,float):raise ValueError('Numeric stage values required.')
+        volume=_volume(v.volume_bbl,v.name,positive=True)
+        if require_fluid_density(v.name,_raw(v.raw_density))!=v.density_pcf:raise ValueError('Density proof differs.')
+        derived=v.name=='Displacement Fluid'
+        if derived:
+            if (v.volume_authority,v.record_source,v.raw_entered_volume)!=('DERIVED_C2E4_INTERNAL_STRING_CAPACITY','C2E4',None) or v.density_source not in ('state.mud_density','well_data.mud_density'):raise ValueError('Derived Mud authority differs.')
+            mud=require_positive_density(v.raw_density)
+        elif (v.volume_authority!='ENTERED_PHASE_IV' or v.record_source not in ('fluids_config.params','fluid_data')
+              or v.density_source!=v.record_source+'.'+v.name+'.density' or _volume(v.raw_entered_volume,v.name,positive=True)!=volume):
+            raise ValueError('Entered stage authority differs.')
+        identity=fingerprint(['cfw128-c2e5-stage/1',v.name,v.volume_authority,v.record_source,v.raw_entered_volume,volume,v.raw_density,v.density_pcf,v.density_source,
+                              schedule.derived_projection_identity if derived else None])
+        if v.source_identity!=identity:raise ValueError('Stage source binding differs.')
+        updated=exact+Fraction(volume)
+        if _float(updated)<=_float(exact):raise ValueError('Stage lost at total precision.')
+        exact=updated
+    source=fingerprint(['cfw128-c2e5-source/1',expected_app_source_sha,view.source_identity,view.projection_identity,schedule.derived_projection_identity,s.job,mud_type,tuple(v.source_identity for v in stages)])
+    encoded=tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in stages)
+    if (schedule.source_identity!=source or schedule.total_volume_bbl!=_float(exact)
+            or schedule.total_volume_exact_bbl!=(exact.numerator,exact.denominator)
+            or schedule.projection_identity!=fingerprint(['cfw128-c2e5-effective-schedule/1',source,encoded,_float(exact),schedule.total_volume_exact_bbl,schedule.completion_basis])):
+        raise ValueError('Effective schedule fingerprint/total differs.')
+    source=fingerprint(['cfw128-gate2-effective-tracking/1',source,schedule.projection_identity,view.projection_identity])
+    return _track(view,s,stages,mud,source,expected_app_source_sha,cumulative_injected_bbl,stage_end)
+
+
+def _schedule_tree(v,tags):
+    """Validate only published immutable primitives before accessing a receipt."""
+    if type(v) in (str,int,bool,float,tuple) or v is None:
+        if type(v) is tuple:
+            for x in v:_schedule_tree(x,tags)
+        else:_tree(v)
+        return
+    c=type(v)
+    if c.__name__ not in tags.get(c.__module__,()) or not is_dataclass(v) or not c.__dataclass_params__.frozen or not hasattr(c,'__slots__'):
+        raise TypeError('Published immutable receipt required.')
+    for f in fields(v):
+        value=getattr(v,f.name)
+        if f.name in _FLAGS and value is not False:raise ValueError('Release gate must remain False.')
+        _schedule_tree(value,tags)

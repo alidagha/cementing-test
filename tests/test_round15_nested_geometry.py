@@ -1926,6 +1926,8 @@ def test_cfw128_adapter_remains_unimported_by_production_and_research_free():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     for path in root.glob('*.py'):
+        if path.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(path); continue
         tree = ast.parse(path.read_text())
         modules = [n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
         modules += [a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
@@ -3135,6 +3137,8 @@ def test_cfw128_c1_import_call_isolation_and_canonical_metadata():
     forbidden={'scipy','pumping_simulation','fluids_charts_module_v1_4_2','cement_charts_engine','cement_chart_report',
         'centralizer_optimizer_engine','centralizer_adapter','cfw128_hb03t_frozen'}
     for path in root.glob('*.py'):
+        if path.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(path); continue
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
         imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         if path.name=='cfw128_er03_contract.py':assert not imports & forbidden
@@ -3345,6 +3349,8 @@ def test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers():
         'cement_chart_report','well_report','phase_10_procedure','centralizer_optimizer_engine',
         'centralizer_adapter','cfw128_hb03t_frozen','cfw128_hb_numeric','cfw128_hb_intake'}
     for path in root.glob('*.py'):
+        if path.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(path); continue
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
         imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         if path.name=='cfw128_er03_boundary.py':assert not imports & forbidden
@@ -3571,6 +3577,8 @@ def test_cfw128_c2b_import_isolation_in_clean_process_and_all_root_callers():
         'fluids_charts_module_v1_4_2','cement_charts_engine','centralizer_optimizer_engine','centralizer_adapter',
         'streamlit','well_report','phase_10_procedure','cement_chart_report'}
     for path in root.glob('*.py'):
+        if path.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(path); continue
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
         imports|={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
         if path.name=='cfw128_er03_volume.py':assert not imports & forbidden
@@ -3716,6 +3724,8 @@ def test_cfw128_c2d1_import_isolation_no_callbacks_or_runtime_escape():
     assert imports<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
     assert not {'eval','exec','__import__','import_module'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
     for other in root.glob('*.py'):
+        if other.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(other); continue
         if other==path:continue
         t=ast.parse(other.read_text());names={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
         assert 'cfw128_c2d_geometry_view' not in names
@@ -3906,6 +3916,8 @@ def test_cfw128_c2e_import_isolation_and_mutation_negative(monkeypatch):
     imports.update(a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names)
     assert not any(n.startswith('cfw128') or n in ('scipy','pumping_simulation','fluids_charts_module_v1_4_2','streamlit','well_report') for n in imports)
     for root in Path('.').glob('*.py'):
+        if root.name=='cfw128_integration_abi.py':
+            gate2_assert_bridge_imports(root); continue
         if root==path:continue
         t=ast.parse(root.read_text(encoding='utf-8-sig'))
         assert not any(isinstance(n,ast.ImportFrom) and n.module==path.stem or isinstance(n,ast.Import) and any(a.name==path.stem for a in n.names) for n in ast.walk(t))
@@ -4643,6 +4655,8 @@ def test_cfw128_c2e4_import_and_production_caller_isolation(monkeypatch):
         assert names<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
         assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
         for other in root.glob('*.py'):
+            if other.name=='cfw128_integration_abi.py':
+                gate2_assert_bridge_imports(other); continue
             if other==path:continue
             t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
             assert path.stem not in imports
@@ -4929,6 +4943,8 @@ def test_cfw128_c2e5_import_and_no_production_caller_isolation(monkeypatch):
         assert names<={'dataclasses','fractions','math','re','typing','cement_chart_model','project_state','materials_db','engineering_tools'}
         assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
         for other in root.glob('*.py'):
+            if other.name=='cfw128_integration_abi.py':
+                gate2_assert_bridge_imports(other); continue
             if other==path:continue
             t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
             assert path.stem not in imports
@@ -5384,3 +5400,181 @@ def test_cfw128_c2e6b_boolean_numeric_metadata_is_not_an_equivalent_source_recor
         object.__setattr__(t,'trajectory',((False,t.trajectory[0][1]),)+t.trajectory[1:])
     else:object.__setattr__(b,'lap_md',False)
     with pytest.raises((ValueError,TypeError)):audit_dry_pipe_makeup(g,b,c,t,s,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+# Gate 2: receipt-native composition; the prior overlay remains a test oracle only.
+@pytest.mark.parametrize('job', BUG01_JOBS)
+def test_cfw128_gate2_native_effective_schedule_matches_nominal_oracle(job):
+    from cfw128_integration_abi import compose_nominal_tracking
+    state,g,d=cfw128_c2e5_inputs(bug01_geometry_case(job))
+    state['fluids_config']['params']['Main']['volume']=40.
+    before=pickle.dumps(state)
+    r=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    oracle=cfw128_c2e5_test_composition(state,g,d)
+    assert r.status=='DISABLED_COMPOSITION_ONLY'
+    assert r.schedule==oracle['schedule'] and r.geometry==g and r.displacement==d
+    for name in ('path','occupancy','ledgers','mud_remaining_bbl','mud_displaced_bbl','trajectory'):
+        assert getattr(r.tracking,name)==getattr(oracle['tracking'],name)
+    assert r.tracking.stages==r.schedule.stages
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.enabled is r.hydraulic_admissible is False
+    assert pickle.dumps(state)==before
+
+
+def gate2_assert_bridge_imports(path):
+    """Owner's named bridge exception: exact static dependencies, no escape."""
+    import ast
+    expected={
+        'cfw128_adapter':('snapshot_geometry','GeometrySnapshot'),
+        'cfw128_er03_contract':('prepare_er03_preview',),
+        'cfw128_er03_boundary':('assess_er03_boundary',),
+        'cfw128_er03_volume':('audit_geometric_capacity',),
+        'cfw128_c2d_geometry_view':('build_geometry_view','GeometryView'),
+        'cfw128_c2e4_derived_displacement':('derive_displacement','DerivedDisplacement'),
+        'cfw128_c2e5_effective_schedule':('build_effective_schedule','EffectiveSchedule'),
+        'cfw128_c2e_volume_tracking':('preview_effective_schedule','TrackingPreview'),
+    }
+    tree=ast.parse(path.read_text());found={};count=0
+    for n in ast.walk(tree):
+        if isinstance(n,ast.ImportFrom) and (n.module or '').startswith('cfw128'):
+            assert n.level==0 and all(a.asname is None for a in n.names)
+            found[n.module]=tuple(a.name for a in n.names);count+=1
+        if isinstance(n,ast.Import):assert not any(a.name.startswith('cfw128') for a in n.names)
+    assert found==expected and count==len(expected)
+    all_imports={n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+    assert all_imports==set(expected)|{'copy','dataclasses','typing','math','project_state'}
+    assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+
+
+@pytest.mark.parametrize('fault',['sha','volume','density','derived_id','source','projection','stage_source','order','duplicate','flag','bool','nan','total'])
+def test_cfw128_gate2_receipt_native_boundary_rejects_mutation(fault):
+    from cfw128_c2e_volume_tracking import preview_effective_schedule
+    from cfw128_c2e5_effective_schedule import build_effective_schedule
+    state,g,d=cfw128_c2e5_inputs();r=build_effective_schedule(g,d,state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    r=deepcopy(r);stage=r.stages[0]
+    if fault=='sha':object.__setattr__(r,'app_source_sha','f'*40)
+    elif fault=='volume':object.__setattr__(stage,'volume_bbl',stage.volume_bbl+1)
+    elif fault=='density':object.__setattr__(stage,'density_pcf',stage.density_pcf+1)
+    elif fault=='derived_id':object.__setattr__(r,'derived_projection_identity','a'*64)
+    elif fault in ('source','projection'):object.__setattr__(r,fault+'_identity','a'*64)
+    elif fault=='stage_source':object.__setattr__(stage,'source_identity','a'*64)
+    elif fault=='order':object.__setattr__(r,'stages',tuple(reversed(r.stages)))
+    elif fault=='duplicate':object.__setattr__(r,'stages',(*r.stages,r.stages[-1]))
+    elif fault=='flag':object.__setattr__(r,'enabled',True)
+    elif fault=='bool':object.__setattr__(stage,'volume_bbl',True)
+    elif fault=='nan':object.__setattr__(stage,'volume_bbl',float('nan'))
+    else:object.__setattr__(r,'total_volume_exact_bbl',(1,1))
+    with pytest.raises((ValueError,TypeError)):
+        preview_effective_schedule(g,r,expected_app_source_sha=C2D1_APP_SOURCE_SHA,mud_type='WBM')
+
+
+@pytest.mark.parametrize('fault',['empty','inactive','duplicate','negative','boolean','nan','overflow','wrong_host','draft','short_shoe'])
+def test_cfw128_gate2_invalid_current_source_fails_closed(fault):
+    from cfw128_integration_abi import compose_nominal_tracking
+    state,g,d=cfw128_c2e5_inputs()
+    if fault=='empty':state={}
+    elif fault=='inactive':state['fluids_config']['active'].remove('Displacement Fluid')
+    elif fault=='duplicate':state['fluids_config']['active'].append('Main')
+    elif fault in ('negative','boolean','nan','overflow'):
+        state['fluids_config']['params']['Main']['volume']={'negative':-1.,'boolean':True,'nan':float('nan'),'overflow':10**400}[fault]
+    elif fault=='wrong_host':state['placement_config']['host_row']='retired'
+    elif fault=='draft':state['hardware_editor_draft']=state['hardware_table'].copy();state['hardware_editor_draft'].at[0,'MD (m)']='999'
+    else:state['hardware_table'].loc[state['hardware_table']['Description']=='Tie Back Liner Shoe','MD (m)']='25'
+    before=pickle.dumps(state)
+    with pytest.raises((ValueError,TypeError)):
+        compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_gate2_uat19_authorities_replay_and_numerical_holds():
+    from cfw128_integration_abi import compose_nominal_tracking
+    from dataclasses import FrozenInstanceError
+    state,g,d=cfw128_c2e5_inputs();state['fluids_config']['params']['Main']['volume']=40.
+    r=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert r.displacement.derived_displacement_bbl==pytest.approx(284.947218881107)
+    assert r.displacement.end_md==3860. and r.captured_geometry.shoe_md==3885.
+    cement=next(v for v in r.tracking.ledgers if v.fluid=='Main')
+    injection=sum(o.volume_bbl for o in r.tracking.occupancy if o.fluid=='Main' and r.tracking.path[o.section_index].domain=='injection')
+    assert injection==pytest.approx(2.872210519648)
+    assert cement.entered_bbl==40. and cement.ideal_returned_bbl==0.
+    assert r.tracking.mud_displaced_bbl>0 and cement.in_path_bbl==40.
+    saved=deepcopy(state)
+    for value in (None,False,'bad',float('nan'),99999.):
+        state['fluids_config']['params']['Displacement Fluid']['volume']=value
+        assert compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    state=deepcopy(saved);state['fluids_config']['params']['Main']['volume']=50.
+    changed=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert next(v.volume_bbl for v in changed.schedule.stages if v.name=='Main')==50. and changed.tracking.occupancy!=r.tracking.occupancy
+    assert compose_nominal_tracking(saved,expected_app_source_sha=C2D1_APP_SOURCE_SHA)==r
+    assert r.currentness=='NOT_CURRENTNESS_PROOF'
+    state=deepcopy(saved);state['fluids_config']['params']['Main'].update(pump_rate='7',material_name='source material')
+    metadata=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    assert metadata.source_identity!=r.source_identity and metadata.tracking==r.tracking
+    assert ('Main','pump_rate','7') in metadata.numerical_source_fields
+    assert 'GATE3_NUMERICAL_RATE_MATERIAL_AND_RHEOLOGY_NOT_VALIDATED' in metadata.holds
+    assert 'DOWNSTREAM_C2E2_AND_POST_PULL_CLOSURE_NOT_COMPOSED' in r.holds
+    with pytest.raises(FrozenInstanceError):r.enabled=True
+    assert pickle.loads(pickle.dumps(r))==r
+
+
+@pytest.mark.parametrize('state',[synthetic_tieback(top=0.),synthetic_tieback(top=.001),r18c_tapered_state(100.)])
+def test_cfw128_gate2_measured_special_geometry_and_stage_boundaries(state):
+    from cfw128_integration_abi import compose_nominal_tracking
+    state,g,d=cfw128_c2e5_inputs(state,('Main','Lead','Tail','Spacer Behind','Displacement Fluid'))
+    full=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    zero=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,stage_end=0)
+    assert zero.tracking.cumulative_injected_bbl==0. and all(v.fluid=='Mud' for v in zero.tracking.occupancy)
+    assert full.tracking.path==zero.tracking.path
+    assert [v.name for v in full.schedule.stages]==['Main','Lead','Tail','Spacer Behind','Displacement Fluid']
+    assert max(v.bottom_md for v in full.geometry.injection)==full.captured_geometry.shoe_md
+
+
+def test_cfw128_gate2_import_firewall_and_named_exception_mutations(monkeypatch):
+    from pathlib import Path
+    import ast,subprocess,sys
+    bridge=Path('cfw128_integration_abi.py');gate2_assert_bridge_imports(bridge)
+    for p in Path('.').glob('*.py'):
+        if p==bridge:continue
+        tree=ast.parse(p.read_text())
+        assert not any(isinstance(n,ast.ImportFrom) and n.module==bridge.stem or isinstance(n,ast.Import) and any(a.name==bridge.stem for a in n.names) for n in ast.walk(tree))
+    read=Path.read_text
+    for addition in ('\nimport cfw128_adapter\n','\nfrom cfw128_c2e_volume_tracking import preview_fluid_tracking\n','\nimport pumping_simulation\n'):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+addition if p==bridge else read(p,*a,**k))
+            with pytest.raises(AssertionError):gate2_assert_bridge_imports(bridge)
+    subprocess.run([sys.executable,'-B','-W','error','-c',
+        'import sys,cfw128_integration_abi; assert not {"scipy","cfw128_hb03t_frozen","pumping_simulation","fluids_charts_module_v1_4_2","well_report"} & set(sys.modules)'],check=True)
+
+
+@pytest.mark.parametrize('fault',['derived_volume','derived_row','derived_flag','sibling_geometry'])
+def test_cfw128_gate2_fresh_chain_rejects_injected_derived_corruption(fault,monkeypatch):
+    import cfw128_integration_abi as abi
+    state,g,d=cfw128_c2e5_inputs();d=deepcopy(d)
+    if fault=='derived_volume':object.__setattr__(d,'derived_displacement_bbl',d.derived_displacement_bbl+1)
+    elif fault=='derived_row':object.__setattr__(d.sections[0],'source_rows',(999,))
+    elif fault=='derived_flag':object.__setattr__(d,'hydraulic_admissible',True)
+    else:object.__setattr__(d,'geometry_projection_identity','a'*64)
+    monkeypatch.setattr(abi,'derive_displacement',lambda *a,**k:d)
+    with pytest.raises((ValueError,TypeError)):abi.compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+
+
+@pytest.mark.parametrize('mode',['legacy','canonical_bad','spacer_edit','geometry_edit','directional','unreviewed_lab'])
+def test_cfw128_gate2_source_precedence_and_unassessed_lab(mode):
+    from cfw128_integration_abi import compose_nominal_tracking
+    state,g,d=cfw128_c2e5_inputs();r=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    if mode=='legacy':state['fluid_data']={'Main':state['fluids_config']['params'].pop('Main')}
+    elif mode=='canonical_bad':state['fluid_data']={'Main':deepcopy(state['fluids_config']['params']['Main'])};state['fluids_config']['params']['Main']={}
+    elif mode=='spacer_edit':state['fluids_config']['params']['Spacer']['volume']=60.
+    elif mode=='geometry_edit':state['hardware_table'].loc[state['hardware_table']['Description']=='Drill Pipes','ID (in)']=4.2
+    elif mode=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,90.],[6000.,60.,90.]],columns=['MD','Deviation','Azimuth'])}
+    else:state['lab_qc_params']={'Main':{'reviewed':False}}
+    before=pickle.dumps(state)
+    if mode=='canonical_bad':
+        with pytest.raises(ValueError):compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA)
+    else:
+        changed=compose_nominal_tracking(state,expected_app_source_sha=C2D1_APP_SOURCE_SHA,query_md=(50.,) if mode=='directional' else ())
+        if mode=='legacy':assert next(v.record_source for v in changed.schedule.stages if v.name=='Main')=='fluid_data'
+        elif mode=='spacer_edit':assert changed.tracking.occupancy!=r.tracking.occupancy
+        elif mode=='geometry_edit':assert changed.displacement.derived_displacement_bbl!=r.displacement.derived_displacement_bbl and changed.source_identity!=r.source_identity
+        elif mode=='directional':assert dict(changed.tracking.trajectory)[50.]==pytest.approx(47.7464829275686)
+        else:assert changed==r and 'LAB_REVIEW_AND_INSTRUMENT_NOT_ASSESSED' in changed.holds
+    assert pickle.dumps(state)==before
