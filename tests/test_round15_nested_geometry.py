@@ -2283,7 +2283,8 @@ def test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_rev
     root=Path(__file__).resolve().parents[1]
     for file in root.glob('*.py'):
         tree=ast.parse(file.read_text());imports=[n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]+[a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
-        if file.name not in ('cfw128_hb_intake.py','cfw128_hb_numeric.py'):assert 'cfw128_hb_intake' not in imports
+        if file.name=='cfw128_er03_numeric_adapter.py':gate3_assert_numeric_imports(file)
+        elif file.name not in ('cfw128_hb_intake.py','cfw128_hb_numeric.py'):assert 'cfw128_hb_intake' not in imports
     code='import sys, cfw128_hb_intake; assert not any(n in sys.modules for n in ("scipy", "pumping_simulation", "fluids_charts_module_v1_4_2"))'
     subprocess.run([sys.executable,'-B','-W','error','-c',code],cwd=root,check=True)
 
@@ -2659,7 +2660,8 @@ def test_cfw128_b2a_runtime_pins_and_production_import_isolation():
     for f in Path('.').glob('*.py'):
         imports={n.module for n in ast.walk(ast.parse(f.read_text())) if isinstance(n,ast.ImportFrom)}
         imports|={a.name for n in ast.walk(ast.parse(f.read_text())) if isinstance(n,ast.Import) for a in n.names}
-        if f.name not in ('cfw128_hb03t_frozen.py','cfw128_hb_numeric.py'):
+        if f.name=='cfw128_er03_numeric_adapter.py':gate3_assert_numeric_imports(f)
+        elif f.name not in ('cfw128_hb03t_frozen.py','cfw128_hb_numeric.py'):
             assert not {'cfw128_hb03t_frozen','cfw128_hb_numeric'} & imports
     script='''import sys
 from streamlit.testing.v1 import AppTest
@@ -5534,6 +5536,8 @@ def test_cfw128_gate2_import_firewall_and_named_exception_mutations(monkeypatch)
     bridge=Path('cfw128_integration_abi.py');gate2_assert_bridge_imports(bridge)
     for p in Path('.').glob('*.py'):
         if p==bridge:continue
+        if p.name=='cfw128_er03_numeric_adapter.py':
+            gate3_assert_numeric_imports(p);continue
         tree=ast.parse(p.read_text())
         assert not any(isinstance(n,ast.ImportFrom) and n.module==bridge.stem or isinstance(n,ast.Import) and any(a.name==bridge.stem for a in n.names) for n in ast.walk(tree))
     read=Path.read_text
@@ -5578,3 +5582,312 @@ def test_cfw128_gate2_source_precedence_and_unassessed_lab(mode):
         elif mode=='directional':assert dict(changed.tracking.trajectory)[50.]==pytest.approx(47.7464829275686)
         else:assert changed==r and 'LAB_REVIEW_AND_INSTRUMENT_NOT_ASSESSED' in changed.holds
     assert pickle.dumps(state)==before
+
+
+# Gate 3 is an isolated numerical test boundary, never an App execution lane.
+GATE3_APP_SOURCE_SHA = '964a22c79a361fa2ff5dc9764b1917a44183f457'  # Independently verified Gate2 baseline.
+def test_cfw128_gate3_new_typed_boundary_is_disabled():
+    from cfw128_er03_numeric_adapter import NumericBoundary
+    b=NumericBoundary('SYNTHETIC_TEST_ONLY',0.,None,0.,False,.2,0.,1.,'SURFACE_REFERENCE_PSI','TARGET_NOT_INCREMENT','FANN35_R1B1_SPRING1_SOFTWARE_CONVENTION_ONLY',(('Main',0.),('Displacement Fluid',0.),('Mud',0.)))
+    assert b.evidence_class=='SYNTHETIC_TEST_ONLY'
+
+
+def gate3_assert_numeric_imports(path):
+    import ast
+    tree=ast.parse(path.read_text())
+    expected={'DOC58_SI_CANDIDATE_03_TF2R_ER03':'vertical','DOC58_G2D1_DIR_SCRATCH_01_ER03':'directional'}
+    actual=[(a.name,a.asname) for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
+    assert sorted(actual)==sorted([*expected.items(),('math',None)])
+    wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields'),'typing':('Literal',),'fractions':('Fraction',),
+        'cfw128_integration_abi':('compose_nominal_tracking','CompositionReceipt'),
+        'cfw128_hb_intake':('snapshot_lab_intake',),
+        'cfw128_hb03t_frozen':('fit_full_hb','to_engine_field','InstrumentConfig'),
+        'engineering_tools':('require_positive_pump_rate',),'project_state':('fingerprint',)}
+    nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
+    assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
+    assert all(n.level==0 and all(a.asname is None for a in n.names) for n in nodes)
+    assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+
+
+def gate3_case(base,job='CSG 9 5/8"'):
+    # SYNTHETIC_TEST_ONLY source record + explicit test review, not field data.
+    from project_state import lab_source_signature,mud_lab_source_signature
+    from engineering_tools import lab_review_signature
+    state=deepcopy(base);geometry=bug01_geometry_case(job)
+    for key in ('job_type','hardware_table','placement_config','well_geometry'):state[key]=geometry[key]
+    state['mud_density']='80';state['well_data']['mud_density']='80'
+    state['fluids_config']={'active':['Main','Displacement Fluid'],'params':{
+        'Main':{'volume':1.,'density':'118','pump_rate':'40','material_name':'Synthetic test cement'},
+        'Displacement Fluid':{'volume':'ignored','density':'80','pump_rate':'40','material_name':'Synthetic test Mud'}}}
+    dials=(45,37,27,22,16,9,8)
+    qc=state['lab_qc_params']['Main'];qc['rheology']['bhct_down']['readings']={str(r):v for r,v in zip((300,200,100,60,30,6,3),dials)}
+    state['lab_source_signatures']['Main']=lab_source_signature(state,'Main');qc['reviewed']=True
+    qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs']['Main'])
+    mud={'rheology':{'bhct_down':{'selected':True,'readings':{str(r):v for r,v in zip((300,200,100,60,30,6,3),dials)},'gel_10_sec':'-','gel_10_min':'-'}},'reviewed':True}
+    state['lab_qc_params']['Displacement Fluid']=mud
+    state['lab_source_signatures']['Displacement Fluid']=mud_lab_source_signature(state)
+    mud['review_signature']=lab_review_signature(mud,None)
+    # Explicit synthetic four-minute stages on an exact binary time grid.
+    # These are test inputs, not an operational rate recommendation or adapter
+    # correction. The original unaligned program remains a negative control.
+    from cfw128_integration_abi import compose_nominal_tracking
+    derived=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement
+    state['fluids_config']['params']['Main']['pump_rate']=state['fluids_config']['params']['Main']['volume']/4.
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']=derived.derived_displacement_bbl/4.
+    return state
+
+
+def gate3_boundary(bhsp=None):
+    from cfw128_er03_numeric_adapter import NumericBoundary
+    return NumericBoundary('SYNTHETIC_TEST_ONLY',0.,bhsp,0.,False,.25,0.,1.,'SURFACE_REFERENCE_PSI','TARGET_NOT_INCREMENT','FANN35_R1B1_SPRING1_SOFTWARE_CONVENTION_ONLY',(('Main',0.),('Displacement Fluid',0.),('Mud',0.)))
+
+
+@pytest.fixture(scope='module')
+def gate3_numeric_source(bug01_reviewed_report_base):
+    return gate3_case(bug01_reviewed_report_base)
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+def test_cfw128_gate3_typed_smoke_nonzero_yield_and_raw_series(gate3_numeric_source,engine):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import FrozenInstanceError
+    state=deepcopy(gate3_numeric_source);before=pickle.dumps(state)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine)
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED',r.holds
+    assert r.app_source_sha==GATE3_APP_SOURCE_SHA
+    assert len(r.time_min)==len(r.whp_kpsi)==len(r.total_pressure_kpsi)==len(r.q_out_bpm)>1
+    assert all(math.isfinite(v) for name in ('whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm') for v in getattr(r,name))
+    assert r.pressure_station_md==1200. and dict(r.events)['t_eod']>0
+    for f in r.fluids:
+        assert f.tau_y_pa>0 and f.tau_y_field_lbf_100ft2==f.tau_y_pa/.47880259
+        assert f.k_pa_s_n>0 and f.n_dimensionless>0 and f.instrument_provenance=='UNVERIFIED'
+        assert f.tau_y_pa==pytest.approx(2.089010265509999,rel=1e-6)
+    assert r.enabled is r.hydraulic_admissible is r.scientifically_qualified is False
+    assert r.final_post_pull_toc=='NOT_EVALUATED' and r.currentness=='NOT_CURRENTNESS_PROOF'
+    assert pickle.loads(pickle.dumps(r))==r and pickle.dumps(state)==before
+    with pytest.raises(FrozenInstanceError):r.enabled=True
+
+
+@pytest.mark.parametrize('fault',['rate','material','review','stale','rpm','yield_zero','density','datum','bhsp_increment','boolean_option','composition'])
+def test_cfw128_gate3_input_holds_and_source_corruption(gate3_numeric_source,fault):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_integration_abi import compose_nominal_tracking
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source);b=gate3_boundary();kwargs={}
+    if fault=='rate':state['fluids_config']['params']['Main'].pop('pump_rate')
+    elif fault=='material':state['fluids_config']['params']['Main'].pop('material_name')
+    elif fault=='review':state['lab_qc_params']['Main']['reviewed']=False
+    elif fault in ('stale','rpm','yield_zero'):
+        row=state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']
+        if fault=='stale':row['300']=46
+        elif fault=='rpm':row.pop('3')
+        else:
+            from engineering_tools import lab_review_signature
+            row.update({k:1 for k in row});qc=state['lab_qc_params']['Main'];qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs']['Main'])
+    elif fault=='density':state['mud_density']=float('nan')
+    elif fault=='datum':b=replace(b,pressure_datum='PSIA')
+    elif fault=='bhsp_increment':b=replace(b,bhsp_semantics='INCREMENT')
+    elif fault=='boolean_option':b=replace(b,dt_min=True)
+    else:
+        c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+        state['fluids_config']['params']['Main']['volume']=2.;kwargs['composition']=c
+    before=pickle.dumps(state)
+    if fault in ('density','datum','bhsp_increment','boolean_option','composition'):
+        with pytest.raises((ValueError,TypeError)):run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,**kwargs)
+    else:
+        r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+        assert r.status=='HOLD' and r.time_min==()
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_gate3_directional_intermediate_tvd_is_explicit_hold(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    state=deepcopy(gate3_numeric_source)
+    state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+    assert r.status=='HOLD' and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' in r.holds and not r.time_min
+    md,app,er03=r.tvd_comparison[0]
+    assert md==50. and app==pytest.approx(47.7464829275686) and app!=pytest.approx(er03)
+
+
+def test_cfw128_gate3_sources_and_static_import_firewall(monkeypatch):
+    from pathlib import Path
+    import ast,hashlib
+    pins={'DOC58_SI_CANDIDATE_03_TF2R_ER03.py':'79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f','DOC58_G2D1_DIR_SCRATCH_01_ER03.py':'2cd8896069327ba96fef4f22038bf70538dcc06b37e966b8bb58ad36ac39bd61'}
+    for name,h in pins.items():assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==h
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    import DOC58_G2D1_DIR_SCRATCH_01_ER03 as d
+    assert d.JobDesign is v.JobDesign and d.Fluid is v.Fluid
+    path=Path('cfw128_er03_numeric_adapter.py');gate3_assert_numeric_imports(path)
+    for p in Path('.').glob('*.py'):
+        if p==path:continue
+        nodes=ast.walk(ast.parse(p.read_text()));names={n.module for n in nodes if isinstance(n,ast.ImportFrom)}
+        assert path.stem not in names
+    read=Path.read_text
+    for added in ('\nimport pumping_simulation\n','\nimport cfw128_adapter\n','\nfrom cfw128_hb03t_frozen import HBFitResult\n'):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+added if p==path else read(p,*a,**k))
+            with pytest.raises(AssertionError):gate3_assert_numeric_imports(path)
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_gate3_canonical_job_geometry_admission(bug01_reviewed_report_base,job):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_integration_abi import compose_nominal_tracking
+    state=gate3_case(bug01_reviewed_report_base,job)
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),composition=c)
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED',r.holds
+    assert r.composition_projection_identity==c.projection_identity
+    assert r.pressure_station_md==c.captured_geometry.shoe_md
+    assert r.stages[-1][2]==c.displacement.derived_displacement_bbl
+    assert r.stages[0][2]==1. and r.stages[0][4]==.25
+    assert all(entered==observed for name,entered,observed,ratio in r.stage_volume_audit)
+    # Frozen ER03 retains its own original conversion constant, never repinned
+    # to App nominal bbl. Both measured paths have the same MD/ID topology.
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    expected=sum(math.pi/4*(p.id_in*.0254)**2/v.BBL_TO_M3*(p.bottom_md-p.top_md) for p in c.captured_geometry.active_sections)
+    assert r.engine_injection_capacity_bbl==pytest.approx(expected,rel=1e-14)
+
+
+def test_cfw128_gate3_bhsp_total_target_and_initial_mud_raw_channels(gate3_numeric_source,monkeypatch):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    original=v.simulate;observed={}
+    def trace(job):
+        observed['initial']=job.displacement_fluid
+        observed['keys']=tuple(job.fluids)
+        observed['raw']=original(job)
+        return observed['raw']
+    monkeypatch.setattr(v,'simulate',trace)
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source)
+    state['fluids_config']['params']['Main']['pump_rate']='40'
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']='40'
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(5000.),dt_min=.2))
+    assert r.status=='HOLD' and 'BHSP_TARGET_STATION_NOT_PROVED' in r.holds
+    events=dict(r.events)
+    assert events['bottom_shutin_psi']==5000. and events['t_shutin'] is not None
+    mud=next(f for f in r.fluids if f.name=='Displacement Fluid')
+    assert r.hydrostatic_kpsi[0]==pytest.approx(v.rho_si(mud.density_ppg)*v.G0*1200.*v.KPSI_PER_PA,rel=1e-12)
+    assert events['whp_final_psi'] is not None
+    assert r.q_in_bpm==tuple(observed['raw'].q_in) and r.q_out_bpm==tuple(observed['raw'].q_out)
+    assert observed['initial']=='Mud' and {'Mud','Displacement Fluid'}<=set(observed['keys'])
+    assert r.total_pressure_kpsi[-1]==observed['raw'].dyn[-1]
+    assert r.total_pressure_kpsi[-1]*1000.!=pytest.approx(5000.,abs=1e-8)
+    assert events['t_eod']==sum(stage[2]/stage[4] for stage in r.stages)
+
+
+def test_cfw128_gate3_uat19_only_active_shoe_and_derived_displacement(bug01_reviewed_report_base):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from project_state import lab_source_signature
+    from engineering_tools import lab_review_signature
+    state=gate3_case(bug01_reviewed_report_base);geometry=cfw128_c1_uat19_state()
+    for key in ('job_type','hardware_table','placement_config','well_geometry'):state[key]=geometry[key]
+    state['fluids_config']['params']['Main']['volume']=40.
+    state['lab_source_signatures']['Main']=lab_source_signature(state,'Main')
+    state['lab_qc_params']['Main']['review_signature']=lab_review_signature(state['lab_qc_params']['Main'],state['lab_grid_dfs']['Main'])
+    from cfw128_integration_abi import compose_nominal_tracking
+    derived=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement
+    state['fluids_config']['params']['Main']['pump_rate']=10.
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']=derived.derived_displacement_bbl/4.
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED' and r.pressure_station_md==3885.
+    assert r.stages[-1][2]==pytest.approx(284.947218881107) and r.stages[0][2]==40.
+    assert r.final_post_pull_toc=='NOT_EVALUATED'
+
+
+@pytest.mark.parametrize('fault',['literal_zero_gate','true_gate','boolean_source_row'])
+def test_cfw128_gate3_supplied_capture_requires_exact_primitive_identity(gate3_numeric_source,fault,monkeypatch):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_integration_abi import compose_nominal_tracking
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    c=deepcopy(compose_nominal_tracking(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA))
+    if fault=='literal_zero_gate':object.__setattr__(c.geometry,'ready_to_run',0)
+    elif fault=='true_gate':object.__setattr__(c.schedule,'enabled',True)
+    else:
+        # In this fixture the actual first active source row is positional1;
+        # bool True must never impersonate that numeric provenance index.
+        part=c.captured_geometry.active_sections[0]
+        assert part.source_rows==(1,)
+        object.__setattr__(part,'source_rows',(True,))
+    def forbidden(*a,**k):raise AssertionError('Unproved supplied capture reached numerical execution')
+    monkeypatch.setattr(v,'simulate',forbidden)
+    with pytest.raises((ValueError,TypeError)):
+        run_numeric_test_case(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),composition=c)
+
+
+@pytest.mark.parametrize('fault',['gel_missing','gel_duplicate','gel_boolean','gel_nan','gel_non_tuple','gel_initial_missing','option_overflow','bad_engine','bad_declaration'])
+def test_cfw128_gate3_explicit_model_boundary_never_infers_missing_inputs(gate3_numeric_source,fault,monkeypatch):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import replace
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    b=gate3_boundary();kwargs={}
+    if fault=='gel_missing':b=replace(b,gel_pa_by_fluid=())
+    elif fault=='gel_duplicate':b=replace(b,gel_pa_by_fluid=(*b.gel_pa_by_fluid,b.gel_pa_by_fluid[0]))
+    elif fault in ('gel_boolean','gel_nan'):b=replace(b,gel_pa_by_fluid=(('Main',True if fault=='gel_boolean' else float('nan')),*b.gel_pa_by_fluid[1:]))
+    elif fault=='gel_non_tuple':b=replace(b,gel_pa_by_fluid=list(b.gel_pa_by_fluid))
+    elif fault=='gel_initial_missing':b=replace(b,gel_pa_by_fluid=b.gel_pa_by_fluid[:-1])
+    elif fault=='option_overflow':b=replace(b,dt_min=10**400)
+    elif fault=='bad_engine':kwargs['engine']=False
+    else:b=replace(b,evidence_class=True)
+    def forbidden(*a,**k):raise AssertionError('Malformed boundary reached engine')
+    monkeypatch.setattr(v,'simulate',forbidden)
+    with pytest.raises((ValueError,TypeError)):
+        run_numeric_test_case(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,**kwargs)
+
+
+def test_cfw128_gate3_published_typed_abi_and_numeric_evidence(gate3_numeric_source,tmp_path):
+    import json
+    from dataclasses import fields,asdict
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    assert tuple(f.name for f in fields(v.FluidStageSpec))==('fluid_type','material_name','volume_bbl','density_pcf','rate_bpm','pv_cp','yp_lbf100ft2')
+    assert tuple(f.name for f in fields(v.Fluid))==('name','rho_ppg','mu_p_cp','tau_y','n_pl','K_pl','gel_pa','frictionless_fluid')
+    assert tuple(f.name for f in fields(v.JobDesign))==('geo','fluids','displacement_fluid','placement','back_pressure_psi','float_equipment','surface_line_kpsi_at_8bpm','dt_min','tail_cap_min','frictionless','bhsp_psi','shutin_ramp_min')
+    assert tuple(f.name for f in fields(v.SimResult))==('t','whp','pump','hydro','dyn','q_in','q_out','t_atcp','t_eod','t_marker','t_freefall_start','t_freefall_end','final_hydro_kpsi','hydro0_kpsi','t_shutin','whp_final_psi','bottom_shutin_psi','diag')
+    r=run_numeric_test_case(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED'
+    for f in r.fluids:
+        assert (f.tau_y_pa,f.k_pa_s_n,f.n_dimensionless)==pytest.approx((2.089010265509999,.7853358920369178,.5261585706020849),rel=1e-6,abs=1e-9)
+    payload=asdict(r)
+    assert all(payload[n] is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    (tmp_path/'numeric_evidence.json').write_text(json.dumps(payload,indent=2,allow_nan=False))
+
+
+@pytest.mark.parametrize('fluid',['Main','Displacement Fluid'])
+@pytest.mark.parametrize('fault',['missing','unreviewed','stale','fraction','boolean','nonfinite','duplicate_rpm','wrong_ramp'])
+def test_cfw128_gate3_each_seven_rpm_source_must_be_current(gate3_numeric_source,fluid,fault,monkeypatch):
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    state=deepcopy(gate3_numeric_source);qc=state['lab_qc_params'][fluid]
+    if fault=='missing':state['lab_qc_params'].pop(fluid)
+    elif fault=='unreviewed':qc['reviewed']=False
+    elif fault=='stale':qc['rheology']['bhct_down']['readings']['300']=46
+    elif fault=='wrong_ramp':qc['rheology']['bhct_up']=qc['rheology'].pop('bhct_down')
+    else:
+        readings=qc['rheology']['bhct_down']['readings']
+        if fault=='duplicate_rpm':readings[300]=readings['300']
+        else:readings['300']={'fraction':45.5,'boolean':True,'nonfinite':float('nan')}[fault]
+    def forbidden(*a,**k):raise AssertionError('Missing/stale/malformed measurements reached numerical engine')
+    monkeypatch.setattr(v,'simulate',forbidden)
+    before=pickle.dumps(state)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    assert r.status=='HOLD' and r.time_min==() and r.fluids==()
+    assert any(code.startswith('LAB_SOURCE_HOLD:'+fluid+':') for code in r.holds)
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_gate3_fixed_time_step_cannot_silently_change_entered_volumes(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source)
+    # Retain the originally observed unaligned synthetic program verbatim.
+    state['fluids_config']['params']['Main']['pump_rate']='40'
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']='40'
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),dt_min=.2))
+    assert r.stages[0][2]==1.
+    assert math.fsum(q*.2 for q in r.q_in_bpm)!=math.fsum(v[2] for v in r.stages)
+    assert r.status=='HOLD' and 'FROZEN_TIMESTEP_STAGE_VOLUME_NOT_PROVED' in r.holds
+
+    assert r.stage_volume_audit[0][1:3]==(1.,8.)
