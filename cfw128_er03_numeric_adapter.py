@@ -18,8 +18,9 @@ from cfw128_integration_abi import compose_nominal_tracking, CompositionReceipt
 from cfw128_hb_intake import (snapshot_lab_intake, LabIntakeSnapshot, DialReading,
                               _dial, _duplicate_columns, _positional_source)
 from cfw128_hb03t_frozen import fit_full_hb, to_engine_field, InstrumentConfig
-from engineering_tools import require_positive_pump_rate
-from project_state import fingerprint, spacer_lab_payload, phase7_lab_fluids, lab_source_signature
+from engineering_tools import require_positive_pump_rate, validate_lab_rheology, lab_temperature_valid
+from centralizer_adapter import _dynamic_fann
+from project_state import fingerprint, spacer_lab_payload, phase7_lab_fluids, lab_source_signature, available_fluid_types
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 
 VERTICAL_SHA256='79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f'
@@ -45,6 +46,23 @@ class NumericBoundary:
 
 
 @dataclass(frozen=True,slots=True)
+class ValidatedStageIntake(LabIntakeSnapshot):
+    """Owner-accepted App validation, explicitly NOT an operator review.
+
+    Unknown auxiliary ramp is preserved separately from the approved synthetic
+    fit declaration. The frozen intake's bhct_down label is never reused for it.
+    """
+    dataset: str | None=field(default=None,kw_only=True)
+    source_origin: str=field(default='',kw_only=True)
+    actual_ramp: str=field(default='UNKNOWN',kw_only=True)
+    fit_ramp: Literal['bhct_down']=field(default='bhct_down',init=False)
+    temperature_condition: str | None=field(default=None,kw_only=True)
+    operator_review: Literal['NOT_ASSERTED']=field(default='NOT_ASSERTED',init=False)
+    fit_reviewed: Literal[False]=field(default=False,init=False)
+    qualification_hold: str=field(default='',kw_only=True)
+
+
+@dataclass(frozen=True,slots=True)
 class FluidProof:
     name: str
     intake_identity: str
@@ -55,6 +73,13 @@ class FluidProof:
     n_dimensionless: float
     density_ppg: float
     gel_pa: float
+    source_origin: str='PHASE_VII'
+    actual_ramp: str='bhct_down'
+    fit_ramp: str='bhct_down'
+    temperature_condition: str | None='BHCT'
+    operator_review: str='EXISTING_REVIEW_PROVED'
+    fit_reviewed: bool=True
+    qualification_hold: str='PHYSICAL_INSTRUMENT_UNVERIFIED'
     instrument_provenance: Literal['UNVERIFIED']=field(default='UNVERIFIED',init=False)
 
 
@@ -128,8 +153,8 @@ def _stage_lab_intake(state, name, sha):
     """Route only existing source/review authorities; never create a review.
 
     Cement/Mud retain their byte-compatible intake. Spacer has a reviewed cup.
-    Rheology-only and Phase-IX auxiliaries have no equivalent review contract:
-    intact dials there remain explicitly unadmitted, including forged flags.
+    Gate 4D accepts App-validated operational sources without inventing review.
+    Phase-IX ramp is UNKNOWN; bhct_down is a declared computational assumption.
     """
     if name not in ('Spacer','Pre Flush','Diesel','Spacer Ahead','Spacer Behind'):
         return snapshot_lab_intake(state,name,app_source_sha=sha)
@@ -164,7 +189,9 @@ def _stage_lab_intake(state, name, sha):
     identity=fingerprint(['cfw128-gate4c-lab/1',_positional_source(projection)])
     def hold(status,code,detail):
         return LabIntakeSnapshot(status,(code,),detail,name,sha,identity,fingerprint([sha,name,identity]))
-    if active.count(name)!=1:return hold('NOT_APPLICABLE','FLUID_NOT_ACTIVE','One actual canonical selected stage is required.')
+    if active.count(name)==0:return hold('NOT_APPLICABLE','FLUID_NOT_ACTIVE','An actual selected stage is required.')
+    if active.count(name)!=1:return hold('INVALID_INPUT','ACTIVE_FLUIDS_INVALID','Duplicate selection is ambiguous.')
+    if name not in available_fluid_types(state):return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Existing job/Mud eligibility is required.')
     if not auxiliary and name not in phase7_lab_fluids(state):
         return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Current job/Mud selection does not admit this Phase VII fluid.')
     if _duplicate_columns(projection):return hold('INVALID_INPUT','DUPLICATE_SOURCE_COLUMNS','Ambiguous positional values retained in invalid identity.')
@@ -191,8 +218,33 @@ def _stage_lab_intake(state, name, sha):
         if problem:return hold('INVALID_INPUT',problem,'Finite nonnegative integer dial required without rounding.')
         readings.append(DialReading(rpm,value,type(value).__name__,dial))
     if auxiliary or legacy or name in ('Pre Flush','Diesel'):
-        return hold('REVIEW_REQUIRED','AUXILIARY_RAMP_REVIEW_UNPROVED' if auxiliary or legacy else 'LAB_REVIEW_AUTHORITY_MISSING',
-                    'Own seven integer dials exist; BHCT/operator current-review authority is unproved; instrument unverified. No fit or numerical admission.')
+        assumed=auxiliary or legacy
+        # Validation is reused, never PV/YP reconstruction or a review ceremony.
+        if not assumed and set(qc)-{'rheology'}:
+            return hold('INVALID_INPUT','UNSUPPORTED_REVIEW_OR_PROVENANCE_METADATA','Foreign review/instrument claims cannot grant authority.')
+        try:
+            if assumed:_dynamic_fann(raw,name)
+            else:
+                validate_lab_rheology(qc,name)
+                well=state.get('well_data',{})
+                if type(well) is not dict or not lab_temperature_valid(well.get('bhct',state.get('bhct')),well.get('bhst',state.get('bhst'))):
+                    raise ValueError('Invalid existing BHCT/BHST context.')
+        except (ValueError,TypeError,KeyError,OverflowError) as exc:
+            return hold('INVALID_INPUT','APP_RHEOLOGY_VALIDATION_FAILED',str(exc))
+        origin='PHASE_IX_AUXILIARY' if assumed else 'PHASE_VII_BHCT_DOWN'
+        actual='UNKNOWN' if assumed else 'bhct_down'
+        temperature=None if assumed else 'BHCT_CONTEXT_ONLY'
+        qualifier='ASSUMED_BHCT_DOWN_TEMPERATURE_UNRECORDED' if assumed else 'APP_VALIDATED_OPERATOR_REVIEW_NOT_ASSERTED'
+        context=None if assumed else (well.get('bhct',state.get('bhct')),well.get('bhst',state.get('bhst')))
+        params=config.get('params',{});old=state.get('fluid_data',{})
+        if type(params) is not dict or type(old) is not dict:return hold('INVALID_INPUT','FLUID_CONTEXT_INVALID','Canonical fluid context required.')
+        record=params.get(name,old.get(name,{}))
+        if type(record) is not dict:return hold('INVALID_INPUT','FLUID_CONTEXT_INVALID','Canonical selected fluid record required.')
+        identity=fingerprint(['cfw128-gate4d-validated-source/1',identity,origin,actual,'ASSUMED_BHCT_DOWN' if assumed else 'bhct_down',temperature,'NOT_ASSERTED',context,
+                              _positional_source((state.get('mud_type',state.get('well_data',{}).get('mud_type','WBM')),record.get('density'),record.get('material_name')))])
+        return ValidatedStageIntake('CAPTURED_FOR_FUTURE_REVIEW',('APP_VALIDATED_SEVEN_RPM_SOURCE',qualifier,'INSTRUMENT_PROVENANCE_UNVERIFIED'),
+            'Engineering input only; no operator review or physical qualification asserted.',name,sha,identity,fingerprint([sha,name,identity]),tuple(readings),
+            dataset=None if assumed else 'bhct_down',source_origin=origin,actual_ramp=actual,temperature_condition=temperature,qualification_hold=qualifier)
     if set(qc)-{'rheology','reviewed','review_signature'}:
         return hold('INVALID_INPUT','LAB_METADATA_UNSUPPORTED','Spacer source cannot assert foreign instrument/review authority.')
     if qc.get('reviewed') is not True:return hold('REVIEW_REQUIRED','LAB_NOT_REVIEWED','Actual operator confirmation is required.')
@@ -279,16 +331,25 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
         lab_bindings.append((intake.source_identity,intake.request_identity,intake.status))
         if intake.status!='CAPTURED_FOR_FUTURE_REVIEW':return held('LAB_SOURCE_HOLD:'+stage.name+':'+','.join(intake.reason_codes))
         if intake.instrument_provenance!='UNVERIFIED':raise ValueError('Unsupported instrument provenance claim.')
+        validated=type(intake) is ValidatedStageIntake
+        ramp=intake.fit_ramp if validated else intake.dataset
+        reviewed=intake.fit_reviewed if validated else True
+        temperature=intake.temperature_condition if validated else 'BHCT'
+        origin=intake.source_origin if validated else 'PHASE_VII'
+        actual=intake.actual_ramp if validated else intake.dataset
+        operator=intake.operator_review if validated else 'EXISTING_REVIEW_PROVED'
+        qualifier=intake.qualification_hold if validated else 'PHYSICAL_INSTRUMENT_UNVERIFIED'
+        if validated:holds=(*holds,stage.name+':'+qualifier)
         fit=fit_full_hb(tuple(v.dial for v in intake.readings),intake.rpm_order,
-            instrument=InstrumentConfig('Fann 35','R1B1','1.0'),ramp_type='bhct_down',reviewed=True,
-            temperature_condition='BHCT',fluid_id=stage.name,record_id=intake.source_identity)
+            instrument=InstrumentConfig('Fann 35','R1B1','1.0'),ramp_type=ramp,reviewed=reviewed,
+            temperature_condition=temperature,fluid_id=stage.name,record_id=intake.source_identity)
         if fit.status!='OK' or fit.tau_y_pa is None or fit.tau_y_pa<=0:return held('FULL_HB_NONZERO_YIELD_NOT_PROVED:'+stage.name)
         hb=to_engine_field(fit.tau_y_pa,fit.k_pa_s_n,fit.n_dimensionless)
         fluid=v.Fluid(name=stage.name,rho_ppg=v.pcf_to_ppg(stage.density_pcf),mu_p_cp=hb.mu_p_cp,
             tau_y=hb.tau_y_field_lbf_100ft2,n_pl=hb.n_dimensionless,K_pl=hb.k_pa_s_n,gel_pa=gels[stage.name],frictionless_fluid=False)
         if (fluid.tau_y,fluid.K_pl,fluid.n_pl)!=(hb.tau_y_field_lbf_100ft2,hb.k_pa_s_n,hb.n_dimensionless):raise ValueError('HB transfer differs.')
         fluids[stage.name]=fluid
-        proofs.append(FluidProof(stage.name,intake.source_identity,tuple((v.rpm,v.raw) for v in intake.readings),fit.tau_y_pa,fluid.tau_y,fluid.K_pl,fluid.n_pl,fluid.rho_ppg,fluid.gel_pa))
+        proofs.append(FluidProof(stage.name,intake.source_identity,tuple((v.rpm,v.raw) for v in intake.readings),fit.tau_y_pa,fluid.tau_y,fluid.K_pl,fluid.n_pl,fluid.rho_ppg,fluid.gel_pa,origin,actual,'ASSUMED_BHCT_DOWN' if actual=='UNKNOWN' else ramp,temperature,operator,reviewed,qualifier))
         stages.append(v.FluidStageSpec(fluid_type=stage.name,material_name=row['material_name'],volume_bbl=stage.volume_bbl,density_pcf=stage.density_pcf,rate_bpm=rate))
     # Distinct chronological keys even when initial/injected Mud properties match.
     mud=fluids['Displacement Fluid'];fluids['Mud']=v.Fluid(name='Mud',rho_ppg=mud.rho_ppg,mu_p_cp=0.,tau_y=mud.tau_y,n_pl=mud.n_pl,K_pl=mud.K_pl,gel_pa=gels['Mud'],frictionless_fluid=False)
