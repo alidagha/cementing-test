@@ -5595,7 +5595,8 @@ def test_cfw128_gate3_new_typed_boundary_is_disabled():
 def gate3_assert_numeric_imports(path):
     import ast
     tree=ast.parse(path.read_text())
-    expected={'DOC58_SI_CANDIDATE_03_TF2R_ER03':'vertical','DOC58_G2D1_DIR_SCRATCH_01_ER03':'directional'}
+    expected={'DOC58_SI_CANDIDATE_03_TF2R_ER03':'vertical','DOC58_G2D1_DIR_SCRATCH_01_ER03':'directional',
+        'cfw128_er03_event_aligned_vertical':'event_vertical','cfw128_er03_event_aligned_directional':'event_directional'}
     actual=[(a.name,a.asname) for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
     assert sorted(actual)==sorted([*expected.items(),('math',None)])
     wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields'),'typing':('Literal',),'fractions':('Fraction',),
@@ -5891,3 +5892,169 @@ def test_cfw128_gate3_fixed_time_step_cannot_silently_change_entered_volumes(gat
     assert r.status=='HOLD' and 'FROZEN_TIMESTEP_STAGE_VOLUME_NOT_PROVED' in r.holds
 
     assert r.stage_volume_audit[0][1:3]==(1.,8.)
+
+
+# Gate 4B: event stepping only; all inputs below are synthetic numerical probes.
+def gate4b_job(v, *, dt=.2, tail=0., densities=(12.,15.8), float_on=False, volumes=(1.,2.345), rates=(40.,13.7)):
+    fluids={'Mud':v.Fluid('Mud',densities[0],mu_p_cp=20.,tau_y=2.,n_pl=.7,K_pl=.5),
+            'Main':v.Fluid('Main',densities[1],mu_p_cp=30.,tau_y=3.,n_pl=.7,K_pl=.6)}
+    geo=v.GeometrySpec(td_m=1200.,track_depth_m=1200.,hole_id_in=8.5,pipe_od_in=5.,pipe_id_in=4.)
+    stages=[v.FluidStageSpec(name,'SYNTHETIC_TEST_ONLY',vol,v.ppg_to_pcf(fluids[name].rho_ppg),rate)
+            for name,vol,rate in zip(('Main','Mud'),volumes,rates)]
+    return v.JobDesign(geo,fluids,'Mud',stages,dt_min=dt,tail_cap_min=tail,float_equipment=float_on)
+
+
+@pytest.mark.parametrize('directional',[False,True])
+def test_cfw128_gate4b_unaligned_executed_volume(directional):
+    import cfw128_er03_event_aligned_vertical as v
+    import cfw128_er03_event_aligned_directional as d
+    job=gate4b_job(v)
+    r=d.simulate(d.attach_survey(job,d.Survey.vertical(1200.))) if directional else v.simulate(job)
+    rows=r.diag['event_intervals']
+    for stage in job.placement:
+        observed=math.fsum(q*duration for a,b,duration,name,q,qo,branch in rows if name==stage.fluid_type)
+        assert observed==pytest.approx(stage.volume_bbl,rel=2e-14,abs=1e-14)
+    assert r.diag['vol_audit']['qi_tot']==pytest.approx(3.345,rel=2e-14)
+    assert rows[-1][2]==0 and rows[-1][4]==0
+    assert all(0<z[2]<=job.dt_min for z in rows[:-1])
+    assert all(a[1]==b[0] for a,b in zip(rows,rows[1:]))
+    assert rows[-1][0]==r.t_eod
+
+
+@pytest.mark.parametrize('dt,volumes,rates',[
+    (.2,(1.,2.345),(40.,13.7)),(.025,(1.,2.345),(40.,13.7)),
+    (.25,(1.,2.),(.25,.5)),(.2,(1e-11,1e-10),(40.,13.7)),
+    (.2,(.1,.1),(40.,40.)),(.2,(0.,.123),(0.,13.7)),
+    (.2,(8.,16.),(40.,40.)),(.2,(1.23456789,2.3456789),(7.3,13.7))])
+def test_cfw128_gate4b_fractional_events_and_vertical_limit(dt,volumes,rates):
+    import cfw128_er03_event_aligned_vertical as v
+    import cfw128_er03_event_aligned_directional as d
+    job=gate4b_job(v,dt=dt,volumes=volumes,rates=rates)
+    a=v.simulate(job);b=d.simulate(d.attach_survey(job,d.Survey.vertical(1200.)))
+    for name in ('t','whp','pump','hydro','dyn','q_in','q_out'):
+        assert tuple(getattr(a,name))==tuple(getattr(b,name))
+    rows=a.diag['event_intervals'];assert rows==b.diag['event_intervals']
+    assert rows[-1][0]==a.t_eod and rows[-1][2]==0
+    for st in job.placement:
+        actual=math.fsum(row[4]*row[2] for row in rows if row[3]==st.fluid_type)
+        assert actual==pytest.approx(st.volume_bbl,rel=3e-14,abs=1e-25)
+    assert all(row[2]>=0 and row[2]<=dt for row in rows)
+
+
+@pytest.fixture(scope='module')
+def gate4b_flow_cases():
+    import cfw128_er03_event_aligned_vertical as v
+    results=[]
+    for density in ((8.,18.),(18.,8.)):
+        for float_on in (False,True):
+            for rates in ((40.,13.7),(2.,40.)):
+                job=gate4b_job(v,dt=.2,tail=.35,densities=density,float_on=float_on,volumes=(250.,250.),rates=rates)
+                results.append((job,v.simulate(job)))
+    return results
+
+
+def test_cfw128_gate4b_all_transport_duration_ledgers(gate4b_flow_cases):
+    branches=set()
+    for job,r in gate4b_flow_cases:
+        rows=r.diag['event_intervals'];a=r.diag['vol_audit'];branches.update(z[6] for z in rows)
+        assert all(0<=z[2]<=job.dt_min and z[1]<=r.t_eod+job.tail_cap_min for z in rows)
+        assert all(x[1]==y[0] for x,y in zip(rows,rows[1:]))
+        assert all(math.isfinite(x) and x>=0 for x in (a['Cp_end'],a['Ca_end'],a['gap_end']))
+        assert a['Cp_end']+a['gap_end']==pytest.approx(a['V_pipe0'],abs=1e-9)
+        assert a['qi_tot']==pytest.approx(500.,abs=1e-9)
+        assert a['qi_tot']==pytest.approx(math.fsum(z[4]*z[2] for z in rows),abs=1e-9)
+        assert a['qo_tot']==pytest.approx(math.fsum(z[5]*z[2] for z in rows),abs=1e-9)
+        assert max(map(abs,a['leak_bbl'].values()))<1e-9
+        assert max(map(abs,a['dres_pipe_bbl'].values()))<1e-9
+    assert {'normal','freefall','ffrefill','freeex','tail_ff','tail_rev'}<=branches,branches
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+def test_cfw128_gate4b_explicit_adapter_preserves_default_and_holds(gate3_numeric_source,engine):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import replace,fields
+    state=deepcopy(gate3_numeric_source);before=pickle.dumps(state)
+    state['fluids_config']['params']['Main']['pump_rate']='40'
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']='40'
+    changed=pickle.dumps(state);b=replace(gate3_boundary(),dt_min=.2)
+    old=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine=engine)
+    new=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine=engine,stepping='event_aligned_test_only')
+    assert old.stage_volume_audit[0][1:3]==(1.,8.) and old.engine==engine
+    assert new.stage_volume_audit[0][1:3]==(1.,1.)
+    assert all(a==pytest.approx(o,rel=2e-14) for name,a,o,ratio in new.stage_volume_audit)
+    assert new.engine=='event_aligned_'+engine and new.source_identity!=old.source_identity
+    assert len(new.source_hashes)==5 and new.fluids==old.fluids
+    assert 'EVENT_ALIGNED_TEST_ONLY' in new.holds
+    assert all(getattr(new,f.name) is False for f in fields(new) if f.name in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    assert pickle.dumps(state)==changed and changed!=before
+    with pytest.raises(ValueError):run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='automatic')
+    directional=deepcopy(state);directional['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    held=run_numeric_test_case(directional,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine='directional',stepping='event_aligned_test_only')
+    assert held.status=='HOLD' and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' in held.holds
+    pressure=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(b,bhsp_target_psi=5000.),engine=engine,stepping='event_aligned_test_only')
+    assert 'BHSP_TARGET_STATION_NOT_PROVED' in pressure.holds
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_gate4b_eight_job_admission_and_source_hold(bug01_reviewed_report_base,engine,job):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    state=gate3_case(bug01_reviewed_report_base,job);before=pickle.dumps(state)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine,stepping='event_aligned_test_only')
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED',r.holds
+    assert all(entered==pytest.approx(observed,rel=2e-14) for name,entered,observed,ratio in r.stage_volume_audit)
+    assert r.final_post_pull_toc=='NOT_EVALUATED' and r.currentness=='NOT_CURRENTNESS_PROOF'
+    assert pickle.dumps(state)==before
+    state['lab_qc_params']['Main']['reviewed']=False
+    hold=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine,stepping='event_aligned_test_only')
+    assert hold.status=='HOLD' and hold.time_min==()
+
+
+def test_cfw128_gate4b_aligned_frozen_channels_and_terminal_observation():
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as original
+    import cfw128_er03_event_aligned_vertical as derivative
+    a=original.simulate(gate4b_job(original,dt=.25,volumes=(1.,2.),rates=(.25,.5)))
+    b=derivative.simulate(gate4b_job(derivative,dt=.25,volumes=(1.,2.),rates=(.25,.5)))
+    for name in ('t','whp','pump','hydro','dyn','q_in','q_out'):
+        assert tuple(getattr(a,name))==tuple(getattr(b,name))
+    assert b.diag['vol_audit']['branch_min']['tail_bal']==0
+    assert a.diag['vol_audit']['branch_min']['tail_bal']==.25
+    assert b.diag['event_intervals'][-1][2]==0
+
+
+def gate4b_assert_sources_and_firewall():
+    from pathlib import Path
+    import ast,hashlib
+    pins={'cfw128_er03_event_aligned_vertical.py':'1bde2f810055479bba424bacb8b65549e27465ccc28fd9863c355f283de76485',
+          'cfw128_er03_event_aligned_directional.py':'7bb5596bb7d78d1e7e20c42d9534c5648126c6b417426d8a3f99978911370976'}
+    parents=('DOC58_SI_CANDIDATE_03_TF2R_ER03.py','DOC58_G2D1_DIR_SCRATCH_01_ER03.py')
+    for (name,pin),parent in zip(pins.items(),parents):
+        assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==pin
+        before=ast.parse(Path(parent).read_text());after=ast.parse(Path(name).read_text())
+        for tree in (before,after):
+            tree.body=[n for n in tree.body if not isinstance(n,ast.FunctionDef) or n.name!='simulate']
+        if 'directional' in name:
+            node=next(n for n in after.body if isinstance(n,ast.ImportFrom) and n.module=='cfw128_er03_event_aligned_vertical')
+            node.module='DOC58_SI_CANDIDATE_03_TF2R_ER03'
+        assert ast.dump(before)==ast.dump(after)
+    permitted={'cfw128_er03_numeric_adapter.py':set(pins),'cfw128_er03_event_aligned_directional.py':{'cfw128_er03_event_aligned_vertical.py'}}
+    for path in Path('.').glob('*.py'):
+        tree=ast.parse(path.read_text());imports={a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+        imports.update(n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom))
+        used={f for f in pins if f[:-3] in imports}
+        assert used<=permitted.get(path.name,set())
+    gate3_assert_numeric_imports(Path('cfw128_er03_numeric_adapter.py'))
+
+
+def test_cfw128_gate4b_source_law_and_import_mutation_negatives(monkeypatch):
+    from pathlib import Path
+    gate4b_assert_sources_and_firewall()
+    raw=Path.read_bytes;read=Path.read_text
+    for name in ('cfw128_er03_event_aligned_vertical.py','cfw128_er03_event_aligned_directional.py'):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_bytes',lambda p,*a,**k:raw(p,*a,**k).replace(b'step_dt',b'dt',1) if p.name==name else raw(p,*a,**k))
+            with pytest.raises(AssertionError):gate4b_assert_sources_and_firewall()
+    for target,added in (('main.py','\nimport cfw128_er03_event_aligned_vertical\n'),('cfw128_er03_numeric_adapter.py','\nimport pumping_simulation\n')):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+added if p.name==target else read(p,*a,**k))
+            with pytest.raises(AssertionError):gate4b_assert_sources_and_firewall()
