@@ -6478,3 +6478,20 @@ def test_cfw128_gate4f_signed_flow_and_complete_hold_preserved(gate4f_precompute
     assert pickle.dumps(r)==before and r.status=='HOLD' and r.chart_admissible is False
     from dataclasses import replace
     with pytest.raises(ValueError):adapter.render_numeric_test_charts(replace(r,whp_kpsi=(10**400,)*5))
+
+
+@pytest.mark.parametrize('shutin',[2.,3.,4.,None])
+def test_cfw128_gate4fp1_shutin_chronology_before_render(gate4f_precomputed,shutin,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    r=gate4f_resign(gate4f_precomputed,status='HOLD',holds=('BHSP_TARGET_STATION_NOT_PROVED',),
+        events=tuple((n,3. if n=='t_eod' else shutin if n in ('t_marker','t_shutin') else v) for n,v in gate4f_precomputed.events))
+    before=pickle.dumps(r);seen=[];sentinel=object()
+    def capture(spec):seen.append(spec);return sentinel
+    monkeypatch.setattr(adapter,'render_three_charts',capture)
+    if shutin==2.:
+        with pytest.raises(ValueError,match='Shut-in precedes EOD'):adapter.render_numeric_test_charts(r)
+        assert seen==[]
+    else:
+        assert adapter.render_numeric_test_charts(r) is sentinel
+        assert seen[0].marker_time==(None if shutin in (None,3.) else shutin)
+    assert pickle.dumps(r)==before and r.status=='HOLD' and r.chart_admissible is False

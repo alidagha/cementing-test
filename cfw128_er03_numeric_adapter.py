@@ -458,6 +458,7 @@ def render_numeric_test_charts(evidence: NumericEvidence):
     start,end=events['t_freefall_start'],events['t_freefall_end']
     if end is not None and (start is None or end<start):raise ValueError('Inconsistent freefall events.')
     if events['t_marker']!=events['t_shutin']:raise ValueError('Shut-in marker differs from its declared event.')
+    if events['t_shutin'] is not None and events['t_shutin']<events['t_eod']:raise ValueError('Shut-in precedes EOD.')
     identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
     if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
