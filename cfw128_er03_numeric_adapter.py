@@ -15,10 +15,12 @@ import DOC58_G2D1_DIR_SCRATCH_01_ER03 as directional
 import cfw128_er03_event_aligned_vertical as event_vertical
 import cfw128_er03_event_aligned_directional as event_directional
 from cfw128_integration_abi import compose_nominal_tracking, CompositionReceipt
-from cfw128_hb_intake import snapshot_lab_intake
+from cfw128_hb_intake import (snapshot_lab_intake, LabIntakeSnapshot, DialReading,
+                              _dial, _duplicate_columns, _positional_source)
 from cfw128_hb03t_frozen import fit_full_hb, to_engine_field, InstrumentConfig
 from engineering_tools import require_positive_pump_rate
-from project_state import fingerprint
+from project_state import fingerprint, spacer_lab_payload, phase7_lab_fluids, lab_source_signature
+from rheology import RPM_ORDER, RHEOLOGY_DATASETS
 
 VERTICAL_SHA256='79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f'
 DIRECTIONAL_SHA256='2cd8896069327ba96fef4f22038bf70538dcc06b37e966b8bb58ad36ac39bd61'
@@ -122,6 +124,90 @@ def _primitive(v):
     return (cls.__module__,cls.__name__,tuple(values))
 
 
+def _stage_lab_intake(state, name, sha):
+    """Route only existing source/review authorities; never create a review.
+
+    Cement/Mud retain their byte-compatible intake. Spacer has a reviewed cup.
+    Rheology-only and Phase-IX auxiliaries have no equivalent review contract:
+    intact dials there remain explicitly unadmitted, including forged flags.
+    """
+    if name not in ('Spacer','Pre Flush','Diesel','Spacer Ahead','Spacer Behind'):
+        return snapshot_lab_intake(state,name,app_source_sha=sha)
+    lab=state.get('lab_qc_params',{});config=state.get('fluids_config',{})
+    if type(lab) is not dict or type(config) is not dict or type(config.get('active')) is not list:
+        raise ValueError('Canonical lab/fluid source records required.')
+    active=config['active'];auxiliary=name in ('Spacer Ahead','Spacer Behind')
+    current=name in lab
+    qc=lab.get(name);data=qc.get('rheology',{}) if type(qc) is dict else None
+    row=data.get('bhct_down') if type(data) is dict else None
+    legacy=name=='Pre Flush' and not current
+    aux={}
+    if auxiliary or legacy:
+        config_ix=state.get('centralizer_config',{})
+        if type(config_ix) is not dict or type(config_ix.get('aux_rheology',{})) is not dict:raise ValueError('Canonical auxiliary record required.')
+        aux=config_ix.get('aux_rheology',{})
+    raw=aux.get(name) if (auxiliary or legacy) and type(aux) is dict else row.get('readings') if type(row) is dict else None
+    # Only this exact stage's source enters its identity. A present current Lab
+    # record excludes historical auxiliary data even when empty or unselected.
+    projection={'fluid':name,'selected_count':active.count(name),'origin':'PHASE_IX' if auxiliary or legacy else 'PHASE_VII',
+                'qc':None if auxiliary or legacy else qc,'readings':raw}
+    if name=='Spacer':
+        for key in ('lab_grid_dfs','lab_source_signatures','well_data','fluid_data'):
+            if type(state.get(key,{})) is not dict:raise ValueError('Canonical Spacer source records required.')
+        if type(config.get('params',{})) is not dict:raise ValueError('Canonical Phase IV parameters required.')
+        projection.update(grid=state.get('lab_grid_dfs',{}).get(name),
+            stored_source=state.get('lab_source_signatures',{}).get(name),
+            composition=state.get('standalone_spacer_config'),
+            params=config.get('params',{}).get(name,state.get('fluid_data',{}).get(name)),
+            bhct=state.get('well_data',{}).get('bhct',state.get('bhct')),
+            bhst=state.get('well_data',{}).get('bhst',state.get('bhst')))
+    identity=fingerprint(['cfw128-gate4c-lab/1',_positional_source(projection)])
+    def hold(status,code,detail):
+        return LabIntakeSnapshot(status,(code,),detail,name,sha,identity,fingerprint([sha,name,identity]))
+    if active.count(name)!=1:return hold('NOT_APPLICABLE','FLUID_NOT_ACTIVE','One actual canonical selected stage is required.')
+    if not auxiliary and name not in phase7_lab_fluids(state):
+        return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Current job/Mud selection does not admit this Phase VII fluid.')
+    if _duplicate_columns(projection):return hold('INVALID_INPUT','DUPLICATE_SOURCE_COLUMNS','Ambiguous positional values retained in invalid identity.')
+    if not auxiliary and not legacy:
+        if qc is None:return hold('INCOMPLETE_INPUT','LAB_SOURCE_MISSING','Actual measured Phase VII record is missing.')
+        if type(qc) is not dict or type(data) is not dict:return hold('INVALID_INPUT','RHEOLOGY_RECORD_INVALID','Canonical lab/ramp records required.')
+        if set(data)-{key for key,label in RHEOLOGY_DATASETS}:return hold('INVALID_INPUT','RHEOLOGY_KEYS_INVALID','Unknown ramp keys are not source authority.')
+        if row is None or type(row) is dict and row.get('selected') is False:
+            return hold('NOT_SELECTED','BHCT_DOWN_NOT_SELECTED','Current Lab has precedence; other ramps/legacy are not substitutes.')
+        if type(row) is not dict or row.get('selected') is not True:
+            return hold('INVALID_INPUT','SELECTION_INVALID','Explicit boolean BHCT-down selection required.')
+        if set(row)-{'selected','readings','gel_10_sec','gel_10_min'}:
+            return hold('INVALID_INPUT','DATASET_KEYS_INVALID','No inferred instrument or foreign dataset metadata.')
+    if raw is None:return hold('INCOMPLETE_INPUT','AUXILIARY_SOURCE_MISSING' if auxiliary or legacy else 'RPM_MISSING','No own measured seven-RPM source.')
+    if type(raw) is not dict:return hold('INVALID_INPUT','RPM_RECORD_INVALID','Exact canonical RPM mapping required.')
+    if any(type(k) is not str or k not in {str(r) for r in RPM_ORDER} for k in raw):
+        return hold('INVALID_INPUT','RPM_KEYS_INVALID','Duplicate/colliding/unexpected keys cannot be repaired.')
+    if set(raw)!={str(r) for r in RPM_ORDER}:return hold('INCOMPLETE_INPUT','RPM_MISSING','Seven actual dials required.')
+    readings=[]
+    for rpm in RPM_ORDER:
+        value=raw[str(rpm)]
+        try:dial,problem=_dial(value)
+        except (ValueError,OverflowError):dial,problem=None,'DIAL_INVALID'
+        if problem:return hold('INVALID_INPUT',problem,'Finite nonnegative integer dial required without rounding.')
+        readings.append(DialReading(rpm,value,type(value).__name__,dial))
+    if auxiliary or legacy or name in ('Pre Flush','Diesel'):
+        return hold('REVIEW_REQUIRED','AUXILIARY_RAMP_REVIEW_UNPROVED' if auxiliary or legacy else 'LAB_REVIEW_AUTHORITY_MISSING',
+                    'Own seven integer dials exist; BHCT/operator current-review authority is unproved; instrument unverified. No fit or numerical admission.')
+    if set(qc)-{'rheology','reviewed','review_signature'}:
+        return hold('INVALID_INPUT','LAB_METADATA_UNSUPPORTED','Spacer source cannot assert foreign instrument/review authority.')
+    if qc.get('reviewed') is not True:return hold('REVIEW_REQUIRED','LAB_NOT_REVIEWED','Actual operator confirmation is required.')
+    try:
+        payload=spacer_lab_payload(state,rebuild=False)
+        current_signature=lab_source_signature(state,name)
+    except (ValueError,TypeError,KeyError,AttributeError,OverflowError) as exc:
+        return hold('STALE_REVIEW','SPACER_SOURCE_OR_REVIEW_INVALID',str(exc))
+    identity=fingerprint(['cfw128-gate4c-reviewed-spacer/1',identity,current_signature,payload['bhct'],payload['bhst']])
+    return LabIntakeSnapshot('CAPTURED_FOR_FUTURE_REVIEW',
+        ('INTACT_REVIEWED_BHCT_DOWN_SOURCE','INSTRUMENT_PROVENANCE_UNVERIFIED'),
+        'Existing current Spacer cup/review proved; no physical instrument qualification.',name,sha,identity,
+        fingerprint([sha,name,identity]),tuple(readings),None,current_signature,qc['review_signature'])
+
+
 def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary: NumericBoundary,
                           engine: str='vertical', stepping: str='frozen', composition: CompositionReceipt | None=None) -> NumericEvidence:
     """Run original simulate only for admitted, explicitly synthetic inputs.
@@ -189,7 +275,7 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
         if type(rate_raw) not in (int,float,str) or type(rate_raw) is float and not math.isfinite(rate_raw):return held('RATE_SOURCE_INVALID:'+stage.name)
         try:rate=require_positive_pump_rate(rate_raw)
         except (ValueError,TypeError,OverflowError):return held('RATE_SOURCE_INVALID:'+stage.name)
-        intake=snapshot_lab_intake(source,stage.name,app_source_sha=sha)
+        intake=_stage_lab_intake(source,stage.name,sha)
         lab_bindings.append((intake.source_identity,intake.request_identity,intake.status))
         if intake.status!='CAPTURED_FOR_FUTURE_REVIEW':return held('LAB_SOURCE_HOLD:'+stage.name+':'+','.join(intake.reason_codes))
         if intake.instrument_provenance!='UNVERIFIED':raise ValueError('Unsupported instrument provenance claim.')

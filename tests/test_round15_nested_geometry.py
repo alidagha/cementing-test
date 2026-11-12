@@ -5601,9 +5601,9 @@ def gate3_assert_numeric_imports(path):
     assert sorted(actual)==sorted([*expected.items(),('math',None)])
     wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields'),'typing':('Literal',),'fractions':('Fraction',),
         'cfw128_integration_abi':('compose_nominal_tracking','CompositionReceipt'),
-        'cfw128_hb_intake':('snapshot_lab_intake',),
+        'cfw128_hb_intake':('snapshot_lab_intake','LabIntakeSnapshot','DialReading','_dial','_duplicate_columns','_positional_source'),
         'cfw128_hb03t_frozen':('fit_full_hb','to_engine_field','InstrumentConfig'),
-        'engineering_tools':('require_positive_pump_rate',),'project_state':('fingerprint',)}
+        'engineering_tools':('require_positive_pump_rate',),'project_state':('fingerprint','spacer_lab_payload','phase7_lab_fluids','lab_source_signature'),'rheology':('RPM_ORDER','RHEOLOGY_DATASETS')}
     nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
     assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
     assert all(n.level==0 and all(a.asname is None for a in n.names) for n in nodes)
@@ -6058,3 +6058,153 @@ def test_cfw128_gate4b_source_law_and_import_mutation_negatives(monkeypatch):
         with monkeypatch.context() as m:
             m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+added if p.name==target else read(p,*a,**k))
             with pytest.raises(AssertionError):gate4b_assert_sources_and_firewall()
+
+
+# Gate 4C is source admission only; these fixtures reuse real source authorities.
+def gate4c_spacer_source(base):
+    from test_round13a_a2_spacer_lab import state as spacer_state, measured
+    from project_state import refresh_spacer_lab
+    from engineering_tools import lab_review_signature
+    state=deepcopy(base);fixture=measured(spacer_state('Barite'))
+    state['standalone_spacer_config']=fixture['standalone_spacer_config']
+    state['fluids_config']['active'].insert(0,'Spacer')
+    state['fluids_config']['params']['Spacer']=deepcopy(fixture['fluids_config']['params']['Spacer'])
+    state['fluids_config']['params']['Spacer']['pump_rate']=5.
+    refresh_spacer_lab(state)
+    qc=deepcopy(fixture['lab_qc_params']['Spacer'])
+    qc['rheology']['bhct_down']['readings']={str(r):str(v) for r,v in zip((300,200,100,60,30,6,3),(55,45,33,26,20,11,9))}
+    qc['reviewed']=True;state['lab_qc_params']['Spacer']=qc
+    qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs']['Spacer'])
+    return state
+
+
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+def test_cfw128_gate4c_reviewed_spacer_new_admission(gate3_numeric_source,stepping):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import replace
+    state=gate4c_spacer_source(gate3_numeric_source);before=pickle.dumps(state)
+    b=replace(gate3_boundary(),gel_pa_by_fluid=(*gate3_boundary().gel_pa_by_fluid,('Spacer',0.)))
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping=stepping)
+    assert r.status=='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED',r.holds
+    assert [f.name for f in r.fluids]==['Spacer','Main','Displacement Fluid']
+    assert dict(r.fluids[0].raw_readings)[300]=='55'
+    assert r.fluids[0].tau_y_pa>0 and r.fluids[0].tau_y_pa!=r.fluids[1].tau_y_pa
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('fault',['missing','review','fake_review','signature','grid','composition','temperature','wrong_ramp','duplicate_rpm','missing_rpm','bool','fraction','negative','nan','instrument','duplicate_columns'])
+def test_cfw128_gate4c_spacer_source_fails_closed(gate3_numeric_source,fault):
+    from cfw128_er03_numeric_adapter import _stage_lab_intake
+    state=gate4c_spacer_source(gate3_numeric_source);qc=state['lab_qc_params']['Spacer']
+    raw=qc['rheology']['bhct_down']['readings']
+    if fault=='missing':state['lab_qc_params'].pop('Spacer')
+    elif fault=='review':qc['reviewed']=False
+    elif fault=='fake_review':qc['reviewed']=1
+    elif fault=='signature':state['lab_source_signatures']['Spacer']='stale'
+    elif fault=='grid':state['lab_grid_dfs']['Spacer'].iloc[0,0]='changed'
+    elif fault=='composition':state['fluids_config']['params']['Spacer']['density']='111'
+    elif fault=='temperature':state['well_data']['bhct']=1.
+    elif fault=='wrong_ramp':qc['rheology']['surface_down']=qc['rheology'].pop('bhct_down')
+    elif fault=='duplicate_rpm':raw[300]=55
+    elif fault=='missing_rpm':raw.pop('3')
+    elif fault=='instrument':qc['instrument_provenance']='VERIFIED'
+    elif fault=='duplicate_columns':state['lab_grid_dfs']['Spacer'].columns=['Material','Material','Unit','Mass','Lot No']
+    else:raw['300']={'bool':True,'fraction':55.5,'negative':-1,'nan':float('nan')}[fault]
+    before=pickle.dumps(state);r=_stage_lab_intake(state,'Spacer',GATE3_APP_SOURCE_SHA)
+    assert r.status!='CAPTURED_FOR_FUTURE_REVIEW' and r.readings==()
+    assert r.instrument_provenance=='UNVERIFIED' and pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('name',['Diesel','Pre Flush','Spacer Ahead','Spacer Behind'])
+@pytest.mark.parametrize('fault',['intact','absent','unselected','fraction','duplicate','boolean','negative','nonfinite','fake_review'])
+def test_cfw128_gate4c_unsupported_review_authorities_are_holds(gate3_numeric_source,name,fault):
+    from cfw128_er03_numeric_adapter import _stage_lab_intake
+    state=deepcopy(gate3_numeric_source);state['mud_type']='OBM';state['fluids_config']['active'].insert(0,name)
+    raw={str(r):v for r,v in zip((300,200,100,60,30,6,3),(55,45,33,26,20,11,9))}
+    qc={'rheology':{'bhct_down':{'selected':True,'readings':raw,'gel_10_sec':'-','gel_10_min':'-'}}}
+    if name in ('Diesel','Pre Flush'):state['lab_qc_params'][name]=qc
+    else:state.setdefault('centralizer_config',{}).setdefault('aux_rheology',{})[name]=raw
+    if fault=='absent':raw.clear()
+    elif fault=='unselected':qc['rheology']['bhct_down']['selected']=False
+    elif fault=='duplicate':raw[300]=55
+    elif fault=='fake_review':qc.update(reviewed=True,review_signature='forged')
+    elif fault not in ('intact',):raw['300']={'fraction':55.5,'boolean':True,'negative':-1,'nonfinite':float('nan')}[fault]
+    before=pickle.dumps(state);r=_stage_lab_intake(state,name,GATE3_APP_SOURCE_SHA)
+    assert r.status!='CAPTURED_FOR_FUTURE_REVIEW' and not r.readings
+    if fault in ('intact','fake_review') or name in ('Spacer Ahead','Spacer Behind') and fault=='unselected':
+        assert 'REVIEW' in r.reason_codes[0]
+    assert pickle.dumps(state)==before
+
+
+def test_cfw128_gate4c_current_preflush_never_falls_back_and_aux_names_do_not_share(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import _stage_lab_intake
+    state=deepcopy(gate3_numeric_source);state['fluids_config']['active']+=['Pre Flush','Spacer Ahead','Spacer Behind']
+    raw={str(r):v for r,v in zip((300,200,100,60,30,6,3),(55,45,33,26,20,11,9))}
+    state['centralizer_config']={'aux_rheology':{'Pre Flush':raw,'Spacer Ahead':deepcopy(raw)}}
+    legacy=_stage_lab_intake(state,'Pre Flush',GATE3_APP_SOURCE_SHA);assert legacy.status=='REVIEW_REQUIRED'
+    state['lab_qc_params']['Pre Flush']={}
+    current=_stage_lab_intake(state,'Pre Flush',GATE3_APP_SOURCE_SHA);assert current.reason_codes==('BHCT_DOWN_NOT_SELECTED',)
+    state['centralizer_config']['aux_rheology']['Pre Flush']['300']=999
+    assert _stage_lab_intake(state,'Pre Flush',GATE3_APP_SOURCE_SHA)==current
+    ahead=_stage_lab_intake(state,'Spacer Ahead',GATE3_APP_SOURCE_SHA)
+    behind=_stage_lab_intake(state,'Spacer Behind',GATE3_APP_SOURCE_SHA)
+    assert ahead.status=='REVIEW_REQUIRED' and behind.reason_codes==('AUXILIARY_SOURCE_MISSING',)
+    assert ahead.source_identity!=behind.source_identity
+
+
+@pytest.mark.parametrize('name',['Scavenger','Main','Lead','Lead #1','Lead #2','Tail'])
+def test_cfw128_gate4c_each_formulation_uses_own_existing_review(gate3_numeric_source,name):
+    from cfw128_er03_numeric_adapter import _stage_lab_intake
+    from project_state import lab_source_signature
+    from engineering_tools import lab_review_signature
+    state=deepcopy(gate3_numeric_source)
+    if name!='Main':
+        state['fluids_config']['active'].insert(0,name)
+        for key in ('cement_params','fluid_data','cement_additives_dfs','lab_grid_dfs','lab_qc_params'):
+            state[key][name]=deepcopy(state[key]['Main'])
+    qc=state['lab_qc_params'][name];qc['rheology']['bhct_down']['readings']['300']=46
+    state['lab_source_signatures'][name]=lab_source_signature(state,name)
+    qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs'][name])
+    r=_stage_lab_intake(state,name,GATE3_APP_SOURCE_SHA)
+    assert r.status=='CAPTURED_FOR_FUTURE_REVIEW' and r.readings[0].dial==46
+    assert r.fluid_name==name and r.instrument_provenance=='UNVERIFIED'
+    qc['rheology']['bhct_down']['readings']['300']=47
+    assert _stage_lab_intake(state,name,GATE3_APP_SOURCE_SHA).status=='STALE_REVIEW'
+
+
+def test_cfw128_gate4c_spacer_source_identity_and_bingham_are_read_only(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import _stage_lab_intake
+    from engineering_tools import build_lab_rheology,lab_review_signature
+    state=gate4c_spacer_source(gate3_numeric_source);qc=state['lab_qc_params']['Spacer']
+    before=build_lab_rheology(qc,'Spacer');r=_stage_lab_intake(state,'Spacer',GATE3_APP_SOURCE_SHA)
+    state['lab_qc_params']['inactive']={'anything':float('nan')}
+    assert _stage_lab_intake(state,'Spacer',GATE3_APP_SOURCE_SHA)==r
+    assert build_lab_rheology(qc,'Spacer')==before
+    qc['rheology']['bhct_down']['readings']['300']='56'
+    stale=_stage_lab_intake(state,'Spacer',GATE3_APP_SOURCE_SHA)
+    assert stale.status=='STALE_REVIEW' and stale.source_identity!=r.source_identity
+    qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs']['Spacer'])
+    fresh=_stage_lab_intake(state,'Spacer',GATE3_APP_SOURCE_SHA)
+    assert fresh.status=='CAPTURED_FOR_FUTURE_REVIEW' and fresh.source_identity not in (r.source_identity,stale.source_identity)
+
+
+@pytest.mark.parametrize('name',['Diesel','Pre Flush','Spacer Ahead','Spacer Behind'])
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+def test_cfw128_gate4c_public_boundary_holds_unreviewed_stages(gate3_numeric_source,name,stepping,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source);state['mud_type']='OBM'
+    state['fluids_config']['active'].insert(0,name)
+    state['fluids_config']['params'][name]={'volume':1.,'density':52. if name=='Diesel' else 80.,'pump_rate':.25,'material_name':'Diesel' if name=='Diesel' else 'Synthetic measured fluid'}
+    raw={str(r):v for r,v in zip((300,200,100,60,30,6,3),(55,45,33,26,20,11,9))}
+    if name in ('Diesel','Pre Flush'):
+        state['lab_qc_params'][name]={'rheology':{'bhct_down':{'selected':True,'readings':raw,'gel_10_sec':'-','gel_10_min':'-'}}}
+    else:state['centralizer_config']={'aux_rheology':{name:raw}}
+    def forbidden(*args,**kwargs):raise AssertionError('Unreviewed fluid reached numerical execution')
+    for module in (adapter.vertical,adapter.directional,adapter.event_vertical,adapter.event_directional):monkeypatch.setattr(module,'simulate',forbidden)
+    b=replace(gate3_boundary(),gel_pa_by_fluid=(*gate3_boundary().gel_pa_by_fluid,(name,0.)))
+    before=pickle.dumps(state)
+    result=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping=stepping)
+    assert result.status=='HOLD' and result.time_min==() and result.fluids==()
+    assert any(code.startswith('LAB_SOURCE_HOLD:'+name+':') for code in result.holds)
+    assert result.currentness=='NOT_CURRENTNESS_PROOF' and pickle.dumps(state)==before
