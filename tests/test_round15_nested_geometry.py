@@ -5603,7 +5603,8 @@ def gate3_assert_numeric_imports(path):
         'cfw128_integration_abi':('compose_nominal_tracking','CompositionReceipt'),
         'cfw128_hb_intake':('snapshot_lab_intake','LabIntakeSnapshot','DialReading','_dial','_duplicate_columns','_positional_source'),
         'cfw128_hb03t_frozen':('fit_full_hb','to_engine_field','InstrumentConfig'),
-        'engineering_tools':('require_positive_pump_rate','validate_lab_rheology','lab_temperature_valid'),'centralizer_adapter':('_dynamic_fann',),'project_state':('fingerprint','spacer_lab_payload','phase7_lab_fluids','lab_source_signature','available_fluid_types'),'rheology':('RPM_ORDER','RHEOLOGY_DATASETS')}
+        'engineering_tools':('require_positive_pump_rate','validate_lab_rheology','lab_temperature_valid'),'centralizer_adapter':('_dynamic_fann',),'project_state':('fingerprint','spacer_lab_payload','phase7_lab_fluids','lab_source_signature','available_fluid_types'),'rheology':('RPM_ORDER','RHEOLOGY_DATASETS'),
+        'fluids_charts_module_v1_4_2':('JobChartsSpec','autoscale_x','autoscale_y','render_three_charts')}
     nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
     assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
     assert all(n.level==0 and all(a.asname is None for a in n.names) for n in nodes)
@@ -6321,3 +6322,159 @@ def test_cfw128_gate4d_assumption_identity_and_frozen_provenance(gate3_numeric_s
     with pytest.raises(FrozenInstanceError):a.actual_ramp='bhct_down'
     with pytest.raises(ValueError):replace(a,fit_reviewed=True)
     assert pickle.loads(pickle.dumps(a))==a
+
+
+def gate4f_resign(evidence, **changes):
+    """Explicit synthetic precomputed evidence; consistency is not authenticity."""
+    from dataclasses import replace
+    from project_state import fingerprint
+    r=replace(evidence,**changes)
+    channels=tuple(getattr(r,n) for n in ('time_min','whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm'))
+    return replace(r,projection_identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds]))
+
+
+@pytest.fixture
+def gate4f_precomputed():
+    from cfw128_er03_numeric_adapter import NumericEvidence
+    r=NumericEvidence(GATE3_APP_SOURCE_SHA,'a'*64,'b'*64,'c'*64,'NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED',('PHYSICAL_INSTRUMENT_UNVERIFIED',),'vertical',3885.,(),(),287.,287.,
+        time_min=(0.,1.,2.,3.,4.),whp_kpsi=(.2,.4,.5,.3,.2),pump_kpsi=(.3,.5,.6,.4,.3),
+        hydrostatic_kpsi=(2.,2.1,2.2,2.3,2.4),total_pressure_kpsi=(2.2,2.3,2.4,2.5,2.6),q_in_bpm=(1.,2.,2.,0.,0.),q_out_bpm=(1.,1.5,2.2,.3,0.),
+        events=(('t_atcp',1.),('t_eod',2.),('t_marker',3.),('t_freefall_start',None),('t_freefall_end',None),('t_shutin',3.),('whp_final_psi',5000.),('bottom_shutin_psi',6000.)))
+    return gate4f_resign(r)
+
+
+def test_cfw128_gate4f_missing_presentation_boundary(gate4f_precomputed):
+    from cfw128_er03_numeric_adapter import render_numeric_test_charts
+    import matplotlib.pyplot as plt
+    fig=render_numeric_test_charts(gate4f_precomputed)
+    try:assert len(fig.axes)==3
+    finally:plt.close(fig)
+
+
+@pytest.mark.parametrize('dynamic,marker',[(True,3.),(False,3.),(True,2.)])
+def test_cfw128_gate4f_shared_spec_pixels_png_and_no_numeric_calls(gate4f_precomputed,dynamic,marker,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    import fluids_charts_module_v1_4_2 as legacy
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from dataclasses import asdict
+    from io import BytesIO
+    r=gate4f_resign(gate4f_precomputed,total_pressure_kpsi=gate4f_precomputed.total_pressure_kpsi if dynamic else (),
+        events=tuple((n,marker if n in ('t_marker','t_shutin') else v) for n,v in gate4f_precomputed.events))
+    before=pickle.dumps(r);captured={};original=adapter.render_three_charts
+    def spy(spec):captured['spec']=spec;return original(spec)
+    def forbidden(*a,**k):raise AssertionError('Presentation executed numerical/App code')
+    monkeypatch.setattr(adapter,'render_three_charts',spy)
+    for name in ('compose_nominal_tracking','fit_full_hb','_stage_lab_intake','run_numeric_test_case'):
+        monkeypatch.setattr(adapter,name,forbidden)
+    for module in (adapter.vertical,adapter.directional,adapter.event_vertical,adapter.event_directional):monkeypatch.setattr(module,'simulate',forbidden)
+    for name in ('simulate','build_three_charts','_build_fluids','geometry_from_hardware','stages_from_fluid_data'):
+        monkeypatch.setattr(legacy,name,forbidden)
+    fig=adapter.render_numeric_test_charts(r);other=None
+    try:
+        t=r.time_min;hydro=r.hydrostatic_kpsi;dyn=r.total_pressure_kpsi
+        spec=legacy.JobChartsSpec(calc_cem_hp=(t,r.whp_kpsi),calc_pump_press=(t,r.pump_kpsi),hydrostatic=(t,hydro),dynamic=(t,dyn) if dynamic else None,
+            q_in=(t,r.q_in_bpm),q_out=(t,r.q_out_bpm),depth_m=3885.,depth_unit='m',event_times=(1.,2.),marker_time=None if marker==2. else marker,
+            axis_x=legacy.autoscale_x(4.),axis_y1=legacy.autoscale_y(0.,.6,True),axis_y2=legacy.autoscale_y(min(*hydro,*dyn),max(*hydro,*dyn),False),axis_y3=legacy.autoscale_y(0.,2.2,False))
+        assert asdict(captured['spec'])==asdict(spec)
+        other=legacy.render_three_charts(spec);fig.canvas.draw();other.canvas.draw()
+        assert np.array_equal(fig.canvas.buffer_rgba(),other.canvas.buffer_rgba())
+        a=BytesIO();b=BytesIO();fig.savefig(a,format='png',dpi=200,facecolor='white');other.savefig(b,format='png',dpi=200,facecolor='white');assert a.getvalue()==b.getvalue()
+        assert tuple(fig.get_size_inches())==(10.,12.) and len(fig.axes)==3
+        expected=[['Calc. CemHP','Acquired Pressure','Back Pressure','Calc. Pump Press.'],['Hydrostatic','Dynamic'],['Acquired Q Out','Acquired Q In','Q In','Q Out']]
+        for ax,labels in zip(fig.axes,expected):
+            assert [s.get_text() for s in ax.get_legend().texts]==labels
+            assert ax.get_facecolor()==(240/255,240/255,240/255,1.) and ax.get_xlabel()=='Time (min)'
+            assert all(s.get_linewidth()==1.1 for s in ax.spines.values())
+            assert ax.xaxis.label.get_fontsize()==11. and ax.get_legend().texts[0].get_fontsize()==13.
+        assert fig.axes[0].get_title()=='' and fig.axes[1].get_title()=='Depth =  3885 m' and fig.axes[2].get_title()=='Fluids at   3885 m'
+        for i,ax in enumerate(fig.axes):
+            assert sum(l.get_color()=='#00D200' for l in ax.lines)==(0 if i==0 else 2)
+            assert sum(l.get_color()=='#808080' for l in ax.lines)==(0 if i==0 or marker==2. else 1)
+        assert not any(l.get_color()=='#FF0000' for l in fig.axes[0].lines)
+        assert pickle.dumps(r)==before and r.chart_admissible is False and r.final_post_pull_toc=='NOT_EVALUATED'
+    finally:
+        plt.close(fig)
+        if other is not None:plt.close(other)
+
+
+@pytest.mark.parametrize('fault',['type','missing','length','nan','inf','boolean','duplicate_time','decreasing_time','negative_time','depth_zero','depth_nan','depth_bool','event_unknown','event_duplicate','event_missing','event_shape','event_nan','event_bool','event_outside','event_eod_absent','event_freefall_order','event_marker_mismatch','source_sha','source_identity','source_hash','projection','channel_mutation','flag','nested_flag','qualification','empty_hold','bad_status','bad_engine'])
+def test_cfw128_gate4f_rejects_before_renderer(gate4f_precomputed,fault,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    from dataclasses import replace
+    r=gate4f_precomputed
+    if fault=='type':r={}
+    elif fault in ('missing','length','nan','inf','boolean','channel_mutation'):
+        value={'missing':(),'length':(1.,),'nan':(float('nan'),)*5,'inf':(float('inf'),)*5,'boolean':(True,)*5,'channel_mutation':(3.,)*5}[fault];r=replace(r,whp_kpsi=value)
+    elif fault in ('duplicate_time','decreasing_time','negative_time'):r=replace(r,time_min={'duplicate_time':(0.,1.,1.,3.,4.),'decreasing_time':(0.,2.,1.,3.,4.),'negative_time':(-1.,1.,2.,3.,4.)}[fault])
+    elif fault.startswith('depth_'):r=replace(r,pressure_station_md={'depth_zero':0.,'depth_nan':float('nan'),'depth_bool':True}[fault])
+    elif fault.startswith('event_'):
+        rows=list(r.events)
+        if fault=='event_unknown':rows[0]=('pressure_as_time',1.)
+        elif fault=='event_duplicate':rows[0]=rows[1]
+        elif fault=='event_missing':rows.pop(1)
+        elif fault=='event_shape':rows[0]=('t_atcp',)
+        elif fault=='event_freefall_order':rows[3]=('t_freefall_start',2.);rows[4]=('t_freefall_end',1.)
+        elif fault=='event_marker_mismatch':rows[2]=('t_marker',1.)
+        else:
+            index=1 if fault=='event_eod_absent' else 0
+            rows[index]=(rows[index][0],{'event_nan':float('nan'),'event_bool':True,'event_outside':5000.,'event_eod_absent':None}[fault])
+        r=replace(r,events=tuple(rows))
+    elif fault=='source_sha':r=replace(r,app_source_sha='not-a-sha')
+    elif fault=='source_identity':r=replace(r,source_identity='d'*64)
+    elif fault=='source_hash':r=replace(r,source_hashes=('forged',))
+    elif fault=='projection':r=replace(r,projection_identity='d'*64)
+    elif fault=='flag':object.__setattr__(r,'enabled',True)
+    elif fault=='nested_flag':object.__setattr__(r,'chart_admissible',0)
+    elif fault=='qualification':object.__setattr__(r,'qualification','CERTIFIED')
+    elif fault=='empty_hold':r=replace(r,status='HOLD',time_min=())
+    elif fault=='bad_status':r=replace(r,status='READY')
+    elif fault=='bad_engine':r=replace(r,engine='App')
+    def forbidden(*a,**k):raise AssertionError('Invalid evidence reached renderer')
+    monkeypatch.setattr(adapter,'render_three_charts',forbidden)
+    with pytest.raises((TypeError,ValueError)):adapter.render_numeric_test_charts(r)
+
+
+def test_cfw128_gate4f_actual_numeric_receipt_read_only(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case,render_numeric_test_charts
+    import matplotlib.pyplot as plt
+    source=pickle.dumps(gate3_numeric_source)
+    r=run_numeric_test_case(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    before=pickle.dumps(r);fig=render_numeric_test_charts(r)
+    try:assert len(fig.axes)==3 and pickle.dumps(r)==before and pickle.dumps(gate3_numeric_source)==source
+    finally:plt.close(fig)
+
+
+def test_cfw128_gate4f_import_exception_is_presentation_only(tmp_path):
+    from pathlib import Path
+    import ast
+    source=Path('cfw128_er03_numeric_adapter.py').read_text();gate3_assert_numeric_imports(Path('cfw128_er03_numeric_adapter.py'))
+    for symbol in ('simulate','build_three_charts','_build_fluids'):
+        p=tmp_path/'forbidden.py';p.write_text(source.replace('JobChartsSpec, autoscale_x, autoscale_y, render_three_charts','JobChartsSpec, autoscale_x, autoscale_y, render_three_charts, '+symbol))
+        with pytest.raises(AssertionError):gate3_assert_numeric_imports(p)
+    tree=ast.parse(source);entry=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_numeric_test_charts')
+    calls={n.func.id for n in ast.walk(entry) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)}
+    assert not calls&{'run_numeric_test_case','compose_nominal_tracking','fit_full_hb','simulate','build_three_charts','_stage_lab_intake'}
+
+
+@pytest.mark.parametrize('gate',['enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'])
+def test_cfw128_gate4f_each_false_gate_is_mandatory(gate4f_precomputed,gate,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    object.__setattr__(gate4f_precomputed,gate,True)
+    def forbidden(*a,**k):raise AssertionError('Enabled receipt reached renderer')
+    monkeypatch.setattr(adapter,'render_three_charts',forbidden)
+    with pytest.raises(ValueError):adapter.render_numeric_test_charts(gate4f_precomputed)
+
+
+def test_cfw128_gate4f_signed_flow_and_complete_hold_preserved(gate4f_precomputed,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    r=gate4f_resign(gate4f_precomputed,status='HOLD',holds=('BHSP_TARGET_STATION_NOT_PROVED',),q_out_bpm=(-1.,1.5,2.2,.3,0.))
+    before=pickle.dumps(r);sentinel=object();seen={}
+    def capture(spec):seen['spec']=spec;return sentinel
+    monkeypatch.setattr(adapter,'render_three_charts',capture)
+    assert adapter.render_numeric_test_charts(r) is sentinel
+    assert seen['spec'].q_out==(r.time_min,r.q_out_bpm) and seen['spec'].q_in!=(r.time_min,r.q_out_bpm)
+    assert seen['spec'].axis_y3[0]<0 and seen['spec'].axis_x[1]>r.time_min[-1]>dict(r.events)['t_eod']
+    assert pickle.dumps(r)==before and r.status=='HOLD' and r.chart_admissible is False
+    from dataclasses import replace
+    with pytest.raises(ValueError):adapter.render_numeric_test_charts(replace(r,whp_kpsi=(10**400,)*5))

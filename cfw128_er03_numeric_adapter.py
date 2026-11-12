@@ -22,6 +22,7 @@ from engineering_tools import require_positive_pump_rate, validate_lab_rheology,
 from centralizer_adapter import _dynamic_fann
 from project_state import fingerprint, spacer_lab_payload, phase7_lab_fluids, lab_source_signature, available_fluid_types
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS
+from fluids_charts_module_v1_4_2 import JobChartsSpec, autoscale_x, autoscale_y, render_three_charts
 
 VERTICAL_SHA256='79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f'
 DIRECTIONAL_SHA256='2cd8896069327ba96fef4f22038bf70538dcc06b37e966b8bb58ad36ac39bd61'
@@ -409,3 +410,70 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     audit=tuple(audit)
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
     return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes)
+
+
+def render_numeric_test_charts(evidence: NumericEvidence):
+    """Disabled presentation only; return a caller-owned figure, never admission.
+
+    Reads already-produced synthetic evidence. No capture, fit, simulation,
+    state, persistence or Word access. Hash consistency is NOT_CURRENTNESS_PROOF;
+    all source holds survive unchanged. Labels do not certify a pressure datum.
+    """
+    if type(evidence) is not NumericEvidence:raise TypeError('NumericEvidence required.')
+    r=evidence
+    _primitive(r)
+    if (r.evidence_class!='SYNTHETIC_TEST_ONLY' or r.currentness!='NOT_CURRENTNESS_PROOF'
+            or r.final_post_pull_toc!='NOT_EVALUATED' or r.qualification!='NOT_GRANTED'):
+        raise ValueError('Disabled evidence declarations required.')
+    if r.status not in ('NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED','HOLD'):
+        raise ValueError('Unsupported numerical evidence status.')
+    expected_hashes=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256)
+    if r.engine in ('event_aligned_vertical','event_aligned_directional'):expected_hashes+=EVENT_SHA256
+    elif r.engine not in ('vertical','directional'):raise ValueError('Unsupported numerical engine.')
+    if r.source_hashes!=expected_hashes:raise ValueError('Numerical source locks differ.')
+    for value,size in ((r.app_source_sha,40),(r.composition_projection_identity,64),(r.source_identity,64),(r.projection_identity,64)):
+        if type(value) is not str or len(value)!=size or any(c not in '0123456789abcdef' for c in value):
+            raise ValueError('Malformed source identity.')
+    _number(r.pressure_station_md,True)
+    names=('time_min','whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm')
+    channels=tuple(getattr(r,name) for name in names);t=channels[0]
+    if len(t)<2:raise ValueError('Finished numerical series required, including for a HOLD.')
+    for name,values in zip(names,channels):
+        if type(values) is not tuple or (len(values)!=len(t) and not (name=='total_pressure_kpsi' and values==())):
+            raise ValueError('Missing or misaligned numerical channel.')
+        for value in values:
+            if type(value) not in (int,float):raise ValueError('Finite real samples required.')
+            _number(abs(value))
+    if t[0]<0 or any(b<=a for a,b in zip(t,t[1:])):raise ValueError('Strictly increasing nonnegative time required.')
+    keys=('t_atcp','t_eod','t_marker','t_freefall_start','t_freefall_end','t_shutin','whp_final_psi','bottom_shutin_psi')
+    if type(r.events) is not tuple or any(type(row) is not tuple or len(row)!=2 for row in r.events):
+        raise ValueError('Malformed engine events.')
+    if tuple(row[0] for row in r.events)!=keys:raise ValueError('Missing, duplicate or unknown engine event key/order.')
+    events=dict(r.events)
+    for name,value in r.events:
+        if value is None:continue
+        _number(value)
+        if name.startswith('t_') and not t[0]<=value<=t[-1]:raise ValueError('Event outside recorded series.')
+    if events['t_eod'] is None:raise ValueError('Finished record requires EOD.')
+    start,end=events['t_freefall_start'],events['t_freefall_end']
+    if end is not None and (start is None or end<start):raise ValueError('Inconsistent freefall events.')
+    if events['t_marker']!=events['t_shutin']:raise ValueError('Shut-in marker differs from its declared event.')
+    identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
+    if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
+    green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
+    marker=events['t_marker']
+    if marker is not None and any(abs(marker-e)<1e-9 for e in green):marker=None
+    hydro=r.hydrostatic_kpsi;dynamic=r.total_pressure_kpsi
+    try:
+        axes=(autoscale_x(t[-1]),autoscale_y(0.,max(*r.whp_kpsi,*r.pump_kpsi,.1),zero_based=True),
+              autoscale_y(min(*hydro,*dynamic),max(*hydro,*dynamic),zero_based=False),
+              autoscale_y(min(*r.q_in_bpm,*r.q_out_bpm),max(*r.q_in_bpm,*r.q_out_bpm),zero_based=False))
+        if any(not math.isfinite(v) for axis in axes for v in axis if type(v) in (int,float)):
+            raise ValueError('Unrepresentable presentation axes.')
+    except (OverflowError,ZeroDivisionError) as exc:raise ValueError('Unrepresentable presentation axes.') from exc
+    spec=JobChartsSpec(calc_cem_hp=(t,r.whp_kpsi),calc_pump_press=(t,r.pump_kpsi),
+        hydrostatic=(t,hydro),dynamic=(t,dynamic) if dynamic else None,q_in=(t,r.q_in_bpm),q_out=(t,r.q_out_bpm),
+        acquired_pressure=None,back_pressure=None,acquired_q_in=None,acquired_q_out=None,
+        depth_m=r.pressure_station_md,depth_unit='m',event_times=green,marker_time=marker,
+        axis_x=axes[0],axis_y1=axes[1],axis_y2=axes[2],axis_y3=axes[3])
+    return render_three_charts(spec)
