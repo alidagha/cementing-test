@@ -412,10 +412,10 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
             if code not in holds:holds=(*holds,code)
         cursor=end
     if boundary.bhsp_target_psi is not None:
-        # A declared target is not evidence that the measured output station
-        # reached it. Preserve raw diagnostic series and hold the candidate.
-        if result.bottom_shutin_psi is None or result.dyn is None or not math.isclose(float(result.dyn[-1])*1000.,boundary.bhsp_target_psi,rel_tol=1e-12,abs_tol=0.):
-            status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
+        # bottom_shutin_psi echoes the target; endpoint equality establishes
+        # neither its station nor its datum. No independent certificate enters
+        # this synthetic boundary. Preserve raw diagnostic series and fail closed.
+        status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
     audit=tuple(audit)
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
     identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])

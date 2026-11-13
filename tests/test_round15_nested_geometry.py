@@ -6619,3 +6619,42 @@ def test_cfw128_gate5bp1_decreasing_tvd_and_early_hold(gate3_numeric_source,step
     assert held.trajectory_source=='APP_DIRECTIONAL_STATION_TVD_V1' and held.status=='HOLD' and not held.time_min
     with pytest.raises(ValueError):adapter.render_numeric_test_charts(held)
     assert pickle.dumps(state)==before and r.chart_admissible is False
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+@pytest.mark.parametrize('back_pressure',[0.,250.])
+def test_cfw128_gate6a_equal_numbers_do_not_prove_bhsp_station(gate3_numeric_source,engine,stepping,back_pressure,monkeypatch):
+    from dataclasses import replace
+    from engineering_tools import lab_review_signature
+    from project_state import lab_source_signature
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    state=deepcopy(gate3_numeric_source)
+    # Homogeneous synthetic fluid makes the annular endpoint equal the target;
+    # it supplies no independent BHSP station/datum certificate.
+    state['fluids_config']['params']['Main']['density']='80'
+    state['lab_source_signatures']['Main']=lab_source_signature(state,'Main')
+    state['lab_qc_params']['Main']['review_signature']=lab_review_signature(state['lab_qc_params']['Main'],state['lab_grid_dfs']['Main'])
+    if engine=='directional':
+        state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    import cfw128_er03_numeric_adapter as adapter
+    solver=getattr(adapter,('event_' if stepping!='frozen' else '')+engine)
+    simulate=solver.simulate;raw=[]
+    def capture(job):
+        result=simulate(job);raw.append(result);return result
+    monkeypatch.setattr(solver,'simulate',capture)
+    before=pickle.dumps(state)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),bhsp_target_psi=5000.,back_pressure_psi=back_pressure,gel_pa_by_fluid=tuple((n,25.) for n,v in gate3_boundary().gel_pa_by_fluid)),engine=engine,stepping=stepping)
+    assert pickle.dumps(state)==before
+    for channel,original in zip(('time_min','whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm'),('t','whp','pump','hydro','dyn','q_in','q_out')):
+        assert getattr(r,channel)==tuple(getattr(raw[0],original))
+    assert r.events==tuple((name,getattr(raw[0],name)) for name,value in r.events)
+    events=dict(r.events);shutin=events['t_shutin']
+    assert events['t_eod']<=shutin<r.time_min[-1]
+    assert all(qi==qo==0. for t,qi,qo in zip(r.time_min,r.q_in_bpm,r.q_out_bpm) if t>shutin)
+    assert r.pressure_station_md==1200.
+    assert all(getattr(r,name) is False for name in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    assert 'FIELD_PRESSURE_DATUM_NOT_CERTIFIED' in r.holds
+    assert r.total_pressure_kpsi[-1]*1000.==pytest.approx(5000.,abs=1e-9)
+    assert dict(r.events)['bottom_shutin_psi']==5000.  # target echo only
+    assert r.status=='HOLD' and 'BHSP_TARGET_STATION_NOT_PROVED' in r.holds
