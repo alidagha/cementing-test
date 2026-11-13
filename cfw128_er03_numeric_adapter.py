@@ -630,6 +630,29 @@ def validate_numeric_evidence(evidence: NumericEvidence):
     return None
 
 
+def _pump_end_display_length(r):
+    """Validated native zero-tail observation only; never infer from a cliff.
+
+    The pinned derivatives sample interval starts. Their final EOD row can
+    have exactly zero duration, no transfers and the unchanged EOD inventory.
+    In that bounded pump-end view, omit only its connector. Positive-duration
+    tails, shut-in samples, frozen data and ambiguous domains stay unchanged.
+    """
+    count=len(r.time_min);o=r.native_observation;events=dict(r.events)
+    if not r.engine.startswith('event_aligned_') or o is None or count<3:return count
+    rows=o.payload[2];eod=o.payload[3];tail=o.payload[4]
+    if (len(rows)!=count or r.time_min[-1]!=events['t_eod'] or eod!=tail
+            or events['t_shutin'] is not None or events['t_marker'] is not None):return count
+    last=rows[-1]
+    if (last[:3]!=(events['t_eod'],events['t_eod'],0.)
+            or last[3] not in ('tail_cap','tail_bal') or last[5]
+            or any(tokens for port,tokens in last[6])
+            or any(row[2]<=0 or row[1]>events['t_eod'] for row in rows[:-1])
+            or r.q_in_bpm[-2]<=0 or r.q_in_bpm[-1]!=0 or r.q_out_bpm[-1]!=0
+            or not r.total_pressure_kpsi or r.total_pressure_kpsi[-1]!=r.hydrostatic_kpsi[-1]):return count
+    return count-1
+
+
 def render_numeric_test_charts(evidence: NumericEvidence):
     """Disabled presentation only; return a caller-owned figure, never admission.
 
@@ -650,8 +673,11 @@ def render_numeric_test_charts(evidence: NumericEvidence):
         if any(not math.isfinite(v) for axis in axes for v in axis if type(v) in (int,float)):
             raise ValueError('Unrepresentable presentation axes.')
     except (OverflowError,ZeroDivisionError) as exc:raise ValueError('Unrepresentable presentation axes.') from exc
-    spec=JobChartsSpec(calc_cem_hp=(t,r.whp_kpsi),calc_pump_press=(t,r.pump_kpsi),
-        hydrostatic=(t,hydro),dynamic=(t,dynamic) if dynamic else None,q_in=(t,r.q_in_bpm),q_out=(t,r.q_out_bpm),
+    # Scale and authoritative events above always use the complete raw record.
+    # Slices are a read-only presentation, never a new numerical receipt.
+    stop=_pump_end_display_length(r);view_t=t[:stop]
+    spec=JobChartsSpec(calc_cem_hp=(view_t,r.whp_kpsi[:stop]),calc_pump_press=(view_t,r.pump_kpsi[:stop]),
+        hydrostatic=(view_t,hydro[:stop]),dynamic=(view_t,dynamic[:stop]) if dynamic else None,q_in=(view_t,r.q_in_bpm[:stop]),q_out=(view_t,r.q_out_bpm[:stop]),
         acquired_pressure=None,back_pressure=None,acquired_q_in=None,acquired_q_out=None,
         depth_m=r.pressure_station_md,depth_unit='m',event_times=green,marker_time=marker,
         axis_x=axes[0],axis_y1=axes[1],axis_y2=axes[2],axis_y3=axes[3])

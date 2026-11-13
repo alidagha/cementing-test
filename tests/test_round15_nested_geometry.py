@@ -7151,6 +7151,160 @@ def test_cfw128_gate8_no_annular_cement_and_zero_stage_hold(bug01_reviewed_repor
     with pytest.raises(ValueError):bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
 
 
+@pytest.fixture(scope='module')
+def gate8p_cases(bug01_reviewed_report_base):
+    # Exact Gate8V common-control source preparation; no field values inferred.
+    from dataclasses import replace
+    from unittest.mock import patch
+    from project_state import prepare_calculations,lab_source_signature,mud_lab_source_signature
+    from engineering_tools import lab_review_signature
+    from cfw128_integration_abi import compose_nominal_tracking
+    from centralizer_fixtures import execute_centralizer
+    import phase_10_procedure as report
+    import cfw128_shadow_word_bridge as bridge
+    cases={}
+    for job in ('CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'):
+        state=gate3_case(bug01_reviewed_report_base,job)
+        state['fluids_config']['params']['Main'].update(volume=40.,pump_rate=10.)
+        state['fluids_config']['params']['Displacement Fluid']['volume']=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement.derived_displacement_bbl
+        prepare_calculations(state)
+        for name in ('Main','Displacement Fluid'):
+            state['lab_source_signatures'][name]=lab_source_signature(state,name) if name=='Main' else mud_lab_source_signature(state)
+            qc=state['lab_qc_params'][name];qc['reviewed']=True
+            qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs'].get(name))
+        execute_centralizer(state)
+        with patch.object(report.st,'session_state',state):context=report.build_master_context()
+        inputs=pumping_simulation.prepare_pumping_simulation(state)['inputs']
+        gel=inputs['slurry_rheology']['Main']['gel_10_min']*pumping_simulation.fcm.LBF100FT2_TO_PA
+        b=replace(gate3_boundary(),back_pressure_psi=inputs['options'].back_pressure_psi,
+            bhsp_target_psi=pumping_simulation.fcm.parse_bhsp_psi(inputs['bhsp']),surface_line_kpsi_at_8bpm=inputs['options'].surface_line_kpsi_at_8bpm,
+            gel_pa_by_fluid=(('Main',gel),('Displacement Fluid',0.),('Mud',0.)))
+        cases[job]=(state,b,bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,word_context=context),context)
+    return cases
+
+
+@pytest.mark.parametrize('job',['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
+def test_cfw128_gate8p_terminal_interval_projection(gate8p_cases,job,monkeypatch):
+    import cfw128_er03_numeric_adapter as a
+    import matplotlib.pyplot as plt
+    state,b,shadow,context=gate8p_cases[job];r=shadow.numeric;before=pickle.dumps((state,shadow,context))
+    rows=r.native_observation.payload[2];eod=r.native_observation.payload[3]
+    assert rows[-1][:3]==(8.,8.,0.) and not rows[-1][5] and all(not tokens for port,tokens in rows[-1][6])
+    assert eod==r.native_observation.payload[4] and r.time_min[-2:]==(7.75,8.)
+    assert r.q_in_bpm[-2]>0 and r.q_in_bpm[-1]==r.q_out_bpm[-1]==0
+    seen={};original=a.render_three_charts
+    def capture(spec):seen['spec']=spec;return original(spec)
+    monkeypatch.setattr(a,'render_three_charts',capture)
+    fig=a.render_numeric_test_charts(r)
+    try:
+        spec=seen['spec']
+        assert tuple(spec.calc_cem_hp[0])==r.time_min[:-1]
+        for name,raw in (('calc_cem_hp',r.whp_kpsi),('calc_pump_press',r.pump_kpsi),('hydrostatic',r.hydrostatic_kpsi),('dynamic',r.total_pressure_kpsi),('q_in',r.q_in_bpm),('q_out',r.q_out_bpm)):
+            assert tuple(getattr(spec,name)[1])==raw[:-1]
+        assert spec.axis_x==a.autoscale_x(r.time_min[-1]) and 8. in spec.event_times
+        assert spec.axis_y2==a.autoscale_y(min(*r.hydrostatic_kpsi,*r.total_pressure_kpsi),max(*r.hydrostatic_kpsi,*r.total_pressure_kpsi),zero_based=False)
+        assert pickle.dumps((state,shadow,context))==before
+    finally:plt.close(fig)
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+@pytest.mark.parametrize('mode',['zero_tail','real_tail','shutin'])
+def test_cfw128_gate8p_native_domains(gate8p_cases,engine,mode,monkeypatch):
+    from dataclasses import replace
+    from project_state import lab_source_signature
+    from engineering_tools import lab_review_signature
+    import cfw128_er03_numeric_adapter as a
+    import matplotlib.pyplot as plt
+    state,b,shadow,context=gate8p_cases['LNR 7"'];state=deepcopy(state)
+    b=replace(b,bhsp_target_psi=None)
+    if engine=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    if mode=='real_tail':b=replace(b,tail_cap_min=.35)
+    if mode=='shutin':
+        # Reuse Gate6A's actual homogeneous-fluid shut-in control; not a field
+        # pressure certificate. Existing source/review authorities stay intact.
+        state['fluids_config']['params']['Main']['density']='80'
+        state['lab_source_signatures']['Main']=lab_source_signature(state,'Main')
+        state['lab_qc_params']['Main']['review_signature']=lab_review_signature(state['lab_qc_params']['Main'],state['lab_grid_dfs']['Main'])
+        b=replace(b,bhsp_target_psi=5000.,gel_pa_by_fluid=tuple((n,25.) for n,v in b.gel_pa_by_fluid))
+    r=a.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine=engine,stepping='event_aligned_test_only')
+    before=pickle.dumps(r);seen={};original=a.render_three_charts
+    def capture(spec):seen['spec']=spec;return original(spec)
+    monkeypatch.setattr(a,'render_three_charts',capture)
+    fig=a.render_numeric_test_charts(r)
+    try:
+        expected=r.time_min[:-1] if mode=='zero_tail' else r.time_min
+        assert tuple(seen['spec'].q_out[0])==expected
+        if mode=='real_tail':
+            assert any(row[1]>dict(r.events)['t_eod'] and row[2]>0 for row in r.native_observation.payload[2])
+            assert any(q>0 for t,q in zip(r.time_min,r.q_out_bpm) if t>dict(r.events)['t_eod'])
+        if mode=='shutin':
+            assert dict(r.events)['t_shutin'] is not None and r.time_min[-1]>dict(r.events)['t_eod']
+        assert pickle.dumps(r)==before
+    finally:plt.close(fig)
+
+
+@pytest.mark.parametrize('fault',['frozen','no_eod','no_transition','interior_drop','marker_at_eod','missing_native','forged_source'])
+def test_cfw128_gate8p_ambiguous_or_invalid_records(gate8p_cases,gate4f_precomputed,fault,monkeypatch):
+    from dataclasses import replace
+    import cfw128_er03_numeric_adapter as a
+    import matplotlib.pyplot as plt
+    r=gate8p_cases['LNR 7"'][2].numeric
+    if fault=='missing_native':r=replace(r,native_observation=None)
+    elif fault=='forged_source':r=replace(r,source_identity='0'*64)
+    elif fault=='no_eod':r=gate4f_resign(gate4f_precomputed,events=tuple((n,None if n=='t_eod' else v) for n,v in gate4f_precomputed.events))
+    elif fault=='marker_at_eod':r=gate4f_resign(r,events=tuple((n,8. if n in ('t_marker','t_shutin') else v) for n,v in r.events))
+    else:
+        r=gate4f_precomputed
+        if fault=='no_transition':r=gate4f_resign(r,q_in_bpm=(0.,)*5,q_out_bpm=(0.,)*5)
+        elif fault=='interior_drop':r=gate4f_resign(r,whp_kpsi=(.2,.4,0.,.3,.2))
+    before=pickle.dumps(r);seen={};original=a.render_three_charts
+    def capture(spec):seen['spec']=spec;return original(spec)
+    monkeypatch.setattr(a,'render_three_charts',capture)
+    if fault in ('no_eod','missing_native','forged_source'):
+        with pytest.raises(ValueError):a.render_numeric_test_charts(r)
+        assert not seen
+    else:
+        fig=a.render_numeric_test_charts(r)
+        try:
+            assert tuple(seen['spec'].calc_cem_hp[0])==r.time_min
+            assert tuple(seen['spec'].calc_cem_hp[1])==r.whp_kpsi
+            if fault=='marker_at_eod':assert seen['spec'].marker_time is None and 8. in seen['spec'].event_times
+        finally:plt.close(fig)
+    assert pickle.dumps(r)==before
+
+
+def test_cfw128_gate8p_shadow_word_and_legacy_package_unchanged(gate8p_cases):
+    from io import BytesIO
+    from zipfile import ZipFile
+    from docx import Document
+    from docxtpl import DocxTemplate
+    import phase_10_procedure as report
+    import cfw128_shadow_word_bridge as bridge
+    import matplotlib.pyplot as plt
+    state,b,shadow,context=gate8p_cases['CSG 9 5/8"'];before=pickle.dumps((state,shadow,context))
+    template=DocxTemplate(report.TEMPLATE_PATH);template.render(report._word_quantity_context(context));raw=BytesIO();template.save(raw)
+    def pack(p):
+        return bridge.postprocess_well_report(raw.getvalue(),context['well_profile_report'],context['note_vertical'],context['cement_chart_report'],context['centralizer_report'],pumping_report=p,schematic_report=bridge.prepare_schematic(state),section_vi_programs={k:context[k] for k in ('has_preflush','has_spacer')})
+    legacy=pumping_simulation.run_pumping_simulation(state)
+    try:
+        image=BytesIO();legacy['figure'].savefig(image,format='png',dpi=200,facecolor='white');old_png=image.getvalue();old_word=pack(legacy)
+    finally:plt.close(legacy['figure'])
+    with bridge.shadow_pumping_report(state,shadow,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b) as p:
+        image=BytesIO();p['figure'].savefig(image,format='png',dpi=200,facecolor='white');shadow_png=image.getvalue()
+    output=bridge.shadow_word_bytes(state,shadow,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    doc=Document(BytesIO(output['bytes']));paragraph=next(p for p in doc.paragraphs if p._p.xpath('.//wp:docPr[@descr="Pumping Simulation Charts"]'))
+    assert doc.part.related_parts[paragraph._p.xpath('.//a:blip/@r:embed')[0]].blob==shadow_png
+    legacy=pumping_simulation.run_pumping_simulation(state)
+    try:
+        image=BytesIO();legacy['figure'].savefig(image,format='png',dpi=200,facecolor='white')
+        assert image.getvalue()==old_png
+        with ZipFile(BytesIO(old_word)) as old,ZipFile(BytesIO(pack(legacy))) as new:
+            assert old.namelist()==new.namelist()
+            assert all(old.read(n)==new.read(n) for n in old.namelist())
+    finally:plt.close(legacy['figure'])
+    assert pickle.dumps((state,shadow,context))==before
+
+
 def test_cfw128_gate8_import_route_and_cleanup(gate8_cases,monkeypatch):
     from pathlib import Path
     import cfw128_shadow_word_bridge as bridge
