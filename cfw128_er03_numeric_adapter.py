@@ -544,13 +544,8 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source,native_observation=observation)
 
 
-def render_numeric_test_charts(evidence: NumericEvidence):
-    """Disabled presentation only; return a caller-owned figure, never admission.
-
-    Reads already-produced synthetic evidence. No capture, fit, simulation,
-    state, persistence or Word access. Hash consistency is NOT_CURRENTNESS_PROOF;
-    all source holds survive unchanged. Labels do not certify a pressure datum.
-    """
+def validate_numeric_evidence(evidence: NumericEvidence):
+    """Validate held evidence without rendering, simulation or source recapture."""
     if type(evidence) is not NumericEvidence:raise TypeError('NumericEvidence required.')
     r=evidence
     _primitive(r)
@@ -632,6 +627,18 @@ def render_numeric_test_charts(evidence: NumericEvidence):
         identity=fingerprint(['cfw128-gate6c-observation/1',identity,_primitive(r.native_observation)])
     elif r.native_observation is not None:raise ValueError('Frozen source cannot assert native port evidence.')
     if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
+    return None
+
+
+def render_numeric_test_charts(evidence: NumericEvidence):
+    """Disabled presentation only; return a caller-owned figure, never admission.
+
+    Reads already-produced synthetic evidence. No capture, fit, simulation,
+    state, persistence or Word access. Hash consistency is NOT_CURRENTNESS_PROOF;
+    all source holds survive unchanged. Labels do not certify a pressure datum.
+    """
+    validate_numeric_evidence(evidence)
+    r=evidence;t=r.time_min;events=dict(r.events)
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']
     if marker is not None and any(abs(marker-e)<1e-9 for e in green):marker=None
