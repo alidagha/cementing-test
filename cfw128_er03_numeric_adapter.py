@@ -110,6 +110,7 @@ class NumericEvidence:
     stage_volume_audit: tuple[tuple[str,float,float,tuple[int,int]],...]=()
     source_hashes: tuple[str,...]=field(default=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256),kw_only=True)
     directional_tvd_proof: tuple=field(default=(),kw_only=True)
+    trajectory_source: Literal['VERTICAL_SOURCE_V1','APP_DIRECTIONAL_STATION_TVD_V1']=field(default='VERTICAL_SOURCE_V1',kw_only=True)
     evidence_class: Literal['SYNTHETIC_TEST_ONLY']=field(default='SYNTHETIC_TEST_ONLY',init=False)
     currentness: Literal['NOT_CURRENTNESS_PROOF']=field(default='NOT_CURRENTNESS_PROOF',init=False)
     final_post_pull_toc: Literal['NOT_EVALUATED']=field(default='NOT_EVALUATED',init=False)
@@ -304,10 +305,12 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
            'INV014_FAIL_WITH_OWNER_EXCEPTION','DOWNSTREAM_PLACEMENT_AND_CLOSURE_NOT_COMPOSED')
     if stepping!='frozen':holds=(*holds,'EVENT_ALIGNED_TEST_ONLY','BHSP_AND_DIRECTIONAL_SEMANTICS_NOT_QUALIFIED')
     compare=();lab_bindings=[];tvd_proof=()
+    trajectory_source='APP_DIRECTIONAL_STATION_TVD_V1' if source['well_geometry']['type']=='Directional' else 'VERTICAL_SOURCE_V1'
     def held(reason):
         held_source=fingerprint(['cfw128-gate3-held-source/1',base,tuple(lab_bindings)])
         identity=fingerprint(['cfw128-gate3-hold/1',held_source,reason,compare])
-        return NumericEvidence(sha,c.projection_identity,held_source,identity,'HOLD',(*holds,reason),engine_label,s.shoe_md,(),(),None,g.nominal_injection_bbl,tvd_comparison=compare,source_hashes=source_hashes)
+        identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])
+        return NumericEvidence(sha,c.projection_identity,held_source,identity,'HOLD',(*holds,reason),engine_label,s.shoe_md,(),(),None,g.nominal_injection_bbl,tvd_comparison=compare,source_hashes=source_hashes,trajectory_source=trajectory_source,directional_tvd_proof=tvd_proof)
     if source['well_geometry']['type']=='Directional':
         stations=s.survey
         knots=[p for p in s.trajectory if p.md in tuple(v.md for v in stations)]
@@ -376,7 +379,7 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     encoded=tuple((v.fluid_type,v.material_name,v.volume_bbl,v.density_pcf,v.rate_bpm) for v in stages)
     proof_tokens=tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in proofs)
     numeric_source=fingerprint(['cfw128-gate3-numeric-source/1',base,encoded,proof_tokens,tuple(lab_bindings)])
-    if tvd_proof:numeric_source=fingerprint(['cfw128-gate5b-tvd-source/1',numeric_source,tvd_proof])
+    numeric_source=fingerprint(['cfw128-gate5bp1-source/1',numeric_source,trajectory_source,tvd_proof])
     status='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED'
     # Original audit is unchanged. Derivative audit uses actual executed intervals.
     # Requested volumes stay authoritative; never adjust them or their rates.
@@ -415,8 +418,8 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
             status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
     audit=tuple(audit)
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
-    if tvd_proof:identity=fingerprint(['cfw128-gate5b-tvd-result/1',identity,tvd_proof])
-    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof)
+    identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])
+    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source)
 
 
 def render_numeric_test_charts(evidence: NumericEvidence):
@@ -467,14 +470,40 @@ def render_numeric_test_charts(evidence: NumericEvidence):
     if events['t_marker']!=events['t_shutin']:raise ValueError('Shut-in marker differs from its declared event.')
     if events['t_shutin'] is not None and events['t_shutin']<events['t_eod']:raise ValueError('Shut-in precedes EOD.')
     identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
-    if r.directional_tvd_proof:
+    if type(r.trajectory_source) is not str or r.trajectory_source not in ('VERTICAL_SOURCE_V1','APP_DIRECTIONAL_STATION_TVD_V1'):
+        raise ValueError('Unknown source trajectory version.')
+    if type(r.directional_tvd_proof) is not tuple:raise TypeError('Immutable trajectory proof required.')
+    if r.trajectory_source=='VERTICAL_SOURCE_V1':
+        if r.directional_tvd_proof:raise ValueError('Vertical source cannot carry directional proof.')
+    else:
         proof=r.directional_tvd_proof
         if (len(proof)!=6 or proof[:2]!=('APP_WELL_PROFILE_DERIVED_STATION_KNOTS','ER03_PIECEWISE_LINEAR_INTERIOR')
+                or type(proof[2]) is not tuple or type(proof[3]) is not tuple
                 or len(proof[2])!=len(proof[3]) or len(proof[2])<2
-                or any(len(v)!=3 for v in proof[2]) or any(len(v)!=2 for v in proof[3])
+                or any(type(v) is not tuple or len(v)!=3 for v in proof[2]) or any(type(v) is not tuple or len(v)!=2 for v in proof[3])
                 or tuple(v[0] for v in proof[2])!=tuple(v[0] for v in proof[3])):
             raise ValueError('Invalid directional TVD provenance.')
-        identity=fingerprint(['cfw128-gate5b-tvd-result/1',identity,proof])
+        if r.engine not in ('directional','event_aligned_directional'):raise ValueError('Directional source requires directional engine.')
+        for ref in proof[4:]:
+            if type(ref) is not str or len(ref)!=64 or any(c not in '0123456789abcdef' for c in ref):raise ValueError('Malformed trajectory source reference.')
+        # Consistency with snapshot_geometry's published default-query request;
+        # unkeyed fingerprints still prove neither authenticity nor currentness.
+        if proof[5]!=fingerprint([1,r.app_source_sha,proof[4],()]):raise ValueError('Trajectory request/source reference mismatch.')
+        tol=directional.ER01_TOL_M
+        previous=None
+        for station,knot in zip(proof[2],proof[3]):
+            for value in (*station,*knot):
+                if type(value) not in (int,float):raise TypeError('Real trajectory coordinates required.')
+                _number(abs(value))
+            md,inc,azi=station;tvd=knot[1]
+            if md<0 or not 0<=inc<=180 or not 0<=azi<360 or tvd < -tol:raise ValueError('Invalid trajectory coordinate range.')
+            if previous is None:
+                if md!=0 or abs(tvd)>tol:raise ValueError('Trajectory surface datum required.')
+            elif md<=previous[0] or abs(tvd-previous[1])>md-previous[0]+tol:
+                raise ValueError('Invalid trajectory order or TVD slope.')
+            previous=(md,tvd)
+        if previous[0]<r.pressure_station_md-tol:raise ValueError('Trajectory does not cover pressure station.')
+    identity=fingerprint(['cfw128-gate5bp1-result/1',identity,r.trajectory_source,r.directional_tvd_proof])
     if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']

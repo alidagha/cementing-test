@@ -6331,7 +6331,8 @@ def gate4f_resign(evidence, **changes):
     from project_state import fingerprint
     r=replace(evidence,**changes)
     channels=tuple(getattr(r,n) for n in ('time_min','whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm'))
-    return replace(r,projection_identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds]))
+    identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
+    return replace(r,projection_identity=fingerprint(['cfw128-gate5bp1-result/1',identity,r.trajectory_source,r.directional_tvd_proof]))
 
 
 @pytest.fixture
@@ -6565,3 +6566,56 @@ def test_cfw128_gate5b_source_edit_identity_and_unaligned_hold(gate3_numeric_sou
     aligned=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),dt_min=.2),engine='directional',stepping='event_aligned_test_only')
     assert 'FROZEN_TIMESTEP_STAGE_VOLUME_NOT_PROVED' in frozen.holds and frozen.stage_volume_audit[0][1:3]==(1.,8.)
     assert all(entered==pytest.approx(executed,rel=2e-14) for _,entered,executed,_ in aligned.stage_volume_audit)
+
+
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+@pytest.mark.parametrize('fault',['empty','reverse','surface','bottom','duplicate','negative','nan','slope','inclination','azimuth','ref','request','source_version','vertical_contradiction','boolean'])
+def test_cfw128_gate5bp1_generated_rendering_proof_boundary(gate3_numeric_source,stepping,fault,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source);state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    r=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional',stepping=stepping)
+    proof=r.directional_tvd_proof;raw=list(proof[2]);knots=list(proof[3]);changes={}
+    if fault=='empty':changes['directional_tvd_proof']=()
+    elif fault=='reverse':raw.reverse();knots.reverse()
+    elif fault=='surface':raw=raw[1:];knots=knots[1:]
+    elif fault=='bottom':raw=raw[:-1];knots=knots[:-1]
+    elif fault=='duplicate':raw[1]=raw[0];knots[1]=knots[0]
+    elif fault in ('negative','nan','slope'):knots[1]=(100.,{'negative':-1.,'nan':float('nan'),'slope':101.}[fault])
+    elif fault=='inclination':raw[1]=(100.,181.,0.)
+    elif fault=='azimuth':raw[1]=(100.,60.,360.)
+    elif fault=='boolean':raw[0]=(False,0.,0.)
+    elif fault in ('ref','request'):proof=(*proof[:4],'bad' if fault=='ref' else proof[4],'bad' if fault=='request' else proof[5])
+    elif fault in ('source_version','vertical_contradiction'):changes['trajectory_source']='UNKNOWN' if fault=='source_version' else 'VERTICAL_SOURCE_V1'
+    if fault not in ('empty','ref','request','source_version','vertical_contradiction'):
+        proof=(*proof[:2],tuple(raw),tuple(knots),*proof[4:])
+    changes.setdefault('directional_tvd_proof',proof)
+    changed=gate4f_resign(r,**changes)
+    def forbidden(*a,**k):raise AssertionError('Malformed generated proof reached renderer')
+    monkeypatch.setattr(adapter,'render_three_charts',forbidden)
+    with pytest.raises((ValueError,TypeError)):adapter.render_numeric_test_charts(changed)
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+def test_cfw128_gate5bp1_vertical_source_engine_independent(gate3_numeric_source,engine,stepping,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    r=adapter.run_numeric_test_case(gate3_numeric_source,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine,stepping=stepping)
+    assert r.trajectory_source=='VERTICAL_SOURCE_V1' and r.directional_tvd_proof==() and r.time_min
+    monkeypatch.setattr(adapter,'render_three_charts',lambda spec:spec)
+    assert adapter.render_numeric_test_charts(r).depth_m==r.pressure_station_md
+
+
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+def test_cfw128_gate5bp1_decreasing_tvd_and_early_hold(gate3_numeric_source,stepping,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    state=deepcopy(gate3_numeric_source);state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[1000.,80.,0.],[1200.,120.,0.]],columns=['MD','Deviation','Azimuth'])}
+    before=pickle.dumps(state)
+    r=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional',stepping=stepping)
+    assert r.trajectory_source=='APP_DIRECTIONAL_STATION_TVD_V1' and r.directional_tvd_proof[3][-1][1]<r.directional_tvd_proof[3][-2][1]
+    monkeypatch.setattr(adapter,'render_three_charts',lambda spec:spec)
+    assert adapter.render_numeric_test_charts(r).depth_m==1200.
+    held=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='vertical',stepping=stepping)
+    assert held.trajectory_source=='APP_DIRECTIONAL_STATION_TVD_V1' and held.status=='HOLD' and not held.time_min
+    with pytest.raises(ValueError):adapter.render_numeric_test_charts(held)
+    assert pickle.dumps(state)==before and r.chart_admissible is False
