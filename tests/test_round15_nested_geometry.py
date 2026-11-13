@@ -5540,6 +5540,8 @@ def test_cfw128_gate2_import_firewall_and_named_exception_mutations(monkeypatch)
             gate3_assert_numeric_imports(p);continue
         if p.name=='cfw128_c2e7_native_placement.py':
             gate7_assert_imports(p);continue
+        if p.name=='cfw128_shadow_word_bridge.py':
+            gate8_assert_imports(p);continue
         tree=ast.parse(p.read_text())
         assert not any(isinstance(n,ast.ImportFrom) and n.module==bridge.stem or isinstance(n,ast.Import) and any(a.name==bridge.stem for a in n.names) for n in ast.walk(tree))
     read=Path.read_text
@@ -5728,6 +5730,8 @@ def test_cfw128_gate3_sources_and_static_import_firewall(monkeypatch):
         if p==path:continue
         if p.name=='cfw128_c2e7_native_placement.py':
             gate7_assert_imports(p);continue
+        if p.name=='cfw128_shadow_word_bridge.py':
+            gate8_assert_imports(p);continue
         nodes=ast.walk(ast.parse(p.read_text()));names={n.module for n in nodes if isinstance(n,ast.ImportFrom)}
         assert path.stem not in names
     read=Path.read_text
@@ -6923,3 +6927,244 @@ def test_cfw128_gate7_native_multiple_cement_fluid_identities(gate7_cases,scaven
     if a.static_candidate_md is not None:
         assert {'Main','Tail'}==set(row[0] for row in a.mapped_intervals)
     else:assert 'NONCEMENT_BELOW_OR_BETWEEN_CEMENT_SLUGS' in a.case_holds
+
+
+def gate8_assert_imports(path):
+    import ast
+    tree=ast.parse(path.read_text())
+    wanted={'contextlib':('contextmanager',),'copy':('deepcopy',),'dataclasses':('dataclass','field'),
+        'io':('BytesIO',),'docxtpl':('DocxTemplate',),'project_state':('fingerprint','prepare_calculations'),
+        'pumping_simulation':('source_signature',),'well_report':('canonical_report_source','prepared_well_report','postprocess_well_report'),
+        'cement_chart_report':('prepared_cement_report',),'well_schematic_adapter':('source_signature','prepare_schematic'),
+        'phase_10_procedure':('TEMPLATE_PATH','document_signature','_word_quantity_context'),
+        'cfw128_er03_numeric_adapter':('NumericBoundary','NumericEvidence','_primitive','run_numeric_test_case','validate_numeric_evidence','render_numeric_test_charts'),
+        'cfw128_c2e7_native_placement':('NativePlacementAssessment','assess_native_placement')}
+    nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
+    assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
+    assert all(n.level==0 for n in nodes)
+    assert [(n.module,a.name,a.asname) for n in nodes for a in n.names if a.asname is not None]==[('well_schematic_adapter','source_signature','schematic_source_signature')]
+    assert [(a.name,a.asname) for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]==[('matplotlib.pyplot','plt')]
+    assert not {'eval','exec','__import__','import_module','run_pumping_simulation','build_three_charts','simulate'} & {n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+
+
+@pytest.fixture(scope='module')
+def gate8_cases(bug01_reviewed_report_base):
+    from dataclasses import replace
+    from cfw128_shadow_word_bridge import prepare_shadow
+    cases={}
+    for job in BUG01_JOBS:
+        state=gate3_case(bug01_reviewed_report_base,job)
+        state['fluids_config']['params']['Main'].update(volume=200.,pump_rate=50.)
+        b=replace(gate3_boundary(),float_equipment=True,back_pressure_psi=250.,tail_cap_min=.35,
+            gel_pa_by_fluid=tuple((n,25.) for n,v in gate3_boundary().gel_pa_by_fluid))
+        cases[job]=(state,b,prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b))
+    return cases
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_gate8_eight_native_shadow_families(gate8_cases,job,monkeypatch):
+    import cfw128_shadow_word_bridge as bridge
+    import fluids_charts_module_v1_4_2 as legacy
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    import numpy as np
+    state,b,r=gate8_cases[job];before=pickle.dumps((state,r));figures=plt.get_fignums()
+    def forbidden(*a,**k):raise AssertionError('Shadow called legacy numerical solver')
+    for name in ('simulate','build_three_charts'):monkeypatch.setattr(legacy,name,forbidden)
+    with bridge.shadow_pumping_report(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b) as p:
+        assert p['result'] is r and len(p['figure'].axes)==3
+        other=bridge.render_numeric_test_charts(r.numeric)
+        try:
+            p['figure'].canvas.draw();other.canvas.draw()
+            assert np.array_equal(p['figure'].canvas.buffer_rgba(),other.canvas.buffer_rgba())
+            left=BytesIO();right=BytesIO()
+            p['figure'].savefig(left,format='png',dpi=200,facecolor='white');other.savefig(right,format='png',dpi=200,facecolor='white')
+            assert left.getvalue()==right.getvalue() and tuple(p['figure'].get_size_inches())==(10.,12.)
+        finally:plt.close(other)
+        assert any('ANNULAR_MOUTH_PLUS_PIPE_HEAD' in v for v in p['warnings'])
+        assert all(getattr(r,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+        assert r.numeric.native_observation is not None and r.placement.final_post_pull_toc=='FINAL_POST_PULL_TOC_NOT_EVALUATED'
+    assert plt.get_fignums()==figures and pickle.dumps((state,r))==before
+
+
+@pytest.mark.parametrize('fault',['job','volume','rate','material','lab','review','survey','sha','boundary','numeric','native','placement','prefix','late'])
+def test_cfw128_gate8_stale_and_mixed_sources_reject_before_figure(gate8_cases,fault,monkeypatch):
+    from dataclasses import replace
+    import cfw128_shadow_word_bridge as bridge
+    state,b,r=gate8_cases['LNR 7"'];state=deepcopy(state);sha=GATE3_APP_SOURCE_SHA
+    if fault=='job':state['job_type']='TIE BACK LNR 7"'
+    elif fault in ('volume','rate','material'):state['fluids_config']['params']['Main'][{'rate':'pump_rate','material':'material_name'}.get(fault,fault)]='changed'
+    elif fault=='lab':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=46
+    elif fault=='review':state['lab_qc_params']['Main']['reviewed']=False
+    elif fault=='survey':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0,0,0],[1200,60,0]],columns=['MD','Deviation','Azimuth'])}
+    elif fault=='sha':sha='0'*40
+    elif fault=='boundary':b=replace(b,back_pressure_psi=251.)
+    elif fault in ('numeric','native','placement','prefix'):
+        with pytest.raises((ValueError,TypeError)):
+            if fault=='numeric':replace(r,numeric=replace(r.numeric,projection_identity='0'*64))
+            elif fault=='native':replace(r,numeric=replace(r.numeric,native_observation=None))
+            elif fault=='placement':replace(r,placement=gate8_cases['CSG 9 5/8"'][2].placement)
+            else:replace(r,schema='LIVE')
+        return
+    else:state['well_data']['well_name']='Different session'
+    monkeypatch.setattr(bridge,'render_numeric_test_charts',lambda *a:pytest.fail('Stale source rendered'))
+    with pytest.raises((ValueError,TypeError)):
+        with bridge.shadow_pumping_report(state,r,expected_app_source_sha=sha,boundary=b):pass
+
+
+def test_cfw128_gate8_directional_and_uat19_hold(bug01_reviewed_report_base,monkeypatch):
+    import cfw128_shadow_word_bridge as bridge
+    import cfw128_er03_numeric_adapter as adapter
+    state=gate3_case(bug01_reviewed_report_base,'LNR 7"')
+    state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    r=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+    assert r.numeric.trajectory_source=='APP_DIRECTIONAL_STATION_TVD_V1'
+    state['well_geometry']['survey'].loc[2,'MD']=50.
+    with pytest.raises(ValueError):bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+    uat=cfw128_c1_uat19_state();before=pickle.dumps(uat)
+    from cfw128_adapter import snapshot_geometry
+    g=snapshot_geometry(uat,app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert g.shoe_md==3885. and g.receiver.shoe_md==4860.
+    assert [(p.top_md,p.bottom_md) for p in g.active_sections]==[(0.,2800.),(2800.,3885.)]
+    monkeypatch.setattr(adapter.event_vertical,'simulate',lambda *a:pytest.fail('Invented UAT19 field inputs'))
+    with pytest.raises((ValueError,KeyError)):bridge.prepare_shadow(uat,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    assert pickle.dumps(uat)==before
+
+
+def test_cfw128_gate8_word_package_and_context_binding(bug01_reviewed_report_base,monkeypatch,tmp_path):
+    from unittest.mock import patch
+    from io import BytesIO
+    from zipfile import ZipFile
+    import hashlib
+    from docx import Document
+    from docxtpl import DocxTemplate
+    import phase_10_procedure as report
+    import well_report
+    import cfw128_shadow_word_bridge as bridge
+    import matplotlib.pyplot as plt
+    from centralizer_fixtures import execute_centralizer
+    from test_uat_round10b_pumping_word import drawing_paragraph,image_bytes
+    from project_state import prepare_calculations,lab_source_signature,mud_lab_source_signature
+    from engineering_tools import lab_review_signature
+    from cfw128_integration_abi import compose_nominal_tracking
+    state=gate3_case(bug01_reviewed_report_base)
+    state['fluids_config']['params']['Main'].update(volume=40.,pump_rate=10.)
+    state['fluids_config']['params']['Displacement Fluid']['volume']=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement.derived_displacement_bbl
+    # Word preparation rebuilds formulation before review, as in the existing
+    # reviewed synthetic UI fixture. Recheck that current source, not old cache.
+    prepare_calculations(state)
+    for name in ('Main','Displacement Fluid'):
+        state['lab_source_signatures'][name]=lab_source_signature(state,name) if name=='Main' else mud_lab_source_signature(state)
+        qc=state['lab_qc_params'][name];qc['reviewed']=True
+        qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs'].get(name))
+    execute_centralizer(state)
+    with patch.object(report.st,'session_state',state):context=report.build_master_context()
+    r=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),word_context=context)
+    before=pickle.dumps((state,context,r));other=plt.figure();baseline=plt.get_fignums()
+    try:
+        with bridge.shadow_pumping_report(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary()) as p:
+            png=BytesIO();p['figure'].savefig(png,format='png',dpi=200,facecolor='white')
+        output=bridge.shadow_word_bytes(state,r,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+        (tmp_path/'shadow.docx').write_bytes(output['bytes']);(tmp_path/'shadow.png').write_bytes(png.getvalue())
+        doc=Document(BytesIO(output['bytes']));paragraph=drawing_paragraph(doc,'Pumping Simulation Charts')
+        assert image_bytes(doc,paragraph)==png.getvalue()
+        original=next(p for p in Document(report.TEMPLATE_PATH).paragraphs if p.text==well_report.PUMPING_CHART_ANCHOR)
+        assert paragraph._p.pPr.xml==original._p.pPr.xml
+        # The same official template/context with an absent pumping chart is a
+        # package reference: styles and every non-pumping page/table stay exact.
+        template=DocxTemplate(report.TEMPLATE_PATH);template.render(report._word_quantity_context(context));raw=BytesIO();template.save(raw)
+        reference=well_report.postprocess_well_report(raw.getvalue(),context['well_profile_report'],context['note_vertical'],context['cement_chart_report'],context['centralizer_report'],pumping_report={'applicable':False},schematic_report=bridge.prepare_schematic(state),section_vi_programs={k:context[k] for k in ('has_preflush','has_spacer')})
+        ref=Document(BytesIO(reference));refp=next(p for p in ref.paragraphs if p.text=='Pumping simulation charts: Not applicable.')
+        paragraph._p.getparent().remove(paragraph._p);refp._p.getparent().remove(refp._p)
+        # One inserted image renumbers OOXML drawing IDs/relationships. Bind
+        # every remaining reference to its actual bytes before normalizing IDs.
+        from docx.oxml.ns import qn
+        for current in (doc,ref):
+            for index,node in enumerate(current._element.xpath('.//wp:docPr')):
+                node.set('id',str(index));node.set('name','Picture '+str(index))
+            for node in current._element.xpath('.//a:blip'):
+                key=qn('r:embed');node.set(key,hashlib.sha256(current.part.related_parts[node.get(key)].blob).hexdigest())
+            for node in current._element.xpath('.//pic:cNvPr'):
+                node.set('name','image.png')
+        assert doc._element.xml==ref._element.xml
+        with ZipFile(BytesIO(output['bytes'])) as z,ZipFile(BytesIO(reference)) as base:
+            for part in base.namelist():
+                if part not in ('word/document.xml','word/_rels/document.xml.rels','[Content_Types].xml') and not part.startswith('word/media/'):
+                    assert z.read(part)==base.read(part),part
+            extra=set(z.namelist())-set(base.namelist())
+            assert len(extra)==1 and next(iter(extra)).startswith('word/media/')
+            assert any(z.read(n)==png.getvalue() for n in z.namelist() if n.startswith('word/media/'))
+        assert output['qualification']=='NOT_GRANTED' and '67.264' not in '\n'.join(p.text for p in doc.paragraphs)
+        assert pickle.dumps((state,context,r))==before and plt.get_fignums()==baseline
+        bad_state=deepcopy(state);bad_context=deepcopy(context)
+        bad_state['_cement_chart_model']=None;bad_context['cement_chart_report']['model']=None
+        with pytest.raises(ValueError):
+            bridge.prepare_shadow(bad_state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),word_context=bad_context)
+        processor=bridge.postprocess_well_report
+        for fault in ('missing','duplicate'):
+            def broken(raw,*args,**kwargs):
+                changed=Document(BytesIO(raw));anchor=next(p for p in changed.paragraphs if p.text==well_report.PUMPING_CHART_ANCHOR)
+                if fault=='missing':anchor._p.getparent().remove(anchor._p)
+                else:changed.add_paragraph(well_report.PUMPING_CHART_ANCHOR)
+                data=BytesIO();changed.save(data)
+                return processor(data.getvalue(),*args,**kwargs)
+            with monkeypatch.context() as m:
+                m.setattr(bridge,'postprocess_well_report',broken)
+                with pytest.raises(ValueError,match='anchor'):
+                    bridge.shadow_word_bytes(state,r,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+            assert plt.get_fignums()==baseline
+        changed=deepcopy(context);changed['procedure']='late context edit'
+        monkeypatch.setattr(bridge,'DocxTemplate',lambda *a:pytest.fail('Stale context created Word'))
+        with pytest.raises(ValueError):bridge.shadow_word_bytes(state,r,changed,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    finally:plt.close(other)
+
+
+@pytest.mark.parametrize('fault',['negative_qout','missing_native','swapped_placement','wrong_engine','frozen'])
+def test_cfw128_gate8_resigned_receipts_still_reject(gate8_cases,fault,monkeypatch):
+    from dataclasses import replace
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive,run_numeric_test_case
+    from cfw128_c2e7_native_placement import assess_native_placement
+    import cfw128_shadow_word_bridge as bridge
+    state,b,r=gate8_cases['LNR 7"'];numeric=r.numeric;placement=r.placement;engine=r.engine;source=r.source_identity
+    if fault=='negative_qout':numeric=gate4f_resign(replace(numeric,q_out_bpm=(-1.,*numeric.q_out_bpm[1:])))
+    elif fault=='missing_native':numeric=gate4f_resign(replace(numeric,native_observation=None))
+    elif fault=='swapped_placement':placement=gate8_cases['CSG 9 5/8"'][2].placement
+    elif fault=='wrong_engine':engine='directional';source=bridge._source(state,GATE3_APP_SOURCE_SHA,b,engine)
+    else:
+        numeric=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+        placement=assess_native_placement(state,numeric,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    identity=fingerprint([bridge.SCHEMA,r.app_source_sha,source,_primitive(b),engine,_primitive(numeric),_primitive(placement),r.context_identity,r.document_identity])
+    bad=replace(r,numeric=numeric,placement=placement,engine=engine,source_identity=source,projection_identity=identity)
+    monkeypatch.setattr(bridge,'render_numeric_test_charts',lambda *a:pytest.fail('Forged evidence rendered'))
+    with pytest.raises(ValueError):
+        with bridge.shadow_pumping_report(state,bad,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b):pass
+
+
+def test_cfw128_gate8_no_annular_cement_and_zero_stage_hold(bug01_reviewed_report_base):
+    import cfw128_shadow_word_bridge as bridge
+    state=gate3_case(bug01_reviewed_report_base)
+    r=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+    assert r.placement.annular_cement_bbl==0. and r.placement.static_candidate_md is None
+    assert 'NO_NATIVE_ANNULAR_CEMENT' in r.placement.case_holds
+    state['fluids_config']['params']['Main']['volume']=0.
+    with pytest.raises(ValueError):bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
+
+
+def test_cfw128_gate8_import_route_and_cleanup(gate8_cases,monkeypatch):
+    from pathlib import Path
+    import cfw128_shadow_word_bridge as bridge
+    import matplotlib.pyplot as plt
+    path=Path('cfw128_shadow_word_bridge.py');gate8_assert_imports(path)
+    read=Path.read_text
+    with monkeypatch.context() as m:
+        m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+'\nimport pumping_simulation\n' if p==path else read(p,*a,**k))
+        with pytest.raises(AssertionError):gate8_assert_imports(path)
+    for name in ('main.py','phase_10_procedure.py','pumping_simulation.py','well_report.py'):
+        assert 'cfw128_shadow_word_bridge' not in Path(name).read_text()
+    state,b,r=gate8_cases['LNR 7"'];other=plt.figure();initial=plt.get_fignums()
+    try:
+        with pytest.raises(RuntimeError):
+            with bridge.shadow_pumping_report(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b):raise RuntimeError('later failure')
+        assert plt.get_fignums()==initial
+    finally:plt.close(other)
