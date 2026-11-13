@@ -3243,7 +3243,22 @@ def simulate(job: JobDesign) -> SimResult:
                 hi = mid
         return 0.5 * (lo + hi)
 
+    # Observation-only native tokens; never consulted by simulation decisions.
+    port_rows = []
+    injected_tokens = []
+    mouth_tokens = []
+    head_tokens = []
+
+    def port_snapshot(when):
+        return (when, tuple((n, v) for n, v in pipe),
+                tuple((n, v) for n, v in ann), gap)
+
+    initial_ports = port_snapshot(0.0)
+    pump_end_ports = initial_ports if t_eod == 0.0 else None
+
     def put_top(col, name, vol):
+        if col is pipe:
+            injected_tokens.append((name, vol))
         if col and col[-1][0] == name:
             col[-1][1] += vol
         else:
@@ -3253,6 +3268,11 @@ def simulate(job: JobDesign) -> SimResult:
         while x > 1e-12 and col:
             name, vol = col[-1]
             take = min(vol, x)
+            # Exclude the hypothetical gap_star probe (a copied column).
+            if col is ann:
+                mouth_tokens.append((name, take))
+            elif col is pipe:
+                head_tokens.append((name, take))
             col[-1][1] -= take
             x -= take
             if col[-1][1] <= 1e-12:
@@ -3297,6 +3317,7 @@ def simulate(job: JobDesign) -> SimResult:
         if not terminal and step_dt <= 0.0:
             raise ChartInputError("Integration interval is not representable.")
         r_in, fl_in = rate_at(t)
+        injected_tokens.clear(); mouth_tokens.clear(); head_tokens.clear()
         tail_active = False
         backflow = 0.0            # reverse flow leaving at the pipe TOP
         rev_draw = 0.0            # v1.2.3: reverse draw ann -> pipe (bbl/min)
@@ -3552,6 +3573,12 @@ def simulate(job: JobDesign) -> SimResult:
         _dacc(DRES, branch, (Cp_a + gap - V_pipe0)
               - (_pc[0] + _pc[2] - V_pipe0))
         _pc[:] = [Cp_a, Ca_a, gap]
+        port_rows.append((t, step_end, step_dt, branch, fl_in,
+                          tuple(injected_tokens),
+                          (('ANNULAR_MOUTH', tuple(mouth_tokens)),
+                           ('PIPE_HEAD', tuple(head_tokens))), gap))
+        if step_end == t_eod and pump_end_ports is None:
+            pump_end_ports = port_snapshot(t_eod)
         # events: first slurry arriving at the annulus bottom (track depth)
         if t_slurry is None and ann and ann[0][0] in slurry_set:
             t_slurry = t
@@ -3572,6 +3599,9 @@ def simulate(job: JobDesign) -> SimResult:
                     lam_alpha_policy_status=lam_diag.get('status',
                                                          'ERROR'))
     res_diag['event_intervals'] = tuple(event_intervals)
+    res_diag['native_port_inventory_v1'] = (
+        'CFW128_NATIVE_PORT_INVENTORY_V1', initial_ports, tuple(port_rows),
+        pump_end_ports, port_snapshot(event_intervals[-1][1]))
     res_diag['vol_audit'] = dict(
         branch_min=dict(BR), leak_bbl=dict(LEAK), dres_pipe_bbl=dict(DRES),
         qi_tot=CUM[0], qo_tot=CUM[1], gap_end=gap,

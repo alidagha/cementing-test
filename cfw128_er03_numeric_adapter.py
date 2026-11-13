@@ -26,7 +26,7 @@ from fluids_charts_module_v1_4_2 import JobChartsSpec, autoscale_x, autoscale_y,
 
 VERTICAL_SHA256='79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f'
 DIRECTIONAL_SHA256='2cd8896069327ba96fef4f22038bf70538dcc06b37e966b8bb58ad36ac39bd61'
-EVENT_SHA256=('1bde2f810055479bba424bacb8b65549e27465ccc28fd9863c355f283de76485', '7bb5596bb7d78d1e7e20c42d9534c5648126c6b417426d8a3f99978911370976')
+EVENT_SHA256=('35452adbe71c0285baea95ea8e73464cfb47c721ec3a3c39cda7b48ee8230dbf', 'd944f5c5daf1356564f40ac7d2efc3289c0ccdc5a80c8501af2147756df7d24f')
 HB_SHA256='e62678f87867a1b34261a31114e6c692384f0f753c7cbcc92510dd8a5171194f'
 
 
@@ -85,6 +85,27 @@ class FluidProof:
 
 
 @dataclass(frozen=True,slots=True)
+class NativePortObservation:
+    """Held native simulated tokens, never a meter/currentness/TOC certificate."""
+    source_identity: str
+    source_hashes: tuple[str,...]
+    payload: tuple
+    status: Literal['OBSERVATION_ONLY_HOLD']=field(default='OBSERVATION_ONLY_HOLD',init=False)
+    currentness: Literal['NOT_CURRENTNESS_PROOF']=field(default='NOT_CURRENTNESS_PROOF',init=False)
+    qualification: Literal['NOT_GRANTED']=field(default='NOT_GRANTED',init=False)
+    qout_semantics: Literal['ANNULAR_MOUTH_PLUS_PIPE_HEAD']=field(default='ANNULAR_MOUTH_PLUS_PIPE_HEAD',init=False)
+    shoe_crossing_time: Literal['WITHIN_INTERVAL_NOT_OBSERVED']=field(default='WITHIN_INTERVAL_NOT_OBSERVED',init=False)
+
+    @property
+    def cumulative_returns(self):
+        return tuple((port,tuple((name,math.fsum(v for row in self.payload[2]
+            for p,chunks in row[6] if p==port for n,v in chunks if n==name))
+            for name in sorted({n for row in self.payload[2] for p,chunks in row[6]
+                                if p==port for n,v in chunks})))
+            for port in ('ANNULAR_MOUTH','PIPE_HEAD'))
+
+
+@dataclass(frozen=True,slots=True)
 class NumericEvidence:
     app_source_sha: str
     composition_projection_identity: str
@@ -111,6 +132,7 @@ class NumericEvidence:
     source_hashes: tuple[str,...]=field(default=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256),kw_only=True)
     directional_tvd_proof: tuple=field(default=(),kw_only=True)
     trajectory_source: Literal['VERTICAL_SOURCE_V1','APP_DIRECTIONAL_STATION_TVD_V1']=field(default='VERTICAL_SOURCE_V1',kw_only=True)
+    native_observation: NativePortObservation | None=field(default=None,kw_only=True)
     evidence_class: Literal['SYNTHETIC_TEST_ONLY']=field(default='SYNTHETIC_TEST_ONLY',init=False)
     currentness: Literal['NOT_CURRENTNESS_PROOF']=field(default='NOT_CURRENTNESS_PROOF',init=False)
     final_post_pull_toc: Literal['NOT_EVALUATED']=field(default='NOT_EVALUATED',init=False)
@@ -121,6 +143,10 @@ class NumericEvidence:
     hydraulic_admissible: Literal[False]=field(default=False,init=False)
     chart_admissible: Literal[False]=field(default=False,init=False)
     scientifically_qualified: Literal[False]=field(default=False,init=False)
+
+    @property
+    def native_observation_status(self):
+        return 'ABSENT_UNQUALIFIED' if self.native_observation is None else 'OBSERVATION_ONLY_HOLD'
 
 
 def _number(v,positive=False):
@@ -261,6 +287,93 @@ def _stage_lab_intake(state, name, sha):
         ('INTACT_REVIEWED_BHCT_DOWN_SOURCE','INSTRUMENT_PROVENANCE_UNVERIFIED'),
         'Existing current Spacer cup/review proved; no physical instrument qualification.',name,sha,identity,
         fingerprint([sha,name,identity]),tuple(readings),None,current_signature,qc['review_signature'])
+
+
+def _validate_native_observation(o, source, hashes, channels, events, stages, names, capacity):
+    if type(o) is not NativePortObservation:
+        raise ValueError('Missing typed native port observation.')
+    _primitive(o)
+    _number(capacity,True)
+    if (o.source_identity!=source or o.source_hashes!=hashes
+            or o.status!='OBSERVATION_ONLY_HOLD' or o.currentness!='NOT_CURRENTNESS_PROOF'
+            or o.qualification!='NOT_GRANTED' or o.qout_semantics!='ANNULAR_MOUTH_PLUS_PIPE_HEAD'
+            or o.shoe_crossing_time!='WITHIN_INTERVAL_NOT_OBSERVED'):
+        raise ValueError('Native observation source/declaration mismatch.')
+    def shape(v,n):
+        if type(v) is not tuple or len(v)!=n:raise ValueError('Malformed native observation tuple.')
+    def number(v,signed=False):
+        if type(v) not in (float,int):raise ValueError('Real observation scalar required.')
+        _number(abs(v) if signed else v)
+    def close(a,b):
+        # Existing Gate4B volume-audit bound, never a pressure/physics tolerance.
+        if not math.isclose(a,b,rel_tol=0.,abs_tol=1e-9):raise ValueError('Native observation conservation differs.')
+    def tokens(rows):
+        if type(rows) is not tuple:raise ValueError('Immutable native tokens required.')
+        for token in rows:
+            shape(token,2);name,value=token
+            if type(name) is not str or name not in names:raise ValueError('Unknown native fluid identity.')
+            number(value)
+            if value<=0:raise ValueError('Positive actual token removal/injection required.')
+        return {n:math.fsum(v for name,v in rows if name==n) for n in names}
+    def snapshot(v):
+        shape(v,4);number(v[0]);number(v[3],signed=True);pipe=tokens(v[1]);ann=tokens(v[2])
+        close(math.fsum(pipe.values())+v[3],capacity)
+        return {n:pipe[n]+ann[n] for n in names}
+    shape(o.payload,5);version,initial,rows,eod,tail=o.payload
+    if version!='CFW128_NATIVE_PORT_INVENTORY_V1' or type(rows) is not tuple or not rows:
+        raise ValueError('Unsupported/missing native observation version/intervals.')
+    initial_inventory=snapshot(initial)
+    if initial[0]!=0. or initial[3]!=0.:raise ValueError('Native initial time/gap differs.')
+    if len(initial[1])!=1 or len(initial[2])!=1 or initial[1][0][0]!='Mud' or initial[2][0][0]!='Mud':
+        raise ValueError('Native initial columns must match the initial Mud source.')
+    end_inventory=snapshot(eod);tail_inventory=snapshot(tail)
+    event=dict(events);t=channels[0]
+    if eod[0]!=event['t_eod'] or tail[0]<eod[0] or len(rows)>len(t):
+        raise ValueError('Native observation EOD/tail chronology differs.')
+    if event['t_eod']==0. and eod!=initial:raise ValueError('Zero-job pump-end differs from initial state.')
+    balance=dict(initial_inventory);pump_seen=event['t_eod']==0.
+    cursor=0.;blocks=[]
+    for name,volume,rate in stages:
+        if volume==0:continue
+        end=cursor+volume/rate;blocks.append((cursor,end,name));cursor=end
+    if cursor!=event['t_eod']:raise ValueError('Native stage/EOD source differs.')
+    previous=0.
+    branches=('normal','frictionless','freefall','ffrefill','gapclose','freeex','tail_ff','tail_rev','tail_bal','tail_cap')
+    for i,row in enumerate(rows):
+        shape(row,8);start,end,duration,branch,fluid,injected,ports,gap=row
+        for value in (start,end,duration):number(value)
+        number(gap,signed=True)
+        if (start!=previous or end<start or duration!=end-start or start!=t[i]
+                or duration==0. and i!=len(rows)-1 or branch not in branches):
+            raise ValueError('Native observation interval differs.')
+        wanted=next((name for a,b,name in blocks if a<=start<b),'Mud')
+        if type(fluid) is not str or fluid!=wanted:raise ValueError('Injected stage identity differs.')
+        if len(injected)>1:raise ValueError('Duplicate native injection event.')
+        if duration==0. and (injected or any(pair[1] for pair in ports)):
+            raise ValueError('Zero-duration observation cannot move fluid.')
+        inc=tokens(injected)
+        if any(n!=fluid and v!=0 for n,v in inc.items()):raise ValueError('Injected token is not the source stage.')
+        close(math.fsum(inc.values()),channels[5][i]*duration)
+        shape(ports,2)
+        returned={n:0. for n in names}
+        for expected,pair in zip(('ANNULAR_MOUTH','PIPE_HEAD'),ports):
+            shape(pair,2)
+            if pair[0]!=expected:raise ValueError('Changed/duplicate native surface port.')
+            actual=tokens(pair[1])
+            for n,v in actual.items():returned[n]+=v
+        close(math.fsum(returned.values()),channels[6][i]*duration)
+        for n in names:balance[n]+=inc[n]-returned[n]
+        if end==eod[0] and not pump_seen:
+            for n in names:close(balance[n],end_inventory[n])
+            if gap!=eod[3]:raise ValueError('Pump-end gap differs.')
+            pump_seen=True
+        previous=end
+    if not pump_seen or tail[0]!=previous or tail[3]!=rows[-1][7]:raise ValueError('Missing native pump-end/tail snapshot.')
+    for n in names:close(balance[n],tail_inventory[n])
+    if len(rows)<len(t):
+        if event['t_shutin']!=rows[-1][0] or any(q!=0 for q in channels[5][len(rows):]+channels[6][len(rows):]):
+            raise ValueError('Unaccounted native flow after transport intervals.')
+    return o
 
 
 def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary: NumericBoundary,
@@ -417,9 +530,18 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
         # this synthetic boundary. Preserve raw diagnostic series and fail closed.
         status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
     audit=tuple(audit)
+    observation=None
+    if stepping!='frozen':
+        observation=NativePortObservation(numeric_source,source_hashes,result.diag.get('native_port_inventory_v1'))
+        _validate_native_observation(observation,numeric_source,source_hashes,channels,events,
+            tuple((v.fluid_type,v.volume_bbl,v.rate_bpm) for v in stages),tuple(fluids),geo.total_pipe_bbl)
+        if tuple((row[0],row[1],row[2],row[4],channels[5][i],channels[6][i],row[3])
+                 for i,row in enumerate(observation.payload[2]))!=tuple(intervals):
+            raise ValueError('Native observation and original interval audit differ.')
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
     identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])
-    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source)
+    if observation is not None:identity=fingerprint(['cfw128-gate6c-observation/1',identity,_primitive(observation)])
+    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source,native_observation=observation)
 
 
 def render_numeric_test_charts(evidence: NumericEvidence):
@@ -504,6 +626,11 @@ def render_numeric_test_charts(evidence: NumericEvidence):
             previous=(md,tvd)
         if previous[0]<r.pressure_station_md-tol:raise ValueError('Trajectory does not cover pressure station.')
     identity=fingerprint(['cfw128-gate5bp1-result/1',identity,r.trajectory_source,r.directional_tvd_proof])
+    if r.engine.startswith('event_aligned_'):
+        _validate_native_observation(r.native_observation,r.source_identity,r.source_hashes,channels,r.events,
+            tuple((v[0],v[2],v[4]) for v in r.stages),('Mud',*(v.name for v in r.fluids)),r.engine_injection_capacity_bbl)
+        identity=fingerprint(['cfw128-gate6c-observation/1',identity,_primitive(r.native_observation)])
+    elif r.native_observation is not None:raise ValueError('Frozen source cannot assert native port evidence.')
     if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']

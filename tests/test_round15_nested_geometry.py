@@ -6027,8 +6027,8 @@ def test_cfw128_gate4b_aligned_frozen_channels_and_terminal_observation():
 def gate4b_assert_sources_and_firewall():
     from pathlib import Path
     import ast,hashlib
-    pins={'cfw128_er03_event_aligned_vertical.py':'1bde2f810055479bba424bacb8b65549e27465ccc28fd9863c355f283de76485',
-          'cfw128_er03_event_aligned_directional.py':'7bb5596bb7d78d1e7e20c42d9534c5648126c6b417426d8a3f99978911370976'}
+    pins={'cfw128_er03_event_aligned_vertical.py':'35452adbe71c0285baea95ea8e73464cfb47c721ec3a3c39cda7b48ee8230dbf',
+          'cfw128_er03_event_aligned_directional.py':'d944f5c5daf1356564f40ac7d2efc3289c0ccdc5a80c8501af2147756df7d24f'}
     parents=('DOC58_SI_CANDIDATE_03_TF2R_ER03.py','DOC58_G2D1_DIR_SCRATCH_01_ER03.py')
     for (name,pin),parent in zip(pins.items(),parents):
         assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==pin
@@ -6332,7 +6332,11 @@ def gate4f_resign(evidence, **changes):
     r=replace(evidence,**changes)
     channels=tuple(getattr(r,n) for n in ('time_min','whp_kpsi','pump_kpsi','hydrostatic_kpsi','total_pressure_kpsi','q_in_bpm','q_out_bpm'))
     identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
-    return replace(r,projection_identity=fingerprint(['cfw128-gate5bp1-result/1',identity,r.trajectory_source,r.directional_tvd_proof]))
+    identity=fingerprint(['cfw128-gate5bp1-result/1',identity,r.trajectory_source,r.directional_tvd_proof])
+    if r.native_observation is not None:
+        from cfw128_er03_numeric_adapter import _primitive
+        identity=fingerprint(['cfw128-gate6c-observation/1',identity,_primitive(r.native_observation)])
+    return replace(r,projection_identity=identity)
 
 
 @pytest.fixture
@@ -6658,3 +6662,85 @@ def test_cfw128_gate6a_equal_numbers_do_not_prove_bhsp_station(gate3_numeric_sou
     assert r.total_pressure_kpsi[-1]*1000.==pytest.approx(5000.,abs=1e-9)
     assert dict(r.events)['bottom_shutin_psi']==5000.  # target echo only
     assert r.status=='HOLD' and 'BHSP_TARGET_STATION_NOT_PROVED' in r.holds
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+def test_cfw128_gate6c_native_ports_all_branches_and_closure(engine):
+    import cfw128_er03_event_aligned_vertical as v
+    import cfw128_er03_event_aligned_directional as d
+    from cfw128_er03_numeric_adapter import NativePortObservation,_validate_native_observation
+    branches=set();head=0.;mouth=0.
+    for density in ((8.,18.),(18.,8.)):
+        for float_on in (False,True):
+            for rates in ((40.,13.7),(2.,40.)):
+                job=gate4b_job(v,dt=.2,tail=.35,densities=density,float_on=float_on,volumes=(250.,250.),rates=rates)
+                if engine=='directional':job=d.attach_survey(job,d.Survey([0.,100.,1200.],[0.,82.69933431326882,632.699334313269]))
+                result=(v if engine=='vertical' else d).simulate(job)
+                payload=result.diag['native_port_inventory_v1']
+                o=NativePortObservation('a'*64,('b'*64,),payload)
+                channels=tuple(tuple(getattr(result,n)) for n in ('t','whp','pump','hydro','dyn','q_in','q_out'))
+                events=(('t_eod',result.t_eod),('t_shutin',result.t_shutin))
+                _validate_native_observation(o,'a'*64,('b'*64,),channels,events,tuple((s.fluid_type,s.volume_bbl,s.rate_bpm) for s in job.placement),tuple(job.fluids),job.geo.total_pipe_bbl)
+                assert payload[3][0]==result.t_eod and payload[4][0]==result.diag['event_intervals'][-1][1]
+                branches.update(row[3] for row in payload[2])
+                totals=dict(o.cumulative_returns);head+=sum(x for n,x in totals['PIPE_HEAD']);mouth+=sum(x for n,x in totals['ANNULAR_MOUTH'])
+                assert math.fsum(x for rows in totals.values() for n,x in rows)==pytest.approx(result.diag['vol_audit']['qo_tot'],abs=1e-9)
+    assert {'normal','freefall','ffrefill','gapclose','freeex','tail_ff','tail_rev','tail_bal','tail_cap'}<=branches
+    assert head>0 and mouth>head
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+@pytest.mark.parametrize('fault',['missing','version','source','hash','port','fluid','negative','nan','bool','time','duplicate','injected','eod','tail','snapshot','identity','zero_terminal','duplicate_injection'])
+def test_cfw128_gate6c_adversarial_receipt_before_render(gate3_numeric_source,engine,fault):
+    from dataclasses import replace
+    import cfw128_er03_numeric_adapter as a
+    state=deepcopy(gate3_numeric_source)
+    if engine=='directional':state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    r=a.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine,stepping='event_aligned_test_only')
+    o=r.native_observation;assert o.status=='OBSERVATION_ONLY_HOLD'
+    payload=list(o.payload);rows=list(payload[2]);row=list(rows[0])
+    if fault=='missing':bad=replace(r,native_observation=None)
+    elif fault=='source':bad=replace(r,native_observation=replace(o,source_identity='0'*64))
+    elif fault=='hash':bad=replace(r,native_observation=replace(o,source_hashes=('0'*64,)))
+    elif fault=='identity':bad=replace(r,native_observation=replace(o,payload=(*o.payload[:4],(999.,*o.payload[4][1:]))))
+    else:
+        if fault=='zero_terminal':
+            row=list(rows[-1]);assert row[2]==0.
+            ports=list(row[6]);ports[0]=('ANNULAR_MOUTH',(('Mud',1e-10),));row[6]=tuple(ports);rows[-1]=tuple(row)
+        elif fault=='duplicate_injection':
+            n,x=row[5][0];row[5]=((n,x/2),(n,x/2))
+        elif fault=='version':payload[0]='UNKNOWN'
+        elif fault=='time':row[0]=.01
+        elif fault=='duplicate':rows.insert(0,rows[0])
+        elif fault=='injected':row[5]=(('Mud',1.),)
+        elif fault in ('eod','tail','snapshot'):
+            index=3 if fault=='eod' else 4;snap=list(payload[index])
+            if fault=='snapshot':snap[1]=()
+            else:snap[0]+=1.
+            payload[index]=tuple(snap)
+        else:
+            ports=list(row[6]);port,chunks=ports[0]
+            if fault=='port':ports[0]=('PIPE_HEAD',chunks)
+            else:
+                name,value=chunks[0]
+                ports[0]=(port,(({'fluid':'FOREIGN'}.get(fault,name),{'negative':-1.,'nan':float('nan'),'bool':True}.get(fault,value)),*chunks[1:]))
+            row[6]=tuple(ports)
+        if fault not in ('duplicate','zero_terminal'):rows[0]=tuple(row)
+        payload[2]=tuple(rows);bad=replace(r,native_observation=replace(o,payload=tuple(payload)))
+    # Rebind deliberately to challenge semantic validation, not just the hash.
+    if fault not in ('identity','nan'):bad=gate4f_resign(bad)
+    with pytest.raises((ValueError,TypeError)):a.render_numeric_test_charts(bad)
+
+
+@pytest.mark.parametrize('engine',['vertical','directional'])
+def test_cfw128_gate6c_observation_held_and_frozen_absent(gate3_numeric_source,engine):
+    import cfw128_er03_numeric_adapter as a
+    import matplotlib.pyplot as plt
+    state=deepcopy(gate3_numeric_source);before=pickle.dumps(state)
+    frozen=a.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine)
+    assert frozen.native_observation is None and frozen.native_observation_status=='ABSENT_UNQUALIFIED'
+    r=a.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine=engine,stepping='event_aligned_test_only')
+    assert r.native_observation_status=='OBSERVATION_ONLY_HOLD' and r.qualification=='NOT_GRANTED'
+    assert r.currentness=='NOT_CURRENTNESS_PROOF' and r.final_post_pull_toc=='NOT_EVALUATED'
+    assert pickle.dumps(state)==before
+    fig=a.render_numeric_test_charts(r);plt.close(fig)
