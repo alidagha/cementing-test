@@ -4430,6 +4430,8 @@ def test_cfw128_c2e3_import_and_no_production_caller_isolation(monkeypatch):
         assert names<={'dataclasses','math','re','typing','cement_chart_model','project_state'}
         assert not {'eval','exec','__import__','import_module','open'}&{n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
         for other in root.glob('*.py'):
+            if other.name=='cfw128_c2e8_post_pull_review.py':
+                batcha_assert_imports(other);continue
             if other==path:continue
             t=ast.parse(other.read_text());imports={n.module for n in ast.walk(t) if isinstance(n,ast.ImportFrom)}|{a.name for n in ast.walk(t) if isinstance(n,ast.Import) for a in n.names}
             assert path.stem not in imports
@@ -5536,6 +5538,8 @@ def test_cfw128_gate2_import_firewall_and_named_exception_mutations(monkeypatch)
     bridge=Path('cfw128_integration_abi.py');gate2_assert_bridge_imports(bridge)
     for p in Path('.').glob('*.py'):
         if p==bridge:continue
+        if p.name=='cfw128_c2e8_post_pull_review.py':
+            batcha_assert_imports(p);continue
         if p.name=='cfw128_er03_numeric_adapter.py':
             gate3_assert_numeric_imports(p);continue
         if p.name=='cfw128_c2e7_native_placement.py':
@@ -5728,6 +5732,8 @@ def test_cfw128_gate3_sources_and_static_import_firewall(monkeypatch):
     path=Path('cfw128_er03_numeric_adapter.py');gate3_assert_numeric_imports(path)
     for p in Path('.').glob('*.py'):
         if p==path:continue
+        if p.name=='cfw128_c2e8_post_pull_review.py':
+            batcha_assert_imports(p);continue
         if p.name=='cfw128_c2e7_native_placement.py':
             gate7_assert_imports(p);continue
         if p.name=='cfw128_shadow_word_bridge.py':
@@ -7117,6 +7123,303 @@ def test_cfw128_gate8_word_package_and_context_binding(bug01_reviewed_report_bas
         monkeypatch.setattr(bridge,'DocxTemplate',lambda *a:pytest.fail('Stale context created Word'))
         with pytest.raises(ValueError):bridge.shadow_word_bytes(state,r,changed,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary())
     finally:plt.close(other)
+
+
+# Batch A Rev3: explicit diagnostic consumer, never production admission.
+def batcha_assert_imports(path):
+    import ast
+    tree=ast.parse(path.read_text())
+    expected={'dataclasses':('dataclass','field','fields'),'fractions':('Fraction',),
+        'DOC58_SI_CANDIDATE_03_TF2R_ER03':('GeometrySpec','PipeSection','AnnSection'),
+        'cement_chart_model':('_capacity',),'materials_db':('PLACEMENT_SLURRIES',),
+        'project_state':('fingerprint',),'cfw128_integration_abi':('compose_nominal_tracking',),
+        'cfw128_er03_numeric_adapter':('NumericEvidence','_primitive'),
+        'cfw128_c2e7_native_placement':('assess_native_placement','_map_static'),
+        'cfw128_c2e3_post_pull_gap':('audit_post_pull_gap',)}
+    nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
+    assert len(nodes)==len(expected) and {n.module:tuple(a.name for a in n.names) for n in nodes}==expected
+    assert all(n.level==0 and all(a.asname is None for a in n.names) for n in nodes)
+    assert [(a.name,a.asname) for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]==[('math',None)]
+    forbidden={'eval','exec','__import__','import_module','open','run_numeric_test_case','simulate',
+               'render_three_charts','render_numeric_test_charts','run_pumping_simulation'}
+    assert not forbidden & {n.id for n in ast.walk(tree) if isinstance(n,ast.Name)}
+    assert not forbidden & {n.attr for n in ast.walk(tree) if isinstance(n,ast.Attribute)}
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+@pytest.mark.parametrize('volume',[1.,40.,200.])
+def test_cfw128_batcha_native_reconstruction_matrix(gate7_cases,job,volume):
+    from cfw128_c2e8_post_pull_review import assess_post_pull,validate_post_pull_review,PostPullConditions
+    from cfw128_c2e7_native_placement import assess_native_placement
+    state,r,b=gate7_cases[job,volume];old=assess_native_placement(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    before=pickle.dumps((state,r,old));conditions=PostPullConditions(True,True,True)
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=conditions)
+    validate_post_pull_review(state,r,a,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=conditions)
+    assert a.eod_balances==old.fluid_balances and a.prior_static_candidate_md==old.static_candidate_md
+    assert set(old.holds)<=set(a.holds)
+    assert a.currentness=='NOT_CURRENTNESS_PROOF' and a.qualification=='NOT_GRANTED'
+    assert a.final_field_toc=='FINAL_FIELD_TOC_NOT_EVALUATED'
+    assert all(getattr(a,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    assert pickle.dumps((state,r,assess_native_placement(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA)))==before
+    if old.kind=='casing':
+        assert a.additional_mud_bbl is None and a.returned_dp_mud==a.withdrawn_sections==a.post_pull_balances==()
+        assert a.surface_status=='HOLD_SURFACE_NOT_PROVED'
+    else:
+        assert a.withdrawn_sections and a.annular_bands,a.case_holds
+        assert a.additional_mud_bbl>0
+        assert all(n in ('Mud','Displacement Fluid') for n,v in a.returned_dp_mud)
+        assert all(abs(row[-1])<=1e-9 for row in a.post_pull_balances)
+        assert 'HOLD_NATIVE_CANONICAL_VOLUME_BASIS' in a.case_holds
+        assert all(t<b and v>0 for n,origin,t,b,v,ratio in a.annular_bands)
+        assert all(x[2]>=y[3] for x,y in zip(a.annular_bands,a.annular_bands[1:]))
+        if old.static_candidate_md is not None:assert a.achieved_cement_top_md==old.static_candidate_md
+    if volume==1.:
+        terminal=math.fsum(v for n,role,t,bot,v,ratio,last in a.pipe_bands if last and n=='Main')
+        assert terminal<=1.+1e-9
+    if job=='CSG 9 5/8"' and volume==40.:
+        assert a.achieved_cement_top_md>0 and 'HOLD_SURFACE_NOT_PROVED' in a.case_holds
+
+
+@pytest.mark.parametrize('condition,reason',[
+    ((False,True,True),'HOLD_CONNECTED_RETURN_NOT_PROVED'),
+    ((True,False,True),'HOLD_LOSS_OR_UNRECORDED_RETURN'),
+    ((True,True,False),'HOLD_DP_MUD_RECOVERY_UNPROVED')])
+def test_cfw128_batcha_unsupported_conditions_hold(gate7_cases,condition,reason):
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    state,r,b=gate7_cases['LNR 7"',200.]
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(*condition))
+    assert reason in a.case_holds and a.annular_bands==a.post_pull_balances==()
+    assert a.achieved_cement_top_md is None and a.additional_mud_bbl is None
+    with pytest.raises(TypeError):PostPullConditions(1,True,True)
+
+
+@pytest.mark.parametrize('fault',['volume','density','rate','lab','geometry','job','numeric','missing_native',
+    'receipt','resigned_bands','resigned_return','resigned_makeup','resigned_surface','resigned_conditions','flag'])
+def test_cfw128_batcha_fresh_validation_rejects_mutation(gate7_cases,fault):
+    from dataclasses import replace,fields
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    from cfw128_c2e8_post_pull_review import assess_post_pull,validate_post_pull_review,PostPullConditions,SCHEMA
+    state,r,b=gate7_cases['LNR 7"',200.];state=deepcopy(state);cond=PostPullConditions(True,True,True)
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    if fault in ('volume','density','rate'):
+        key={'volume':'volume','density':'density','rate':'pump_rate'}[fault]
+        state['fluids_config']['params']['Main'][key]=999.
+    elif fault=='lab':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=999.
+    elif fault=='geometry':state['hardware_table'].at[0,'ID (in)']=8.5
+    elif fault=='job':state['job_type']='TIE BACK LNR 7"'
+    elif fault=='numeric':r=replace(r,projection_identity='0'*64)
+    elif fault=='missing_native':r=replace(r,native_observation=None)
+    else:
+        a=deepcopy(a)
+        if fault=='receipt':object.__setattr__(a,'projection_identity','0'*64)
+        elif fault=='flag':object.__setattr__(a,'enabled',True)
+        else:
+            key,value={'resigned_bands':('annular_bands',()),'resigned_return':('returned_dp_mud',()),
+                'resigned_makeup':('additional_mud_bbl',0.),'resigned_surface':('surface_status','CEMENT_TO_SURFACE_PROVED'),
+                'resigned_conditions':('conditions',PostPullConditions(False,True,True))}[fault]
+            object.__setattr__(a,key,value)
+            values=tuple(getattr(a,f.name) for f in fields(a) if f.init and f.name!='projection_identity')
+            object.__setattr__(a,'projection_identity',fingerprint([SCHEMA,_primitive(values)]))
+    with pytest.raises((ValueError,TypeError)):
+        validate_post_pull_review(state,r,a,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+
+
+def test_cfw128_batcha_casing_actual_surface_return_is_native_only(gate7_cases):
+    from dataclasses import replace
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    state,r,b=gate7_cases['CSG 9 5/8"',200.];state=deepcopy(state)
+    state['fluids_config']['params']['Main'].update(volume=800.,pump_rate=200.)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='event_aligned_test_only')
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert all(n=='Main' for n,v in r.native_observation.payload[3][2])
+    main=next(row for row in a.eod_balances if row[0]=='Main')
+    assert main[3]>0 and main[2]==800. and abs(main[-1])<=1e-9
+    assert a.surface_status=='CEMENT_TO_SURFACE_PROVED_IN_NATIVE_MODEL' and a.achieved_cement_top_md==0.
+    assert 'CASING_SURFACE_VOLUME_CANONICAL_CAPACITY_NOT_PROVED' in a.holds
+    assert 'CASING_PLUG_BUMP_NOT_PROVED' in a.holds and a.prior_static_candidate_md is None
+    assert a.additional_mud_bbl is None and a.returned_dp_mud==()
+    # A re-signed counterfeit within the older bookkeeping audit bound must
+    # not turn an underfilled annulus into an exact native surface claim.
+    payload=list(r.native_observation.payload);eod=list(payload[3]);n,value=eod[2][0]
+    eod[2]=((n,value-1e-10),);payload[3]=tuple(eod)
+    bad=gate4f_resign(replace(r,native_observation=replace(r.native_observation,payload=tuple(payload))))
+    held=assess_post_pull(state,bad,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert held.surface_status=='HOLD_SURFACE_NOT_PROVED'
+
+
+def test_cfw128_batcha_import_firewall_negative_and_production_isolation(monkeypatch):
+    import ast
+    from pathlib import Path
+    path=Path('cfw128_c2e8_post_pull_review.py');batcha_assert_imports(path);read=Path.read_text
+    for added in ('\nfrom cfw128_er03_numeric_adapter import run_numeric_test_case\n',
+                  '\nimport pumping_simulation\n','\nGeometrySpec.simulate()\n'):
+        with monkeypatch.context() as m:
+            m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+added if p==path else read(p,*a,**k))
+            with pytest.raises(AssertionError):batcha_assert_imports(path)
+    for other in Path('.').glob('*.py'):
+        if other==path:continue
+        tree=ast.parse(other.read_text())
+        assert not any(isinstance(n,ast.ImportFrom) and n.module==path.stem or
+            isinstance(n,ast.Import) and any(a.name==path.stem for a in n.names) for n in ast.walk(tree))
+
+
+def batcha_homogeneous_source(base,job='LNR 7"',volume=70.,geometry=None):
+    # Existing Gate6A homogeneous synthetic control; real existing readings and
+    # the repository's synthetic review procedure, not invented field evidence.
+    from project_state import lab_source_signature
+    from engineering_tools import lab_review_signature
+    from cfw128_integration_abi import compose_nominal_tracking
+    state=gate3_case(base,job)
+    if geometry is not None:
+        for key in ('job_type','hardware_table','placement_config','well_geometry'):state[key]=deepcopy(geometry[key])
+    state['fluids_config']['params']['Main'].update(volume=volume,pump_rate=volume/4.,density='80')
+    state['lab_source_signatures']['Main']=lab_source_signature(state,'Main')
+    state['lab_qc_params']['Main']['review_signature']=lab_review_signature(state['lab_qc_params']['Main'],state['lab_grid_dfs']['Main'])
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']=c.displacement.derived_displacement_bbl/4.
+    return state
+
+
+@pytest.mark.parametrize('job,volume,region',[
+    ('LNR 7"',10.,'BELOW_LAP'),('LNR 7"',70.,'ABOVE_LAP'),('LNR 7"',200.,'ABOVE_LAP'),
+    ('TIE BACK LNR 7"',10.,'BELOW_LAP'),('TIE BACK LNR 7"',50.,'ABOVE_LAP'),('TIE BACK LNR 7"',200.,'ABOVE_LAP')])
+def test_cfw128_batcha_ordered_front_is_not_hydraulic_outlet(bug01_reviewed_report_base,job,volume,region):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    state=batcha_homogeneous_source(bug01_reviewed_report_base,job,volume)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),stepping='event_aligned_test_only')
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert a.region==region and a.achieved_cement_top_md>0,a.case_holds
+    assert all(row[0] in ('Main','Mud','Displacement Fluid') for row in a.annular_bands)
+    assert all(abs(row[-1])<=1e-9 for row in a.post_pull_balances)
+    mouth=next(row[3] for row in a.eod_balances if row[0]=='Main')
+    assert (mouth>0)==(volume==200.)
+    assert a.basis=='POST_PULL_IDEALIZED_STATIC_CANDIDATE'
+    assert 'WITHDRAWAL_RETURN_ORDER_NOT_OBSERVED' in a.holds
+
+
+def test_cfw128_batcha_actual_nonmud_dp_and_terminal_split_hold(bug01_reviewed_report_base):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    geometry=synthetic_tieback(top=676.)
+    frame=geometry['hardware_table'];i=frame.index[frame.Description=='Drill Pipes'][0]
+    frame.at[i,'Size (in)']='5';frame.at[i,'ID (in)']=4.276
+    state=batcha_homogeneous_source(bug01_reviewed_report_base,'TIE BACK LNR 7"',200.,geometry)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),stepping='event_aligned_test_only')
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert 'HOLD_DP_CONTAINS_NONMUD' in a.case_holds
+    assert 'HOLD_TERMINAL_INTERVAL_CROSSES_WITHDRAWABLE_DP' in a.case_holds
+    assert {'WITHDRAWABLE_DP','INSTALLED_BODY'}=={row[1] for row in a.pipe_bands if row[-1] and row[0]=='Main'}
+    assert a.additional_mud_bbl is None and a.returned_dp_mud==a.annular_bands==()
+    assert a.achieved_cement_top_md is None
+
+
+def test_cfw128_batcha_directional_tail_terminal_and_readonly_pixels(gate7_cases,monkeypatch):
+    from dataclasses import replace
+    import cfw128_er03_numeric_adapter as adapter
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    import matplotlib.pyplot as plt
+    import numpy as np
+    state,r,b=gate7_cases['LNR 7"',200.];cond=PostPullConditions(True,True,True)
+    zero=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(b,tail_cap_min=0.),stepping='event_aligned_test_only')
+    assert zero.native_observation.payload[2][-1][2]==0.
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    z=assess_post_pull(state,zero,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    assert a.annular_bands==z.annular_bands and a.eod_balances==z.eod_balances
+    assert r.native_observation.payload[3]!=r.native_observation.payload[4]
+    direction=deepcopy(state);direction['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    dr=adapter.run_numeric_test_case(direction,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine='directional',stepping='event_aligned_test_only')
+    da=assess_post_pull(direction,dr,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    assert da.achieved_cement_top_md==a.achieved_cement_top_md and dr.trajectory_source=='APP_DIRECTIONAL_STATION_TVD_V1'
+    fig=adapter.render_numeric_test_charts(r);fig.canvas.draw();pixels=np.asarray(fig.canvas.buffer_rgba()).copy();plt.close(fig)
+    before=pickle.dumps((state,r));monkeypatch.setattr(adapter.event_vertical,'simulate',lambda *a:pytest.fail('Static review invoked a solver'))
+    assert assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)==a
+    assert pickle.dumps((state,r))==before
+    fig=adapter.render_numeric_test_charts(r);fig.canvas.draw();assert np.array_equal(pixels,np.asarray(fig.canvas.buffer_rgba()));plt.close(fig)
+
+
+@pytest.mark.parametrize('scavenger',[False,True])
+def test_cfw128_batcha_multiple_stage_identities_and_order(gate7_cases,scavenger):
+    from project_state import lab_source_signature
+    from engineering_tools import lab_review_signature
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    state,r,b=gate7_cases['LNR 7"',200.];state=deepcopy(state)
+    state['fluids_config']['params']['Main'].update(volume=100.,pump_rate=25.)
+    names=('Tail','Scavenger') if scavenger else ('Tail',)
+    for name in names:
+        state['fluids_config']['active'].insert(0,name)
+        state['fluids_config']['params'][name]=deepcopy(state['fluids_config']['params']['Main'])
+        for key in ('cement_params','fluid_data','cement_additives_dfs','lab_grid_dfs','lab_qc_params'):
+            state[key][name]=deepcopy(state[key]['Main'])
+        state['lab_source_signatures'][name]=lab_source_signature(state,name)
+        state['lab_qc_params'][name]['review_signature']=lab_review_signature(state['lab_qc_params'][name],state['lab_grid_dfs'][name])
+    from dataclasses import replace
+    b=replace(b,gel_pa_by_fluid=(*b.gel_pa_by_fluid,*((n,25.) for n in names)))
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='event_aligned_test_only')
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert {'Main','Tail'}<=set(row[0] for row in a.annular_bands)
+    assert [row[0] for row in r.stages]==[*(['Scavenger'] if scavenger else []),'Main','Tail','Displacement Fluid']
+    assert all(abs(row[-1])<=1e-9 for row in a.post_pull_balances)
+    if scavenger:assert any(row[0]=='Scavenger' for row in a.eod_balances)
+
+
+def test_cfw128_batcha_frozen_uat19_missing_source_and_false_geometry_hold(gate7_cases):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    state,r,b=gate7_cases['LNR 7"',40.];cond=PostPullConditions(True,True,True)
+    frozen=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    a=assess_post_pull(state,frozen,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    assert a.case_holds==('HOLD_NATIVE_EOD_ABSENT',) and a.annular_bands==()
+    uat=cfw128_c1_uat19_state()
+    with pytest.raises((ValueError,KeyError)):
+        assess_post_pull(uat,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    gap=deepcopy(state);frame=gap['hardware_table'];i=frame.index[frame.Description=='Drill Pipes'][0]
+    frame.at[i,'MD (m)']='1-400'
+    with pytest.raises(ValueError):assess_post_pull(gap,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+
+
+@pytest.mark.parametrize('job',['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
+def test_cfw128_batcha_independent_fluid_and_section_ledger(gate7_cases,job):
+    from fractions import Fraction
+    from cfw128_integration_abi import compose_nominal_tracking
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    from cfw128_c2e6b_dry_pipe_mud_makeup import _product_bounds,_intersect
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as v
+    state,r,b=gate7_cases[job,40. if job.startswith('CSG') else 200.]
+    a=assess_post_pull(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA);eod=r.native_observation.payload[3]
+    # Independently start with raw observation tokens, not the new ledger.
+    for name,initial,injected,mouth,head,pipe,ann,residual in a.eod_balances:
+        assert abs(math.fsum((initial,injected,-mouth,-head,-pipe,-ann)))<=1e-9
+        actual_pipe=math.fsum(amount for fluid,amount in eod[1] if fluid==name)
+        actual_ann=math.fsum(amount for fluid,amount in eod[2] if fluid==name)
+        assert pipe==actual_pipe and ann==actual_ann
+    if c.captured_geometry.kind=='casing':
+        assert a.basis=='CASING_NATIVE_PUMP_END_NO_DP_PULL' and a.achieved_cement_top_md>0
+        return
+    native_dp=math.fsum(math.pi/4*(p.id_in*.0254)**2/v.BBL_TO_M3*(p.bottom_md-p.top_md)
+        for p in c.captured_geometry.active_sections if p.bottom_md<=c.captured_geometry.string_top_md)
+    assert math.isclose(math.fsum(amount for name,amount in a.returned_dp_mud),native_dp,rel_tol=0.,abs_tol=1e-9)
+    for left,right,native,inner,outer,steel,residual in a.withdrawn_sections:
+        p=next(p for p in c.captured_geometry.active_sections if p.top_md<=left and right<=p.bottom_md)
+        length=right-left
+        # Existing captured-product bounds, not a new geometric tolerance.
+        ob=_product_bounds(p.od_in,0.,length,outer);ib=_product_bounds(p.id_in,0.,length,inner)
+        _intersect((ob[0]-ib[1],ob[1]-ib[0]),_product_bounds(p.od_in,p.id_in,length,steel))
+    for name,before_pipe,before_ann,external,after_pipe,after_ann,residual in a.post_pull_balances:
+        moved=math.fsum(value for fluid,value in a.returned_dp_mud if fluid==name)
+        assert after_pipe==float(Fraction(before_pipe)-sum((Fraction(value) for fluid,value in a.returned_dp_mud if fluid==name),Fraction()))
+        exact_ann=sum((Fraction(*row[5]) for row in a.annular_bands if row[0]==name),Fraction())
+        assert after_ann==float(exact_ann) and abs(residual)<=1e-9
+        if name!='Displacement Fluid':assert external==0.
+        # Each band's source amount is recovered independently from the raw EOD
+        # annulus or internal transfer; do not double-count recovered DP Mud.
+        for origin,expected in [('NATIVE_EOD_ANNULUS',before_ann),('RETURNED_DP_INTERNAL',moved),('EXTERNAL_MAKEUP_MUD',external)]:
+            got=sum((Fraction(*row[5]) for row in a.annular_bands if row[0]==name and row[1]==origin),Fraction())
+            assert abs(got-Fraction(expected))<=Fraction(1e-9)
 
 
 @pytest.mark.parametrize('fault',['negative_qout','missing_native','swapped_placement','wrong_engine','frozen'])
