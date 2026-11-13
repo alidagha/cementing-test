@@ -5707,7 +5707,8 @@ def test_cfw128_gate3_directional_intermediate_tvd_is_explicit_hold(gate3_numeri
     state=deepcopy(gate3_numeric_source)
     state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
     r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
-    assert r.status=='HOLD' and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' in r.holds and not r.time_min
+    assert r.time_min and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' not in r.holds
+    assert r.directional_tvd_proof[0]=='APP_WELL_PROFILE_DERIVED_STATION_KNOTS'
     md,app,er03=r.tvd_comparison[0]
     assert md==50. and app==pytest.approx(47.7464829275686) and app!=pytest.approx(er03)
 
@@ -5991,7 +5992,7 @@ def test_cfw128_gate4b_explicit_adapter_preserves_default_and_holds(gate3_numeri
     with pytest.raises(ValueError):run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='automatic')
     directional=deepcopy(state);directional['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
     held=run_numeric_test_case(directional,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine='directional',stepping='event_aligned_test_only')
-    assert held.status=='HOLD' and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' in held.holds
+    assert held.time_min and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' not in held.holds
     pressure=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(b,bhsp_target_psi=5000.),engine=engine,stepping='event_aligned_test_only')
     assert 'BHSP_TARGET_STATION_NOT_PROVED' in pressure.holds
 
@@ -6495,3 +6496,72 @@ def test_cfw128_gate4fp1_shutin_chronology_before_render(gate4f_precomputed,shut
         assert adapter.render_numeric_test_charts(r) is sentinel
         assert seen[0].marker_time==(None if shutin in (None,3.) else shutin)
     assert pickle.dumps(r)==before and r.status=='HOLD' and r.chart_admissible is False
+
+
+@pytest.mark.parametrize('stepping',['frozen','event_aligned_test_only'])
+def test_cfw128_gate5b_directional_admits_app_knots(gate3_numeric_source,stepping):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case,render_numeric_test_charts
+    from dataclasses import FrozenInstanceError
+    import matplotlib.pyplot as plt
+    state=deepcopy(gate3_numeric_source)
+    state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    before=pickle.dumps(state)
+    r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional',stepping=stepping)
+    assert r.time_min and 'DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD' not in r.holds
+    proof=r.directional_tvd_proof
+    assert proof[0:2]==('APP_WELL_PROFILE_DERIVED_STATION_KNOTS','ER03_PIECEWISE_LINEAR_INTERIOR')
+    assert proof[2]==((0.,0.,0.),(100.,60.,0.),(1200.,60.,0.))
+    assert proof[3][1]==pytest.approx((100.,82.69933431326882))
+    assert r.tvd_comparison[0]==pytest.approx((50.,47.7464829275686,41.34966715663441))
+    assert pickle.dumps(state)==before and r.currentness=='NOT_CURRENTNESS_PROOF' and r.chart_admissible is False
+    fig=render_numeric_test_charts(r);plt.close(fig)
+    with pytest.raises(FrozenInstanceError):r.directional_tvd_proof=()
+
+
+@pytest.mark.parametrize('fault',['surface','bottom','duplicate','order','nan','missing','vertical_engine','sibling_receipt','edited_proof'])
+def test_cfw128_gate5b_directional_invalid_source_or_binding(gate3_numeric_source,fault,monkeypatch):
+    import cfw128_er03_numeric_adapter as adapter
+    from cfw128_integration_abi import compose_nominal_tracking
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source)
+    state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    frame=state['well_geometry']['survey'];composition=None
+    if fault=='surface':frame.loc[0,'MD']=1.
+    elif fault=='bottom':frame.loc[2,'MD']=1100.
+    elif fault=='duplicate':frame.loc[1,'MD']=0.
+    elif fault=='order':state['well_geometry']['survey']=frame.iloc[[0,2,1]].reset_index(drop=True)
+    elif fault=='nan':frame.loc[1,'Deviation']=float('nan')
+    elif fault=='missing':state['well_geometry']['survey']=frame.drop(columns=['Azimuth'])
+    elif fault=='sibling_receipt':
+        composition=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+        frame.loc[1,'Deviation']=55.
+    elif fault=='edited_proof':
+        r=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+        before=pickle.dumps(r);changed=replace(r,directional_tvd_proof=(*r.directional_tvd_proof[:3],((0.,0.),(100.,80.),(1200.,600.)),*r.directional_tvd_proof[4:]))
+        def bad_render(*a,**k):raise AssertionError('Altered provenance reached renderer')
+        monkeypatch.setattr(adapter,'render_three_charts',bad_render)
+        with pytest.raises(ValueError):adapter.render_numeric_test_charts(changed)
+        assert pickle.dumps(r)==before
+        return
+    def forbidden(*a,**k):raise AssertionError('Invalid directional source reached simulation')
+    for module in (adapter.vertical,adapter.directional,adapter.event_vertical,adapter.event_directional):monkeypatch.setattr(module,'simulate',forbidden)
+    if fault=='vertical_engine':
+        r=adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='vertical')
+        assert r.time_min==() and 'DIRECTIONAL_SOURCE_REQUIRES_DIRECTIONAL_ENGINE' in r.holds
+    else:
+        with pytest.raises((ValueError,TypeError)):adapter.run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional',composition=composition)
+
+
+def test_cfw128_gate5b_source_edit_identity_and_unaligned_hold(gate3_numeric_source):
+    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from dataclasses import replace
+    state=deepcopy(gate3_numeric_source);state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[1200.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    a=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+    state['well_geometry']['survey'].loc[1,'Deviation']=55.
+    b=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=gate3_boundary(),engine='directional')
+    assert a.source_identity!=b.source_identity and a.projection_identity!=b.projection_identity and a.directional_tvd_proof!=b.directional_tvd_proof
+    state['fluids_config']['params']['Main']['pump_rate']='40';state['fluids_config']['params']['Displacement Fluid']['pump_rate']='40'
+    frozen=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),dt_min=.2),engine='directional')
+    aligned=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),dt_min=.2),engine='directional',stepping='event_aligned_test_only')
+    assert 'FROZEN_TIMESTEP_STAGE_VOLUME_NOT_PROVED' in frozen.holds and frozen.stage_volume_audit[0][1:3]==(1.,8.)
+    assert all(entered==pytest.approx(executed,rel=2e-14) for _,entered,executed,_ in aligned.stage_volume_audit)

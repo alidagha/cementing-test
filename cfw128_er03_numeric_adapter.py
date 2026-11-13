@@ -109,6 +109,7 @@ class NumericEvidence:
     tvd_comparison: tuple[tuple[float,float,float],...]=()
     stage_volume_audit: tuple[tuple[str,float,float,tuple[int,int]],...]=()
     source_hashes: tuple[str,...]=field(default=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256),kw_only=True)
+    directional_tvd_proof: tuple=field(default=(),kw_only=True)
     evidence_class: Literal['SYNTHETIC_TEST_ONLY']=field(default='SYNTHETIC_TEST_ONLY',init=False)
     currentness: Literal['NOT_CURRENTNESS_PROOF']=field(default='NOT_CURRENTNESS_PROOF',init=False)
     final_post_pull_toc: Literal['NOT_EVALUATED']=field(default='NOT_EVALUATED',init=False)
@@ -267,7 +268,8 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
 
     PSIA conversion/field pressure qualification is unsupported. BHSP is a total
     bottom target in the same declared surface reference, never an increment.
-    Nonvertical App TVD cannot be silently replaced by ER03 interpolation.
+    App station TVD is an explicit geometric input exception; research interior
+    interpolation remains piecewise linear, never App-interior parity.
     """
     if type(boundary) is not NumericBoundary or type(state) is not dict:raise TypeError('Typed synthetic boundary/project required.')
     if any(type(getattr(boundary,n)) is not str for n in ('evidence_class','pressure_datum','bhsp_semantics','instrument_declaration')):
@@ -301,7 +303,7 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     holds=('PHYSICAL_INSTRUMENT_UNVERIFIED','FIELD_PRESSURE_DATUM_NOT_CERTIFIED','FINAL_POST_PULL_TOC_NOT_EVALUATED',
            'INV014_FAIL_WITH_OWNER_EXCEPTION','DOWNSTREAM_PLACEMENT_AND_CLOSURE_NOT_COMPOSED')
     if stepping!='frozen':holds=(*holds,'EVENT_ALIGNED_TEST_ONLY','BHSP_AND_DIRECTIONAL_SEMANTICS_NOT_QUALIFIED')
-    compare=();lab_bindings=[]
+    compare=();lab_bindings=[];tvd_proof=()
     def held(reason):
         held_source=fingerprint(['cfw128-gate3-held-source/1',base,tuple(lab_bindings)])
         identity=fingerprint(['cfw128-gate3-hold/1',held_source,reason,compare])
@@ -309,14 +311,17 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     if source['well_geometry']['type']=='Directional':
         stations=s.survey
         knots=[p for p in s.trajectory if p.md in tuple(v.md for v in stations)]
+        if tuple(p.md for p in knots)!=tuple(p.md for p in stations):raise ValueError('Captured survey/TVD station mismatch.')
         survey=d.Survey([p.md for p in knots],[p.tvd for p in knots],inc=[p.deviation_deg for p in stations],azi=[p.azimuth_deg for p in stations],source='captured App canonical survey')
         # Fresh App query captures supply the actual partial-inclination integral.
         queries=tuple((a.md+b.md)/2 for a,b in zip(stations,stations[1:]))
         interior=compose_nominal_tracking(source,expected_app_source_sha=sha,query_md=queries)
         actual={p.md:p.tvd for p in interior.captured_geometry.trajectory}
         compare=tuple((md,actual[md],survey.tvd_at(md)) for md in queries)
-        if not survey.identity:return held('DIRECTIONAL_INTERIOR_TVD_CONVENTION_HOLD')
         if engine=='vertical':return held('DIRECTIONAL_SOURCE_REQUIRES_DIRECTIONAL_ENGINE')
+        tvd_proof=('APP_WELL_PROFILE_DERIVED_STATION_KNOTS','ER03_PIECEWISE_LINEAR_INTERIOR',
+                   tuple((p.md,p.deviation_deg,p.azimuth_deg) for p in stations),
+                   tuple((p.md,p.tvd) for p in knots),s.source_identity,s.request_identity)
     elif engine=='directional':
         survey=d.Survey.vertical(s.shoe_md)
     stages=[];fluids={};proofs=[];params=source['fluids_config'].get('params',{});old=source.get('fluid_data',{})
@@ -371,6 +376,7 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     encoded=tuple((v.fluid_type,v.material_name,v.volume_bbl,v.density_pcf,v.rate_bpm) for v in stages)
     proof_tokens=tuple(tuple(getattr(v,f.name) for f in fields(v)) for v in proofs)
     numeric_source=fingerprint(['cfw128-gate3-numeric-source/1',base,encoded,proof_tokens,tuple(lab_bindings)])
+    if tvd_proof:numeric_source=fingerprint(['cfw128-gate5b-tvd-source/1',numeric_source,tvd_proof])
     status='NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED'
     # Original audit is unchanged. Derivative audit uses actual executed intervals.
     # Requested volumes stay authoritative; never adjust them or their rates.
@@ -409,7 +415,8 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
             status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
     audit=tuple(audit)
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
-    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes)
+    if tvd_proof:identity=fingerprint(['cfw128-gate5b-tvd-result/1',identity,tvd_proof])
+    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof)
 
 
 def render_numeric_test_charts(evidence: NumericEvidence):
@@ -460,6 +467,14 @@ def render_numeric_test_charts(evidence: NumericEvidence):
     if events['t_marker']!=events['t_shutin']:raise ValueError('Shut-in marker differs from its declared event.')
     if events['t_shutin'] is not None and events['t_shutin']<events['t_eod']:raise ValueError('Shut-in precedes EOD.')
     identity=fingerprint(['cfw128-gate3-result/1',r.source_identity,channels,r.events,r.engine_injection_capacity_bbl,r.tvd_comparison,r.stage_volume_audit,r.status,r.holds])
+    if r.directional_tvd_proof:
+        proof=r.directional_tvd_proof
+        if (len(proof)!=6 or proof[:2]!=('APP_WELL_PROFILE_DERIVED_STATION_KNOTS','ER03_PIECEWISE_LINEAR_INTERIOR')
+                or len(proof[2])!=len(proof[3]) or len(proof[2])<2
+                or any(len(v)!=3 for v in proof[2]) or any(len(v)!=2 for v in proof[3])
+                or tuple(v[0] for v in proof[2])!=tuple(v[0] for v in proof[3])):
+            raise ValueError('Invalid directional TVD provenance.')
+        identity=fingerprint(['cfw128-gate5b-tvd-result/1',identity,proof])
     if identity!=r.projection_identity:raise ValueError('Numerical evidence projection differs.')
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']
