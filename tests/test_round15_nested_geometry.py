@@ -6776,9 +6776,9 @@ def gate7_assert_imports(path):
 
 
 @pytest.fixture(scope='module')
-def gate7_cases(bug01_reviewed_report_base):
+def gate7_cases(bug01_reviewed_report_base,c2_native_geometries):
     from dataclasses import replace
-    from cfw128_er03_numeric_adapter import run_numeric_test_case
+    from cfw128_er03_numeric_adapter import run_numeric_test_case,event_vertical
     cases={}
     for job in BUG01_JOBS:
         for volume in (1.,40.,200.):
@@ -6786,7 +6786,13 @@ def gate7_cases(bug01_reviewed_report_base):
             state['fluids_config']['params']['Main'].update(volume=volume,pump_rate=volume/4.)
             b=replace(gate3_boundary(),float_equipment=True,back_pressure_psi=250.,tail_cap_min=.35,
                       gel_pa_by_fluid=tuple((n,25.) for n,v in gate3_boundary().gel_pa_by_fluid))
-            r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='event_aligned_test_only')
+            original=event_vertical.simulate
+            def observe(design):
+                c2_native_geometries[job,volume]=design.geo
+                return original(design)
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(event_vertical,'simulate',observe)
+                r=run_numeric_test_case(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,stepping='event_aligned_test_only')
             cases[job,volume]=(state,r,b)
     return cases
 
@@ -7785,3 +7791,251 @@ def test_cfw128_batchb_counterfeit_underfill_and_full_parent_binding(gate8_cases
         numeric=gate4f_resign(replace(parent.numeric,native_observation=replace(parent.numeric.native_observation,payload=tuple(payload))))
         other=deepcopy(parent);object.__setattr__(other,'numeric',numeric);resign(other)
         with pytest.raises(ValueError):bridge.prepare_shadow_post_pull(state,other,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+
+
+@pytest.fixture(scope='module')
+def c2_native_geometries():
+    return {}
+
+
+@pytest.fixture(scope='module')
+def c2_native_cases(gate7_cases,c2_native_geometries):
+    """Observe existing real fixture runs, including after fixture caching."""
+    assert c2_native_geometries.keys()==gate7_cases.keys()
+    return {key:(*values,c2_native_geometries[key]) for key,values in gate7_cases.items()}
+
+
+def c2_section_bridge(canonical,native):
+    """Exact captured-float accounting, bbl; positive = canonical - native.
+
+    C1's five *bookkeeping* terms are not these five scientific categories.
+    Expand both capacity-basis terms into unit/geometry/evaluation terms;
+    retain EOD stock and coordinate terms, and put gain/ID/steel arithmetic
+    in evaluation. No residual is used to define a component.
+    """
+    from fractions import Fraction as F
+    from cement_chart_model import _capacity
+    app_bbl=F(42)/F('7.48051945')*F('0.3048')**3
+    native_bbl=F('0.15898730')
+    assert float(app_bbl)==0.1589872955766461
+    assert app_bbl<native_bbl
+    def reference(row,unit):
+        top,bottom,outer,inner=row
+        return F(math.pi)/4*(F(outer)**2-F(inner)**2)*F('0.0254')**2*F(bottom-top)/unit
+    ar=reference(canonical,app_bbl);nr=reference(native,native_bbl)
+    common_native=reference(native,app_bbl)
+    a=F(_capacity(canonical[2],canonical[3]))*F(canonical[1]-canonical[0])
+    # Reproduce the native source's actual calculation order, not a fitted
+    # coefficient or an approximate equality against the App capacity.
+    import DOC58_SI_CANDIDATE_03_TF2R_ER03 as engine
+    cap=math.pi*((native[2]*.0254)**2-(native[3]*.0254)**2)/4*engine.BBL_PER_M3
+    n=F(cap)*F(native[1]-native[0])
+    unit=common_native-nr;geometry=ar-common_native
+    evaluation=(a-ar)-(n-nr)
+    assert unit>0 and nr-common_native<0  # Native minus App is negative.
+    assert unit+geometry+evaluation==a-n
+    return a,n,ar,nr,unit,geometry,evaluation
+
+
+def c2_assert_signed_terms(terms,observed):
+    from fractions import Fraction as F
+    assert tuple(terms)==('unit','geometry','eod_stock','coordinate','evaluation')
+    assert sum(terms.values(),F())==observed
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+@pytest.mark.parametrize('volume',[1.,40.,200.])
+def test_cfw128_c2_five_signed_terms(c2_native_cases,job,volume,record_property):
+    from fractions import Fraction as F
+    from cfw128_integration_abi import compose_nominal_tracking
+    from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
+    from cement_chart_model import _capacity
+    state,numeric,boundary,geo=c2_native_cases[job,volume]
+    before=pickle.dumps((state,numeric))
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    review=assess_post_pull(state,numeric,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+                            conditions=PostPullConditions(True,True,True))
+    initial,intervals,eod,tail=numeric.native_observation.payload[1:]
+    assert eod[0]<tail[0] and eod[3]==0.
+    # Native raw dimensions and canonical measured source rows must match,
+    # independently of the nonzero unit conversion discrepancy.
+    ann=sorted(geo.ann_sections,key=lambda p:p.z_top)
+    assert len(ann)==len(c.geometry.pumping_return)
+    sections=[]
+    for a,n in zip(c.geometry.pumping_return,ann):
+        canonical=(a.top_md,a.bottom_md,a.outer_diameter_in,a.inner_diameter_in)
+        native=(n.z_top,n.z_bot,n.do_in,n.di_in)
+        assert canonical==native and a.wall_source_rows and a.running_source_rows
+        row=c2_section_bridge(canonical,native)
+        section=next(p for p in geo.chan_ann.sections if (p.z_top,p.z_bot)==native[:2])
+        assert row[1]==F(section.cap_bbl_per_m)*F(section.z_bot-section.z_top)
+        assert row[5]==0  # Verified exact geometry delta; not a tolerance.
+        sections.append(row)
+    # Pipe capacity uses a distinct native expression: verify every measured
+    # ID against the actual Channel rather than substituting annulus math.
+    for p,n in zip(sorted(c.captured_geometry.active_sections,key=lambda p:p.top_md),
+                   sorted(geo.pipe_sections,key=lambda p:p.z_top)):
+        assert (p.top_md,p.bottom_md,p.id_in,p.od_in)==(n.z_top,n.z_bot,n.id_in,n.od_in)
+    cp=geo.chan_pipe;ca=geo.chan_ann
+    for channel in (cp,ca):
+        windows=list(channel._windows(True))
+        assert windows[0][1]==0. and windows[-1][2]==channel.total_volume()
+        assert all(left[2]==right[1] for left,right in zip(windows,windows[1:]))
+        for section,lo,hi in windows:
+            # Window coverage versus unrounded width is separately observable.
+            width=F(section.cap_bbl_per_m)*F(section.z_bot-section.z_top)
+            coordinate=F(hi)-F(lo)-width
+            assert width+coordinate==F(hi)-F(lo)
+    ap=sum((r[0] for r in sections),F());na=F(ca.total_volume())
+    ar=sum((r[2] for r in sections),F());nr=sum((r[3] for r in sections),F())
+    unit=sum((r[4] for r in sections),F());geometry=sum((r[5] for r in sections),F())
+    evaluation=(ap-ar)-(na-nr)
+    ea=sum((F(v) for name,v in eod[2]),F());stock=na-ea
+    # A second, independently measured checkpoint uses the native unit on
+    # both sides: exact section products versus actual EOD stock. This is
+    # near zero without normalizing the canonical/native discrepancy away.
+    exact_native=sum((F(p.cap_bbl_per_m)*F(p.z_bot-p.z_top) for p in ca.sections),F())
+    near_terms=dict(unit=F(),geometry=F(),eod_stock=stock,coordinate=F(),evaluation=exact_native-na)
+    c2_assert_signed_terms(near_terms,exact_native-ea)
+    assert abs(exact_native-ea)<=F(1e-9)
+    record_property('native_checkpoint_bbl',repr((float(exact_native-ea),str(exact_native-ea))))
+    coordinate=F();target=ap;returned=F();makeup=F()
+    if not job.startswith('CSG'):
+        lap=c.captured_geometry.string_top_md;nd=F(cp.volume_above(lap))
+        ad=F();adr=F();ndr=F();dp_unit=F();dp_geometry=F();steel_reference=F()
+        for top,bottom,actual,inner,outer,steel,residual in review.withdrawn_sections:
+            p=next(p for p in geo.pipe_sections if p.z_top<=top and bottom<=p.z_bot)
+            run=next(p for p in c.captured_geometry.active_sections if p.top_md<=top and bottom<=p.bottom_md)
+            assert run.description=='Drill Pipes' and run.source_rows
+            row=c2_section_bridge((top,bottom,run.id_in,0.),(top,bottom,p.id_in,0.))
+            assert row[5]==0 and inner==_capacity(run.id_in)*(bottom-top)
+            ad+=F(inner);adr+=row[2];ndr+=row[3];dp_unit+=row[4];dp_geometry+=row[5]
+            assert outer==_capacity(run.od_in)*(bottom-top)
+            assert steel==_capacity(run.od_in,run.id_in)*(bottom-top)
+            steel_dimensions=(top,bottom,run.od_in,run.id_in)
+            steel_reference+=c2_section_bridge(steel_dimensions,steel_dimensions)[2]
+        returned=sum((F(v) for name,v in review.returned_dp_mud),F())
+        makeup=F(review.additional_mud_bbl)
+        target=sum((F(_capacity(p.outer_diameter_in,p.inner_diameter_in))*F(p.bottom_md-p.top_md)
+                    for p in c.geometry.post_pull_return),F())
+        post_reference=F()
+        for p in c.geometry.post_pull_return:
+            dimensions=(p.top_md,p.bottom_md,p.outer_diameter_in,p.inner_diameter_in)
+            post_reference+=c2_section_bridge(dimensions,dimensions)[2]
+        gain_geometry=post_reference-ar-adr-steel_reference
+        assert gain_geometry==0  # Also prove post-pull gain, not only pumping geometry.
+        unit+=dp_unit;geometry+=dp_geometry+gain_geometry;coordinate=nd-returned
+        evaluation+=(ad-adr)-(nd-ndr)+(target-ap-ad-makeup-gain_geometry)
+        # Independent top-window intersection of actual EOD tokens.
+        left=nd;available=F();dp_by_fluid={}
+        for name,value in reversed(eod[1]):
+            take=min(left,F(value));left-=take;available+=take
+            if take:
+                assert name in ('Mud','Displacement Fluid')
+                dp_by_fluid[name]=dp_by_fluid.get(name,F())+take
+        assert left==0 and abs(available-returned)<=F(1e-9)
+        for name,amount in dp_by_fluid.items():
+            assert abs(amount-sum((F(v) for n,v in review.returned_dp_mud if n==name),F()))<=F(1e-9)
+        assert all(r[1]=='INSTALLED_BODY' for r in review.pipe_bands if r[6])
+        assert c.displacement.end_md==c.captured_geometry.shoe_md-25.
+        left=F(cp.total_volume())-F(cp.volume_above(c.displacement.end_md));terminal_by_fluid={}
+        for name,value in eod[1]:
+            take=min(left,F(value));left-=take
+            terminal_by_fluid[name]=terminal_by_fluid.get(name,F())+take
+        assert left==0
+        for name,amount in terminal_by_fluid.items():
+            located=sum((F(*r[5]) for r in review.pipe_bands if r[0]==name and r[6]),F())
+            assert abs(amount-located)<=F(1e-9)
+        terminal_total=sum((F(*r[5]) for r in review.pipe_bands if r[6]),F())
+        assert abs(terminal_total-(F(cp.total_volume())-F(cp.volume_above(c.displacement.end_md))))<=F(1e-9)
+        assert float(target-ea-returned-makeup)==dict(review.capacity_residuals)['POST_PULL_CANONICAL_UNFILLED_BBL']
+    else:
+        assert not review.withdrawn_sections and not review.returned_dp_mud
+        assert review.additional_mud_bbl is None
+    terms=dict(unit=unit,geometry=geometry,eod_stock=stock,coordinate=coordinate,evaluation=evaluation)
+    observed=target-ea-returned-makeup
+    c2_assert_signed_terms(terms,observed)
+    record_property('signed_bbl',repr({key:(float(value),str(value)) for key,value in terms.items()}))
+    record_property('observed_bbl',repr((float(observed),str(observed))))
+    record_property('identities',repr((numeric.projection_identity,review.projection_identity,c.geometry.projection_identity)))
+    assert observed!=0 and abs(stock)<=F(1e-9)  # Nonzero basis; near-zero stock.
+    # Every nonzero term is necessary with its actual sign, even below the
+    # existing transport audit bound. No approximate closure hides roundoff.
+    for key,value in terms.items():
+        if value:
+            for replacement in (F(),-value):
+                mutant=dict(terms);mutant[key]=replacement
+                with pytest.raises(AssertionError):c2_assert_signed_terms(mutant,observed)
+    grouped=dict(terms);grouped['unit']+=grouped.pop('evaluation')
+    with pytest.raises(AssertionError):c2_assert_signed_terms(grouped,observed)
+    # Keeping all labels and the same total still cannot move evaluation
+    # roundoff into the independently derived conversion category.
+    regrouped=dict(terms);regrouped['unit']+=regrouped['evaluation'];regrouped['evaluation']=F()
+    if evaluation:
+        with pytest.raises(AssertionError):assert regrouped['unit']==unit
+    # An unrecorded injection/return/makeup changes stock, never the measured
+    # capacity components. Use an actual entered stage amount, no new limit.
+    for sign in (-1,1):
+        with pytest.raises(AssertionError):c2_assert_signed_terms(terms,observed+sign*F(volume))
+    for name,initial_stock,injected,mouth,head,pipe,annulus,residual in review.eod_balances:
+        actual_pipe=sum((F(v) for n,v in eod[1] if n==name),F())
+        actual_ann=sum((F(v) for n,v in eod[2] if n==name),F())
+        native_initial=sum((F(v) for col in initial[1:3] for n,v in col if n==name),F())
+        executed=tuple(row for row in intervals if row[1]<=eod[0])
+        native_injected=sum((F(v) for row in executed for n,v in row[5] if n==name),F())
+        ports=tuple(sum((F(v) for row in executed for p,col in row[6] if p==port for n,v in col if n==name),F())
+                    for port in ('ANNULAR_MOUTH','PIPE_HEAD'))
+        assert (initial_stock,injected,mouth,head)==tuple(map(float,(native_initial,native_injected,*ports)))
+        assert float(actual_pipe)==pipe and float(actual_ann)==annulus
+        assert abs(F(initial_stock)+F(injected)-F(mouth)-F(head)-actual_pipe-actual_ann)<=F(1e-9)
+    assert all(getattr(review,f) is False for f in ('enabled','ready_to_run','hb_admissible',
+        'hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    assert review.currentness=='NOT_CURRENTNESS_PROOF' and review.qualification=='NOT_GRANTED'
+    assert set(numeric.holds)<=set(review.holds) and pickle.dumps((state,numeric))==before
+
+
+def test_cfw128_c2_geometry_and_section_provenance_negatives(c2_native_cases):
+    from dataclasses import replace
+    from cfw128_integration_abi import compose_nominal_tracking
+    state,numeric,boundary,geo=c2_native_cases['LNR 5"',200.]
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    a=c.geometry.pumping_return[0];n=sorted(geo.ann_sections,key=lambda p:p.z_top)[0]
+    canonical=(a.top_md,a.bottom_md,a.outer_diameter_in,a.inner_diameter_in)
+    native=(n.z_top,n.z_bot,n.do_in,n.di_in)
+    assert c2_section_bridge(canonical,native)[5]==0
+    # A geometry delta cannot be declared zero after changing a measured MD.
+    changed=(native[0],native[1]+1.,native[2],native[3])
+    assert c2_section_bridge(canonical,changed)[5]!=0
+    with pytest.raises(AssertionError):assert c2_section_bridge(canonical,changed)[5]==0
+    expected=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).geometry.pumping_return
+    for forged in (replace(a,wall_source_rows=(max(a.wall_source_rows)+1,)),
+                   replace(a,running_source_rows=(max(a.running_source_rows)+1,))):
+        with pytest.raises(AssertionError):assert (forged,*c.geometry.pumping_return[1:])==expected
+
+
+@pytest.mark.parametrize('fault',['injection','return','makeup'])
+def test_cfw128_c2_resigned_unrecorded_volume_rejected(c2_native_cases,fault):
+    from dataclasses import fields
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    from cfw128_c2e8_post_pull_review import assess_post_pull,validate_post_pull_review,PostPullConditions,SCHEMA
+    state,numeric,boundary,geo=c2_native_cases['LNR 7"',200.]
+    cond=PostPullConditions(True,True,True)
+    review=assess_post_pull(state,numeric,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
+    forged=deepcopy(review);amount=numeric.stages[0][2]
+    if fault in ('injection','return'):
+        rows=list(forged.eod_balances);row=list(rows[0])
+        row[2]+=amount
+        row[5 if fault=='injection' else 3]+=amount
+        rows[0]=tuple(row);object.__setattr__(forged,'eod_balances',tuple(rows))
+    else:
+        object.__setattr__(forged,'additional_mud_bbl',forged.additional_mud_bbl+amount)
+        rows=list(forged.post_pull_balances)
+        i=next(i for i,row in enumerate(rows) if row[0]=='Displacement Fluid');row=list(rows[i])
+        row[3]+=amount;row[5]+=amount;rows[i]=tuple(row)
+        object.__setattr__(forged,'post_pull_balances',tuple(rows))
+    values=tuple(getattr(forged,f.name) for f in fields(forged) if f.init and f.name!='projection_identity')
+    object.__setattr__(forged,'projection_identity',fingerprint([SCHEMA,_primitive(values)]))
+    forged.__post_init__()  # Internally re-signed is not source validation.
+    with pytest.raises(ValueError):
+        validate_post_pull_review(state,numeric,forged,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=cond)
