@@ -6944,7 +6944,8 @@ def gate8_assert_imports(path):
         'cement_chart_report':('prepared_cement_report',),'well_schematic_adapter':('source_signature','prepare_schematic'),
         'phase_10_procedure':('TEMPLATE_PATH','document_signature','_word_quantity_context'),
         'cfw128_er03_numeric_adapter':('NumericBoundary','NumericEvidence','_primitive','run_numeric_test_case','validate_numeric_evidence','render_numeric_test_charts'),
-        'cfw128_c2e7_native_placement':('NativePlacementAssessment','assess_native_placement')}
+        'cfw128_c2e7_native_placement':('NativePlacementAssessment','assess_native_placement'),
+        'cfw128_c2e8_post_pull_review':('PostPullConditions','PostPullReview','assess_post_pull','validate_post_pull_review')}
     nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
     assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
     assert all(n.level==0 for n in nodes)
@@ -7260,6 +7261,8 @@ def test_cfw128_batcha_import_firewall_negative_and_production_isolation(monkeyp
             with pytest.raises(AssertionError):batcha_assert_imports(path)
     for other in Path('.').glob('*.py'):
         if other==path:continue
+        if other.name=='cfw128_shadow_word_bridge.py':
+            gate8_assert_imports(other);continue
         tree=ast.parse(other.read_text())
         assert not any(isinstance(n,ast.ImportFrom) and n.module==path.stem or
             isinstance(n,ast.Import) and any(a.name==path.stem for a in n.names) for n in ast.walk(tree))
@@ -7625,3 +7628,160 @@ def test_cfw128_gate8_import_route_and_cleanup(gate8_cases,monkeypatch):
             with bridge.shadow_pumping_report(state,r,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b):raise RuntimeError('later failure')
         assert plt.get_fignums()==initial
     finally:plt.close(other)
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_batchb_sidecar_eight_job_runtime_matrix(gate8_cases,job,monkeypatch):
+    import cfw128_shadow_word_bridge as bridge
+    import cfw128_er03_numeric_adapter as adapter
+    from cfw128_c2e8_post_pull_review import PostPullConditions,PostPullReview
+    state,b,parent=gate8_cases[job];before=pickle.dumps((state,parent))
+    for solver in (adapter.event_vertical,adapter.event_directional):
+        monkeypatch.setattr(solver,'simulate',lambda *a:pytest.fail('Sidecar ran a second solver'))
+    monkeypatch.setattr(bridge,'run_numeric_test_case',lambda *a,**k:pytest.fail('Sidecar reran numeric intake'))
+    cond=PostPullConditions(True,True,True)
+    child=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    bridge.validate_shadow_post_pull(state,parent,child,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    assert type(child) is bridge.ShadowPostPullEvidence and type(child.review) is PostPullReview
+    assert child.shadow_identity==parent.projection_identity and child.source_identity==parent.source_identity
+    assert child.review.numeric_identity==parent.numeric.projection_identity
+    assert child.review.placement_identity==parent.placement.projection_identity
+    assert child.review.composition_identity==parent.numeric.composition_projection_identity
+    assert child.review.eod_balances==parent.placement.fluid_balances
+    assert set(parent.placement.holds)<=set(child.review.holds)
+    assert all(row[-1]==0. for row in child.review.post_pull_balances)
+    assert all(getattr(child,n) is False and getattr(child.review,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    if job.startswith('CSG'):
+        assert child.review.surface_status=='HOLD_SURFACE_NOT_PROVED' and child.review.additional_mud_bbl is None
+    else:
+        assert child.review.returned_dp_mud and child.review.additional_mud_bbl>0
+        assert child.review.annular_bands and child.review.region=='ABOVE_LAP'
+    assert pickle.dumps((state,parent))==before
+
+
+@pytest.mark.parametrize('fault',['state','job','host','receiver','lab','sha','boundary','conditions','child',
+    'resigned_source','resigned_parent','resigned_review','resigned_conditions','flags','late'])
+def test_cfw128_batchb_stale_mixed_and_resigned_sidecars_reject(gate8_cases,fault,monkeypatch):
+    from dataclasses import replace
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    from cfw128_c2e8_post_pull_review import PostPullConditions,assess_post_pull
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=gate8_cases['TIE BACK LNR 7"'];state=deepcopy(state);cond=PostPullConditions(True,True,True);sha=GATE3_APP_SOURCE_SHA
+    child=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=sha,boundary=b,conditions=cond)
+    if fault=='state':state['well_data']['well_name']='Different well, same numeric physics'
+    elif fault=='job':state['job_type']='TIE BACK LNR 5"'
+    elif fault=='host':state['hardware_table'].at[0,'ID (in)']=8.5
+    elif fault=='receiver':
+        i=state['hardware_table'].index[state['hardware_table'].Description=='Previous Liner Shoe'][0]
+        state['hardware_table'].at[i,'MD (m)']='700-1250'
+    elif fault=='lab':state['lab_qc_params']['Main']['reviewed']=False
+    elif fault=='sha':sha='0'*40
+    elif fault=='boundary':b=replace(b,back_pressure_psi=251.)
+    elif fault=='conditions':cond=PostPullConditions(True,True,False)
+    elif fault=='child':object.__setattr__(child,'projection_identity','0'*64)
+    elif fault=='flags':object.__setattr__(child,'enabled',True)
+    elif fault=='late':
+        real=bridge.assess_post_pull
+        def changed(*a,**k):
+            result=real(*a,**k);state['well_data']['well_name']='Late edit';return result
+        monkeypatch.setattr(bridge,'assess_post_pull',changed)
+        with pytest.raises(ValueError):bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=sha,boundary=b,conditions=cond)
+        return
+    else:
+        child=deepcopy(child)
+        if fault=='resigned_source':object.__setattr__(child,'source_identity','0'*64)
+        elif fault=='resigned_parent':object.__setattr__(child,'shadow_identity','0'*64)
+        elif fault=='resigned_review':object.__setattr__(child,'review',assess_post_pull(gate8_cases['LNR 5"'][0],gate8_cases['LNR 5"'][2].numeric,expected_app_source_sha=sha,conditions=cond))
+        else:object.__setattr__(child,'review',assess_post_pull(state,parent.numeric,expected_app_source_sha=sha,conditions=PostPullConditions(False,True,True)))
+        object.__setattr__(child,'projection_identity',fingerprint([bridge.POST_PULL_SIDECAR_SCHEMA,child.shadow_identity,child.source_identity,_primitive(child.review)]))
+    with pytest.raises((ValueError,TypeError)):
+        bridge.validate_shadow_post_pull(state,parent,child,expected_app_source_sha=sha,boundary=b,conditions=cond)
+
+
+@pytest.mark.parametrize('values,reason',[(None,'typed'),((False,True,True),'HOLD_CONNECTED_RETURN_NOT_PROVED'),
+    ((True,False,True),'HOLD_LOSS_OR_UNRECORDED_RETURN'),((True,True,False),'HOLD_DP_MUD_RECOVERY_UNPROVED')])
+def test_cfw128_batchb_explicit_conditions_fail_closed(gate8_cases,values,reason):
+    import cfw128_shadow_word_bridge as bridge
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    state,b,parent=gate8_cases['LNR 7"']
+    if values is None:
+        with pytest.raises(TypeError):bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=None)
+    else:
+        a=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=PostPullConditions(*values))
+        assert reason in a.review.case_holds and a.review.annular_bands==() and a.review.achieved_cement_top_md is None
+
+
+def test_cfw128_batchb_word_png_and_legacy_ast_unchanged(gate8p_cases):
+    from io import BytesIO
+    from zipfile import ZipFile
+    from pathlib import Path
+    import ast,subprocess
+    import cfw128_shadow_word_bridge as bridge
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    state,b,parent,context=gate8p_cases['CSG 9 5/8"'];before=pickle.dumps((state,b,parent,context))
+    def png():
+        with bridge.shadow_pumping_report(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b) as p:
+            assert len(p['figure'].axes)==3 and 'post_pull' not in p
+            image=BytesIO();p['figure'].savefig(image,format='png',dpi=200,facecolor='white');return image.getvalue()
+    original_png=png();original_word=bridge.shadow_word_bytes(state,parent,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    sidecar=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=PostPullConditions(True,True,True))
+    assert sidecar.review.surface_status=='HOLD_SURFACE_NOT_PROVED'
+    assert png()==original_png
+    after=bridge.shadow_word_bytes(state,parent,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    assert set(after)==set(original_word) and 'post_pull' not in after
+    with ZipFile(BytesIO(original_word['bytes'])) as left,ZipFile(BytesIO(after['bytes'])) as right:
+        assert left.namelist()==right.namelist() and all(left.read(n)==right.read(n) for n in left.namelist())
+    baseline=ast.parse(subprocess.check_output(['git','show','5d26995bc46377119c66fbbe78573d7686acdc91:cfw128_shadow_word_bridge.py'],text=True))
+    current=ast.parse(Path('cfw128_shadow_word_bridge.py').read_text())
+    for name in ('ShadowEvidence','_source','prepare_shadow','_validate','shadow_pumping_report','shadow_word_bytes'):
+        assert ast.dump(next(x for x in baseline.body if getattr(x,'name',None)==name))==ast.dump(next(x for x in current.body if getattr(x,'name',None)==name))
+    assert pickle.dumps((state,b,parent,context))==before
+
+
+@pytest.mark.parametrize('volume,region',[(10.,'BELOW_LAP'),(70.,'ABOVE_LAP')])
+def test_cfw128_batchb_real_finite_fronts(bug01_reviewed_report_base,volume,region):
+    import cfw128_shadow_word_bridge as bridge
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    state=batcha_homogeneous_source(bug01_reviewed_report_base,volume=volume)
+    b=gate3_boundary();parent=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    a=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=PostPullConditions(True,True,True))
+    assert a.review.region==region and a.review.achieved_cement_top_md>0
+
+
+def test_cfw128_batchb_native_csg_surface_and_nonmud_dp_hold(gate8_cases,bug01_reviewed_report_base):
+    import cfw128_shadow_word_bridge as bridge
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    cond=PostPullConditions(True,True,True)
+    state,b,parent=gate8_cases['CSG 9 5/8"'];state=deepcopy(state);state['fluids_config']['params']['Main'].update(volume=800.,pump_rate=200.)
+    parent=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    a=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    assert a.review.surface_status=='CEMENT_TO_SURFACE_PROVED_IN_NATIVE_MODEL' and a.review.achieved_cement_top_md==0.
+    assert next(row[3] for row in a.review.eod_balances if row[0]=='Main')>0
+    geometry=synthetic_tieback(top=676.);frame=geometry['hardware_table'];i=frame.index[frame.Description=='Drill Pipes'][0]
+    frame.at[i,'Size (in)']='5';frame.at[i,'ID (in)']=4.276
+    state=batcha_homogeneous_source(bug01_reviewed_report_base,'TIE BACK LNR 7"',200.,geometry)
+    b=gate3_boundary();parent=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    a=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    assert 'HOLD_DP_CONTAINS_NONMUD' in a.review.case_holds and a.review.annular_bands==()
+
+
+def test_cfw128_batchb_counterfeit_underfill_and_full_parent_binding(gate8_cases):
+    from dataclasses import replace
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=gate8_cases['LNR 7"'];cond=PostPullConditions(True,True,True)
+    child=bridge.prepare_shadow_post_pull(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    def resign(p):
+        object.__setattr__(p,'projection_identity',fingerprint([bridge.SCHEMA,p.app_source_sha,p.source_identity,_primitive(p.boundary),p.engine,_primitive(p.numeric),_primitive(p.placement),p.context_identity,p.document_identity]))
+        return p
+    other=deepcopy(parent);object.__setattr__(other,'context_identity','d'*64);resign(other)
+    with pytest.raises(ValueError):bridge.validate_shadow_post_pull(state,other,child,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
+    for delta in (-1.,1.):
+        payload=list(parent.numeric.native_observation.payload);eod=list(payload[3]);name,amount=eod[2][0]
+        eod[2]=((name,amount+delta),*eod[2][1:]);payload[3]=tuple(eod)
+        numeric=gate4f_resign(replace(parent.numeric,native_observation=replace(parent.numeric.native_observation,payload=tuple(payload))))
+        other=deepcopy(parent);object.__setattr__(other,'numeric',numeric);resign(other)
+        with pytest.raises(ValueError):bridge.prepare_shadow_post_pull(state,other,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,conditions=cond)
