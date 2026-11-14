@@ -1,17 +1,17 @@
 {
   "baseline_main_sha": "138c5f776ab0160bf3668057134e59f6c9523e18",
   "historical_source": {
-    "head_sha": "56afa9efbd52eb89b72f232cad092991decca4ff",
-    "pilot_performance": "A 5009.96s; B 2695.26s; serial 7433.85s",
+    "head_sha": "ffec19e55f390f66975606eeac0d858dc431bada",
     "run_attempt": 1,
-    "run_id": 40665991772,
-    "source": "same-run shadow A/B JUnit testcase durations, cross-checked against serial JUnit"
+    "run_id": 43571126822,
+    "source": "Complete attempt-1 JUnit testcase roots and times, including failed test durations; reprojected onto the Owner-approved four-way module assignment. These sums are historical estimates, not future wall-clock guarantees.",
+    "run_conclusion": "failure"
   },
   "provenance": {
     "historical_root_ids_count": 4816,
     "membership_complete": true,
     "module_overlap": false,
-    "note": "Architecture only. Entire collection, fresh executions, fixtures and 3-shard parity must be verified before acceptance; predicted durations are not wall-clock guarantees.",
+    "note": "Architecture only. Fresh whole discovery and four independent shard executions must be certified before acceptance; historical testcase-duration sums are not wall-clock guarantees. Archived three-shard estimates remain historical.",
     "original_two_runner_pr": 18,
     "original_two_runner_schedule_git_blob": "50c8b25f641b1606fee4d55641888c8e0492d67e",
     "reference_serial_call_reports": 6110
@@ -19,7 +19,7 @@
   "schema": "round17-shadow-whole-module-v1",
   "shards": {
     "A": {
-      "historical_collected_items": 1089,
+      "historical_collected_items": 1130,
       "historical_module_count": 16,
       "modules": [
         "tests/test_audit_regressions.py",
@@ -39,15 +39,13 @@
         "tests/test_uat_round7a_well_profile.py",
         "tests/test_uat_round9f_phase9.py"
       ],
-      "observed_serial_junit_testcase_seconds": 2130.956,
-      "observed_shadow_junit_testcase_seconds": 2742.058
+      "historical_junit_testcase_seconds": 2880.894
     },
     "B": {
-      "historical_collected_items": 1603,
-      "historical_module_count": 34,
+      "historical_collected_items": 1656,
+      "historical_module_count": 33,
       "modules": [
         "tests/test_pre14_sh_batch_c.py",
-        "tests/test_pre_checkpoint_b3_report_word_e2e.py",
         "tests/test_pre_checkpoint_b5_numerical_metamorphic.py",
         "tests/test_pre_round14_ui02_navigation_persistence.py",
         "tests/test_round12_ui01_project_download.py",
@@ -81,12 +79,11 @@
         "tests/test_uat_round9a_catalog.py",
         "tests/test_uat_round9e_dynamic_solver.py"
       ],
-      "observed_serial_junit_testcase_seconds": 2648.294,
-      "observed_shadow_junit_testcase_seconds": 2441.331
+      "historical_junit_testcase_seconds": 1974.292
     },
     "C": {
-      "historical_collected_items": 2124,
-      "historical_module_count": 44,
+      "historical_collected_items": 2384,
+      "historical_module_count": 43,
       "modules": [
         "test_regression_guardrails.py",
         "tests/test_pandas_warning_boundaries.py",
@@ -103,7 +100,6 @@
         "tests/test_round13a_a4_spacer_word.py",
         "tests/test_round13b_b2_ct_stages.py",
         "tests/test_round14_ci13_regressions.py",
-        "tests/test_round15_nested_geometry.py",
         "tests/test_uat14a_initial_navigation.py",
         "tests/test_uat14b_input_presentation.py",
         "tests/test_uat_phase2_3.py",
@@ -133,10 +129,49 @@
         "tests/test_uat_round9i_bughunt.py",
         "tests/test_uat_terminal_precision.py"
       ],
-      "observed_serial_junit_testcase_seconds": 2648.126,
-      "observed_shadow_junit_testcase_seconds": 2507.449
+      "historical_junit_testcase_seconds": 2096.695
+    },
+    "D": {
+      "modules": [
+        "tests/test_pre_checkpoint_b3_report_word_e2e.py",
+        "tests/test_round15_nested_geometry.py"
+      ],
+      "historical_collected_items": 2151,
+      "historical_module_count": 2,
+      "historical_junit_testcase_seconds": 2403.95
     }
   },
-  "status": "B2_2_THREE_RUNNER_ARCHITECT_RECOMMENDATION_NOT_YET_IMPLEMENTED_OR_CERTIFIED",
-  "strategy": "deterministic robust whole-module LPT with relocation/swaps, bounded against latest shadow and serial JUnit module weights"
+  "status": "FOUR_SHARD_OWNER_APPROVED_PENDING_HOSTED_CERTIFICATION",
+  "strategy": "Preserve native whole-module order and assignment; move only Round15 C-to-D and checkpoint B3 Word B-to-D per Owner-approved measured rebalance.",
+  "archived_three_shard_estimates": {
+    "schedule_sha256": "ea13171f309d820631c5d9ee03008da66a9c0c65a9896eef106b78fbd0a9a1ee",
+    "historical_source": {
+      "head_sha": "56afa9efbd52eb89b72f232cad092991decca4ff",
+      "pilot_performance": "A 5009.96s; B 2695.26s; serial 7433.85s",
+      "run_attempt": 1,
+      "run_id": 40665991772,
+      "source": "same-run shadow A/B JUnit testcase durations, cross-checked against serial JUnit"
+    },
+    "status": "B2_2_THREE_RUNNER_ARCHITECT_RECOMMENDATION_NOT_YET_IMPLEMENTED_OR_CERTIFIED",
+    "shards": {
+      "A": {
+        "historical_collected_items": 1089,
+        "historical_module_count": 16,
+        "observed_serial_junit_testcase_seconds": 2130.956,
+        "observed_shadow_junit_testcase_seconds": 2742.058
+      },
+      "B": {
+        "historical_collected_items": 1603,
+        "historical_module_count": 34,
+        "observed_serial_junit_testcase_seconds": 2648.294,
+        "observed_shadow_junit_testcase_seconds": 2441.331
+      },
+      "C": {
+        "historical_collected_items": 2124,
+        "historical_module_count": 44,
+        "observed_serial_junit_testcase_seconds": 2648.126,
+        "observed_shadow_junit_testcase_seconds": 2507.449
+      }
+    }
+  }
 }
