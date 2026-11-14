@@ -5,7 +5,7 @@ import re
 import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
 from project_state import invalidate_document
-from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload
+from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload, mud_lab_source_signature, mud_lab_readings
 from engineering_tools import round_half_up, build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
 from editor_state import persistent_data_editor
@@ -137,6 +137,10 @@ def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
         row[field] = st.session_state[widget_key]
     else:
         row["readings"][str(rpm)] = st.session_state[widget_key]
+    if slurry == materials_db.MUD_LAB_FLUID:
+        row.setdefault("gel_10_sec", "-")
+        row.setdefault("gel_10_min", "-")
+        qc["reviewed"] = False
     if slurry == "Spacer":
         st.session_state["lab_qc_params"][slurry]["reviewed"] = False
         st.session_state.pop("lab_payload_Spacer", None)
@@ -205,6 +209,57 @@ def _render_rheology(slurry, qc, load_sig):
     for issue in issues:
         st.warning(issue)
     return result, issues
+
+
+def _render_mud_lab(load_sig):
+    """Measured source and ordinary Bingham display only; never HB or Word admission."""
+    name = materials_db.MUD_LAB_FLUID
+    qc = st.session_state["lab_qc_params"].setdefault(name, {})
+    data = qc.setdefault("rheology", {})
+    initial = new_rheology_dataset()
+    initial.update(gel_10_sec="-", gel_10_min="-")
+    row = data.setdefault("bhct_down", initial)
+    if not isinstance(row, dict) or not isinstance(row.get("readings"), dict):
+        st.warning("Mud requires a canonical BHCT Ramp-Down measurement record; reload/correct the invalid draft.")
+        return
+    prefix = f"_rheo_displacement_fluid_bhct_down_"
+    selected_key = prefix + "selected_" + load_sig
+    if selected_key not in st.session_state:
+        st.session_state[selected_key] = row.get("selected", False)
+    st.checkbox("BHCT — Ramp-Down - Displacement Fluid", key=selected_key,
+                on_change=_commit_rheology, args=(name, "bhct_down", "selected", selected_key))
+    if row.get("selected") is True:
+        for rpm in RPM_ORDER:
+            key = prefix + str(rpm) + "_" + load_sig
+            if key not in st.session_state:
+                value = row["readings"].get(str(rpm), "")
+                st.session_state[key] = "" if value is None else str(value)
+            st.text_input(f"{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid", key=key,
+                          on_change=_commit_rheology, args=(name, "bhct_down", "readings", key, rpm))
+    try:
+        mud_lab_readings(st.session_state)
+        current = mud_lab_source_signature(st.session_state)
+        display = {"selected": True, "readings": row["readings"], "gel_10_sec": "-", "gel_10_min": "-"}
+        result, issues = build_lab_rheology({"rheology": {"bhct_down": display}}, name)
+        if issues:
+            raise ValueError("; ".join(issues))
+        values = result["bhct_down"]
+    except (ValueError, TypeError, OverflowError) as exc:
+        st.warning(str(exc))
+        return
+    columns = st.columns(2)
+    columns[0].metric("PV (cP)", f"{values['pv_cp']:.3f}")
+    columns[1].metric("Ty (lbf/100ft²)", f"{values['ty_lbf_100ft2']:.2f}")
+    signatures = st.session_state.setdefault("lab_source_signatures", {})
+    if (qc.get("reviewed") is True and signatures.get(name) == current
+            and qc.get("review_signature") == lab_review_signature(qc, None)):
+        st.success("Measured Mud BHCT Ramp-Down readings reviewed for the current Mud context.")
+    elif st.button("Confirm measured Mud lab results", key="_confirm_mud_lab_" + load_sig,
+                   help="Confirm these seven actual measured dials; physical instrument provenance remains unverified."):
+        signatures[name] = current
+        qc["reviewed"] = True
+        qc["review_signature"] = lab_review_signature(qc, None)
+        st.rerun()
 
 
 def get_slurry_key(slurry_name: str, prefix: str) -> str:
@@ -479,9 +534,9 @@ def render():
     load_sig = str(st.session_state.get("last_loaded_hash", "default_project"))
     
     # 1. Strict SSOT Tab Derivation from Phase IV sequence
-    active_slurries = phase7_lab_fluids(st.session_state)
+    active_slurries = phase7_lab_fluids(st.session_state, include_mud=True)
     st.markdown("Enter measured fluid rheology using the shared Fann 35 workflow."
-                if active_slurries and all(f in materials_db.RHEOLOGY_ONLY_FLUIDS for f in active_slurries)
+                if active_slurries and all(f in (*materials_db.RHEOLOGY_ONLY_FLUIDS, materials_db.MUD_LAB_FLUID) for f in active_slurries)
                 else "Enter Lab QC parameters and inspect auto-calculated API lab test quantities (600 mL cup basis).")
     
     if not active_slurries:
@@ -516,12 +571,15 @@ def render():
                 bounded.append((qc, field, f"{label} - {slurry}", low, high, integer))
     if repair_invalid_inputs(bounded, f"phase7_{load_sig}"):
         return
-    tabs = st.tabs(active_slurries)
+    tabs = st.tabs(["Displacement Fluid (Mud)" if s == materials_db.MUD_LAB_FLUID else s for s in active_slurries])
     
     for i, slurry in enumerate(active_slurries):
         with tabs[i]:
             st.subheader(f"{slurry} Rheology" if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS else f"{slurry} Lab Data")
             
+            if slurry == materials_db.MUD_LAB_FLUID:
+                _render_mud_lab(load_sig)
+                continue
             full_lab = slurry in materials_db.PLACEMENT_SLURRIES
             if slurry == "Pre Flush" and slurry not in st.session_state["lab_qc_params"]:
                 from centralizer_adapter import preflush_readings, _dynamic_fann

@@ -233,6 +233,8 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
             continue
         reference='f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
         source = Path(name).read_bytes()
+        if name == 'requirements.txt':
+            source = b2a_original_requirements(source)
         if name == 'placement.py':
             from test_round13b_b1_ct_foundation import r17_original_placement_source
             source = r17_original_placement_source(source)
@@ -264,3 +266,10 @@ def test_ct_report_uses_selected_catalog_tank_without_changing_formulation(valid
     assert s['cement_params']==before
     assert s['lab_qc_params']['Main']['reviewed']
     assert s['lab_qc_params']['Main']['review_signature']==review
+
+
+def b2a_original_requirements(source):
+    """Reverse only the one exact Owner-authorized B2a appended SciPy line."""
+    added = b"scipy==1.14.1\n"
+    assert source.endswith(added) and source.count(added) == 1
+    return source[:-len(added)]

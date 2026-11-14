@@ -107,8 +107,66 @@ def test_r15cd_bhsp_nonfinite_marker_is_not_replaced_or_admitted(raw):
     assert _bhsp_display(raw) is raw
 
 
+B1M_PHASE7_CHANGES = ((b'from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, space'
+  b'r_lab_payload, mud_lab_source_signature, mud_lab_readings\n',
+  b'from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, space'
+  b'r_lab_payload\n'),
+ (b'    if slurry == materials_db.MUD_LAB_FLUID:\n        row.setdefault("gel_10_sec", "-")\n     '
+  b'   row.setdefault("gel_10_min", "-")\n        qc["reviewed"] = False\n    if slurry == "Spacer'
+  b'":\n        st.session_state["lab_qc_params"][slurry]["reviewed"] = False\n',
+  b'    if slurry == "Spacer":\n        st.session_state["lab_qc_params"][slurry]["reviewed"] = F'
+  b'alse\n'),
+ (b'def _render_mud_lab(load_sig):\n    """Measured source and ordinary Bingham display only; nev'
+  b'er HB or Word admission."""\n    name = materials_db.MUD_LAB_FLUID\n    qc = st.session_state['
+  b'"lab_qc_params"].setdefault(name, {})\n    data = qc.setdefault("rheology", {})\n    initial ='
+  b' new_rheology_dataset()\n    initial.update(gel_10_sec="-", gel_10_min="-")\n    row = data.se'
+  b'tdefault("bhct_down", initial)\n    if not isinstance(row, dict) or not isinstance(row.get("r'
+  b'eadings"), dict):\n        st.warning("Mud requires a canonical BHCT Ramp-Down measurement re'
+  b'cord; reload/correct the invalid draft.")\n        return\n    prefix = f"_rheo_displacement_f'
+  b'luid_bhct_down_"\n    selected_key = prefix + "selected_" + load_sig\n    if selected_key not '
+  b'in st.session_state:\n        st.session_state[selected_key] = row.get("selected", False)\n   '
+  b' st.checkbox("BHCT \xe2\x80\x94 Ramp-Down - Displacement Fluid", key=selected_key,\n          '
+  b'      on_change=_commit_rheology, args=(name, "bhct_down", "selected", selected_key))\n    if'
+  b' row.get("selected") is True:\n        for rpm in RPM_ORDER:\n            key = prefix + str(r'
+  b'pm) + "_" + load_sig\n            if key not in st.session_state:\n                value = row'
+  b'["readings"].get(str(rpm), "")\n                st.session_state[key] = "" if value is None e'
+  b'lse str(value)\n            st.text_input(f"{rpm} RPM - BHCT \xe2\x80\x94 Ramp-Down - Displace'
+  b'ment Fluid", key=key,\n                          on_change=_commit_rheology, args=(name, "bhc'
+  b't_down", "readings", key, rpm))\n    try:\n        mud_lab_readings(st.session_state)\n        '
+  b'current = mud_lab_source_signature(st.session_state)\n        display = {"selected": True, "r'
+  b'eadings": row["readings"], "gel_10_sec": "-", "gel_10_min": "-"}\n        result, issues = bu'
+  b'ild_lab_rheology({"rheology": {"bhct_down": display}}, name)\n        if issues:\n            '
+  b'raise ValueError("; ".join(issues))\n        values = result["bhct_down"]\n    except (ValueEr'
+  b'ror, TypeError, OverflowError) as exc:\n        st.warning(str(exc))\n        return\n    colum'
+  b'ns = st.columns(2)\n    columns[0].metric("PV (cP)", f"{values[\'pv_cp\']:.3f}")\n    column'
+  b's[1].metric("Ty (lbf/100ft\xc2\xb2)", f"{values[\'ty_lbf_100ft2\']:.2f}")\n    signatures = s'
+  b't.session_state.setdefault("lab_source_signatures", {})\n    if (qc.get("reviewed") is True a'
+  b'nd signatures.get(name) == current\n            and qc.get("review_signature") == lab_review_'
+  b'signature(qc, None)):\n        st.success("Measured Mud BHCT Ramp-Down readings reviewed for '
+  b'the current Mud context.")\n    elif st.button("Confirm measured Mud lab results", key="_conf'
+  b'irm_mud_lab_" + load_sig,\n                   help="Confirm these seven actual measured dials'
+  b'; physical instrument provenance remains unverified."):\n        signatures[name] = current\n '
+  b'       qc["reviewed"] = True\n        qc["review_signature"] = lab_review_signature(qc, None)'
+  b'\n        st.rerun()\n\n\ndef get_slurry_key(slurry_name: str, prefix: str) -> str:\n',
+  b'def get_slurry_key(slurry_name: str, prefix: str) -> str:\n'),
+ (b'active_slurries = phase7_lab_fluids(st.session_state, include_mud=True)',
+  b'active_slurries = phase7_lab_fluids(st.session_state)'),
+ (b'tabs = st.tabs(["Displacement Fluid (Mud)" if s == materials_db.MUD_LAB_FLUID else s for s i'
+  b'n active_slurries])',
+  b'tabs = st.tabs(active_slurries)'),
+ (b'            if slurry == materials_db.MUD_LAB_FLUID:\n                _render_mud_lab(load_si'
+  b'g)\n                continue\n            full_lab = slurry in materials_db.PLACEMENT_SLURRIES'
+  b'\n',
+  b'            full_lab = slurry in materials_db.PLACEMENT_SLURRIES\n'))
+
+
+B1M_PHASE7_CHANGES += ((b'all(f in (*materials_db.RHEOLOGY_ONLY_FLUIDS, materials_db.MUD_LAB_FLUID) for f in active_slurries)', b'all(f in materials_db.RHEOLOGY_ONLY_FLUIDS for f in active_slurries)'),)
+
 def r15cd_original_lab_source(source):
-    """Undo only approved caption/Diesel defaults; preserve the ORIGINAL file pin."""
+    """Undo only exact approved Mud/caption/Diesel changes; preserve the ORIGINAL file pin."""
+    for after, before in B1M_PHASE7_CHANGES:
+        assert source.count(after) == 1
+        source = source.replace(after, before, 1)
     helper = b'''def _bhsp_display(value):
     """Whole-psi caption only; preserve missing/manual-expression markers."""
     if value is None:
@@ -151,3 +209,31 @@ def test_r15cd_caption_source_compatibility_rejects_other_changes(old,new):
     assert source.count(old)==1
     with pytest.raises(AssertionError):
         assert hashlib.sha256(r15cd_original_lab_source(source.replace(old,new))).hexdigest()==expected
+
+
+@pytest.mark.parametrize('fragment', range(len(B1M_PHASE7_CHANGES)))
+@pytest.mark.parametrize('mutation', ['changed','missing','duplicated','relocated'])
+def test_b1m_exact_mud_inverse_rejects_changed_missing_duplicate_or_relocated_fragment(fragment,mutation):
+    import hashlib
+    source=Path('phase_7_lab.py').read_bytes();after,before=B1M_PHASE7_CHANGES[fragment]
+    expected='f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest()==expected
+    assert source.count(after)==1
+    if mutation=='changed':bad=source.replace(after,bytes([after[0]^1])+after[1:],1)
+    elif mutation=='missing':bad=source.replace(after,before,1)
+    elif mutation=='duplicated':bad=source+after
+    else:bad=source.replace(after,before,1)+after
+    with pytest.raises(AssertionError):
+        assert hashlib.sha256(r15cd_original_lab_source(bad)).hexdigest()==expected
+
+
+@pytest.mark.parametrize('old,new',[(b'columns = st.columns(2)',b'columns = st.columns(3)'),
+    (b'calculate_slurry_from_components,',b'calculate_slurry_from_components_changed,'),
+    (b'"PV (cP)"',b'"PV (wrong units)"'),
+    (b'"bhsp": well_data.get("bhsp", ""),',b'"bhsp": 99.,')])
+def test_b1m_mud_normalizer_never_hides_unrelated_source_or_bingham_display_changes(old,new):
+    import hashlib
+    source=Path('phase_7_lab.py').read_bytes()
+    assert old in source
+    with pytest.raises(AssertionError):
+        assert hashlib.sha256(r15cd_original_lab_source(source.replace(old,new,1))).hexdigest()=='f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
