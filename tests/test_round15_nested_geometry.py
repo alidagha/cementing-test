@@ -7845,7 +7845,7 @@ def c2_assert_signed_terms(terms,observed):
 
 @pytest.mark.parametrize('job',BUG01_JOBS)
 @pytest.mark.parametrize('volume',[1.,40.,200.])
-def test_cfw128_c2_five_signed_terms(c2_native_cases,job,volume,record_property):
+def test_cfw128_c2_five_signed_terms(c2_native_cases,job,volume):
     from fractions import Fraction as F
     from cfw128_integration_abi import compose_nominal_tracking
     from cfw128_c2e8_post_pull_review import assess_post_pull,PostPullConditions
@@ -7898,7 +7898,6 @@ def test_cfw128_c2_five_signed_terms(c2_native_cases,job,volume,record_property)
     near_terms=dict(unit=F(),geometry=F(),eod_stock=stock,coordinate=F(),evaluation=exact_native-na)
     c2_assert_signed_terms(near_terms,exact_native-ea)
     assert abs(exact_native-ea)<=F(1e-9)
-    record_property('native_checkpoint_bbl',repr((float(exact_native-ea),str(exact_native-ea))))
     coordinate=F();target=ap;returned=F();makeup=F()
     if not job.startswith('CSG'):
         lap=c.captured_geometry.string_top_md;nd=F(cp.volume_above(lap))
@@ -7955,9 +7954,6 @@ def test_cfw128_c2_five_signed_terms(c2_native_cases,job,volume,record_property)
     terms=dict(unit=unit,geometry=geometry,eod_stock=stock,coordinate=coordinate,evaluation=evaluation)
     observed=target-ea-returned-makeup
     c2_assert_signed_terms(terms,observed)
-    record_property('signed_bbl',repr({key:(float(value),str(value)) for key,value in terms.items()}))
-    record_property('observed_bbl',repr((float(observed),str(observed))))
-    record_property('identities',repr((numeric.projection_identity,review.projection_identity,c.geometry.projection_identity)))
     assert observed!=0 and abs(stock)<=F(1e-9)  # Nonzero basis; near-zero stock.
     # Every nonzero term is necessary with its actual sign, even below the
     # existing transport audit bound. No approximate closure hides roundoff.
@@ -8116,19 +8112,16 @@ def c3_shadow_cases(bug01_reviewed_report_base,gate8_cases):
 
 @pytest.mark.parametrize('job',BUG01_JOBS)
 @pytest.mark.parametrize('volume',[1.,200.])
-def test_cfw128_c3_eight_family_full_shadow(c3_shadow_cases,job,volume,record_property):
-    from dataclasses import asdict
+def test_cfw128_c3_eight_family_full_shadow(c3_shadow_cases,job,volume):
     state,boundary,parent=c3_shadow_cases[job,volume]
     child=c3_integrated_stock(state,boundary,parent);r=child.review
     if volume==1.:assert r.achieved_cement_top_md is None and 'NO_NATIVE_ANNULAR_CEMENT' in r.case_holds
     elif job.startswith('CSG'):assert r.achieved_cement_top_md>0 and r.surface_status=='HOLD_SURFACE_NOT_PROVED'
     else:assert r.region=='ABOVE_LAP' and r.achieved_cement_top_md>0
-    record_property('integrated_receipt',repr(asdict(child)))
 
 
 @pytest.mark.parametrize('volume,position',[(40.,'BELOW_LAP'),(200.,'ABOVE_LAP'),(800.,'RETURNED_AT_SURFACE')])
-def test_cfw128_c3_uat19_native_connected_path(bug01_reviewed_report_base,volume,position,monkeypatch,record_property):
-    from dataclasses import asdict
+def test_cfw128_c3_uat19_native_connected_path(bug01_reviewed_report_base,volume,position,monkeypatch):
     from project_state import lab_source_signature
     from engineering_tools import lab_review_signature
     from cfw128_integration_abi import compose_nominal_tracking
@@ -8168,12 +8161,11 @@ def test_cfw128_c3_uat19_native_connected_path(bug01_reviewed_report_base,volume
     else:assert main[3]==0 and r.region==position
     assert any(row[0]=='Mud' and row[3]>0 for row in r.eod_balances)
     assert r.returned_dp_mud and r.additional_mud_bbl>0
-    record_property('integrated_receipt',repr(asdict(child)))
 
 
 @pytest.mark.parametrize('job',['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
-def test_cfw128_c3_ordered_auxiliary_stage_sidecar(bug01_reviewed_report_base,job,record_property):
-    from dataclasses import replace,asdict
+def test_cfw128_c3_ordered_auxiliary_stage_sidecar(bug01_reviewed_report_base,job):
+    from dataclasses import replace
     import cfw128_shadow_word_bridge as bridge
     names=('Pre Flush','Spacer Ahead','Spacer Behind')
     state=gate4d_program(gate3_case(bug01_reviewed_report_base,job),names)
@@ -8185,7 +8177,6 @@ def test_cfw128_c3_ordered_auxiliary_stage_sidecar(bug01_reviewed_report_base,jo
     assert set(names)<=set(row[0] for row in child.review.eod_balances)
     assert all(next(p for p in parent.numeric.fluids if p.name==name).operator_review=='NOT_ASSERTED' for name in names)
     assert any('UNKNOWN' in hold or 'UNVERIFIED' in hold for hold in child.review.holds)
-    record_property('integrated_receipt',repr(asdict(child)))
 
 
 @pytest.mark.parametrize('fault',['reversed_transfer','false_surface','unrecorded_makeup'])
