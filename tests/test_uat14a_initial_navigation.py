@@ -69,6 +69,37 @@ def test_default_navigation_keeps_neutral_captions_and_selection(tmp_path):
         assert not any("unsaved changes" in w.value for w in app.warning)
     (tmp_path / "navigation.json").write_text(json.dumps(snapshots, ensure_ascii=False, indent=2))
     assert all(pair == ("⚪ Not started", "✅ Complete") for pair in observed)
+    # The same real predicate must reject edits and malformed/partial Mud
+    # records; recognizing a lazy mount never grants engineering admission.
+    import ast
+    from placement import EXCESS_FIELDS
+    namespace = {**audit.namespace, "json": json, "materials_db": audit.materials_db,
+                 "DOC_CONTROL_DEFAULTS": ps.DOC_CONTROL_DEFAULTS,
+                 "WELL_DATA_DEFAULTS": ps.WELL_DATA_DEFAULTS, "EXCESS_FIELDS": EXCESS_FIELDS}
+    node = next(n for n in audit.tree.body if isinstance(n, ast.FunctionDef)
+                and n.name == "_navigation_sources_not_started")
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "main.py", "exec"), namespace)
+    pristine = namespace["_navigation_sources_not_started"]
+    state = {k: deepcopy(v) for k, v in app.session_state.to_dict().items() if ps.is_project_key(k)}
+    assert pristine(state)
+    mutations = []
+    for field, value in (("selected", True), ("selected", 0), ("gel_10_sec", ""), ("unknown", None)):
+        changed = deepcopy(state)
+        changed["lab_qc_params"]["Displacement Fluid"]["rheology"]["bhct_down"][field] = value
+        mutations.append(changed)
+    for value in (None, 0, False, "0", " "):
+        changed = deepcopy(state)
+        changed["lab_qc_params"]["Displacement Fluid"]["rheology"]["bhct_down"]["readings"]["300"] = value
+        mutations.append(changed)
+    changed = deepcopy(state)
+    del changed["lab_qc_params"]["Displacement Fluid"]["rheology"]["bhct_down"]["readings"]["300"]
+    mutations.append(changed)
+    changed = deepcopy(state); changed["lab_qc_params"]["Displacement Fluid"]["reviewed"] = False
+    mutations.append(changed)
+    for changed in mutations:
+        before = audit.namespace["serialize_item"](changed)
+        assert not pristine(changed)
+        assert audit.namespace["serialize_item"](changed) == before
 
 
 @pytest.mark.parametrize("project", [

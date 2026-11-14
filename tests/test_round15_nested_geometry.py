@@ -2075,9 +2075,9 @@ def test_cfw128_duplicate_preflight_mutation_cannot_reintroduce_unsafe_fingerpri
         state['well_geometry']['survey'] = pd.concat([frame.iloc[:,[0]],frame],axis=1)
     else: state[location] = pd.concat([frame.iloc[:,[0]],frame],axis=1)
     assert adapter.snapshot_geometry(state,app_source_sha='d'*40).status == 'INVALID_INPUT'
-    # Actual mutation of the guard: without it the original Pandas warning must escape under -W error.
+    # Guard bypass must expose Pandas' warning under the native warning policy.
     monkeypatch.setattr(adapter,'_duplicate_column_reason',lambda source: None)
-    with pytest.raises(UserWarning,match='columns are not unique'):
+    with pytest.warns(UserWarning,match='columns are not unique'):
         adapter.snapshot_geometry(state,app_source_sha='d'*40)
 
 
@@ -2318,7 +2318,7 @@ def test_cfw128_b1_duplicate_grid_identity_and_guard_mutation_preserve_every_cel
     second=intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
     assert first.source_identity!=second.source_identity and first.request_identity!=second.request_identity
     monkeypatch.setattr(intake,'_duplicate_columns',lambda value:False)
-    with pytest.raises(UserWarning,match='columns are not unique'):
+    with pytest.warns(UserWarning,match='columns are not unique'):
         intake.snapshot_lab_intake(state,'Main',app_source_sha='c'*40)
 
 
