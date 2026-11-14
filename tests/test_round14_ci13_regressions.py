@@ -1,6 +1,7 @@
 """PR13: truthful caption inspection and stable explicit-cleared metadata."""
 import ast
 from copy import deepcopy
+import json
 import math
 from pathlib import Path
 import pickle
@@ -24,7 +25,7 @@ def navigation_predicate():
     tree = ast.parse(Path('main.py').read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                 and n.name == '_navigation_sources_not_started')
-    namespace = {'pd': pd, 'materials_db': materials_db,
+    namespace = {'pd': pd, 'json': json, 'materials_db': materials_db,
                  'DOC_CONTROL_DEFAULTS': ps.DOC_CONTROL_DEFAULTS,
                  'WELL_DATA_DEFAULTS': ps.WELL_DATA_DEFAULTS,
                  'EXCESS_FIELDS': EXCESS_FIELDS,
