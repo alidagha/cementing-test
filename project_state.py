@@ -390,6 +390,12 @@ def migrate_material_properties(state):
 
 
 def purge_inactive_slurries(state, active):
+    # Mud measurements remain a draft when deselected; prior confirmation retires.
+    if materials_db.MUD_LAB_FLUID not in active:
+        mud_qc = state.get("lab_qc_params", {}).get(materials_db.MUD_LAB_FLUID)
+        if isinstance(mud_qc, dict):
+            mud_qc["reviewed"] = False
+            state.get("lab_source_signatures", {}).pop(materials_db.MUD_LAB_FLUID, None)
     # Standalone Spacer follows the existing generic Spacer cleanup policy,
     # rather than cement's archived-formulation policy.
     if "Spacer" not in active:
@@ -597,11 +603,82 @@ def refresh_preflush(state):
     return []
 
 
-def phase7_lab_fluids(state):
+def phase7_lab_fluids(state, *, include_mud=False):
     """Phase-VII admission only; A3 hydraulic source routing remains unchanged."""
     return [fluid for fluid in state.get("fluids_config", {}).get("active", [])
-            if fluid in (*materials_db.PHASE7_LAB_FLUIDS, "Spacer")
+            if fluid in (*(materials_db.PHASE7_VISIBLE_LAB_FLUIDS if include_mud else materials_db.PHASE7_LAB_FLUIDS), "Spacer")
             and fluid in available_fluid_types(state)]
+
+
+def mud_lab_source(state):
+    """Read actual Phase-II/IV Mud authority; no volume/rate or cement defaults."""
+    name = materials_db.MUD_LAB_FLUID
+    config, well = state.get("fluids_config", {}), state.get("well_data", {})
+    if not isinstance(config, dict) or not isinstance(well, dict):
+        raise ValueError("Mud requires canonical fluid/well records.")
+    active, params, fluids = config.get("active", []), config.get("params", {}), state.get("fluid_data", {})
+    if not isinstance(active, list) or not isinstance(params, dict) or not isinstance(fluids, dict):
+        raise ValueError("Mud requires canonical active-fluid and parameter records.")
+    record = params.get(name, fluids.get(name, {}))
+    if not isinstance(record, dict):
+        raise ValueError("Mud material source must be a canonical Phase-IV record.")
+    return {"selected": active.count(name),
+            "mud_type": state.get("mud_type", well.get("mud_type", "WBM")),
+            "density": state.get("mud_density") or well.get("mud_density"),
+            "material_name": record.get("material_name", materials_db.DEFAULT_MATERIAL_NAMES[name]),
+            "bhct": well.get("bhct", state.get("bhct")),
+            "bhst": well.get("bhst", state.get("bhst"))}
+
+
+def mud_lab_source_signature(state):
+    """Measured Mud context, independent of cement grids and unrelated inputs."""
+    source = mud_lab_source(state)
+    if source["selected"] != 1:
+        raise ValueError("Select exactly one canonical Displacement Fluid.")
+    if not isinstance(source["material_name"], str) or not source["material_name"].strip():
+        raise ValueError("Review the current Phase-IV Mud material identity.")
+    if not lab_temperature_valid(source["bhct"], source["bhst"]):
+        raise ValueError("Review BHCT/BHST for the measured Mud context.")
+    source["effective_density"] = require_fluid_density(materials_db.MUD_LAB_FLUID, source["density"])
+    return fingerprint([1, source])
+
+
+def mud_lab_readings(state):
+    """Exact BHCT-down integer dial admission, without fitting or mutation."""
+    from decimal import Decimal
+    import re
+    from rheology import RPM_ORDER
+    qc = state.get("lab_qc_params", {}).get(materials_db.MUD_LAB_FLUID)
+    if not isinstance(qc, dict):
+        raise ValueError("Mud: enter the seven measured BHCT Ramp-Down readings.")
+    if set(qc) - {"rheology", "reviewed", "review_signature"}:
+        raise ValueError("Mud measurement review cannot adopt foreign cement QC or instrument claims.")
+    data = qc.get("rheology", {})
+    if not isinstance(data, dict) or set(data) - {"bhct_down"}:
+        raise ValueError("Mud accepts BHCT Ramp-Down only; foreign ramps remain unreviewed drafts.")
+    row = data.get("bhct_down", {})
+    if not isinstance(row, dict) or row.get("selected") is not True:
+        raise ValueError("Select Mud BHCT Ramp-Down explicitly.")
+    if set(row) - {"selected", "readings", "gel_10_sec", "gel_10_min"}:
+        raise ValueError("Unexpected Mud measurement fields.")
+    readings = row.get("readings")
+    if (not isinstance(readings, dict) or len(readings) != 7
+            or any(type(k) is not str for k in readings)
+            or set(readings) != {str(r) for r in RPM_ORDER}):
+        raise ValueError("Mud requires exactly the seven canonical RPM keys; none are inferred.")
+    for rpm in RPM_ORDER:
+        raw = readings[str(rpm)]
+        if type(raw) not in (str, int, float) or isinstance(raw, bool):
+            raise ValueError(f"Mud {rpm} RPM requires a measured nonnegative integer dial.")
+        if isinstance(raw, str):
+            if not re.fullmatch(r'-?[0-9]+(?:\.[0-9]+)?', raw.strip()):
+                raise ValueError(f"Mud {rpm} RPM requires ordinary decimal integer text.")
+            value = Decimal(raw.strip())
+        else:
+            value = raw
+        if (isinstance(value, float) and not math.isfinite(value)) or value < 0 or value != int(value):
+            raise ValueError(f"Mud {rpm} RPM requires a finite nonnegative integer dial; no rounding.")
+    return readings
 
 
 def spacer_lab_grid(state):

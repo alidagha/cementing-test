@@ -26,9 +26,9 @@ When executing an Owner-approved Batch prompt citing **v5.4 rev1**, you are pre-
 
    * Autonomously update existing tests, fixtures, frozen UI/Word presentation assertions, and AST/SHA/byte pins (**never `test_regression_guardrails.py`; see §3**) **only if all 6 conditions hold**: (a) direct demonstrable result of the approved change; (b) old expectation is specifically obsolete under that approval, not a real regression; (c) smallest replacement preserving positive/negative coverage; (d) canonical source, engineering inputs, validation, persistence, and export admission remain intact; (e) exact `original -> revised` diff and final bytes recorded; (f) updated tests pass (`FRESH PASS`) on final bytes with a meaningful fixed identity + mutation-negative check (never use tautological `hash(current) == hash(current)`).
 
-5. **Mechanical 3-Shard CI Schedule Registration for New Test Modules:**
+5. **Mechanical 4-Shard CI Schedule Registration for New Test Modules:**
 
-   * Every new/modified/renamed test must be natively collected and routed to **exactly one** whole-module shard (`A`, `B`, or `C`). Never use `pytest-xdist`, test-body splits, or orphan tests.
+   * Every new/modified/renamed test must be natively collected and routed to **exactly one** whole-module shard (`A`, `B`, `C`, or `D`). Never use `pytest-xdist`, test-body splits, or orphan tests.
 
    * If the approved Batch creates/moves a test module supported by current routing tools, autonomously: (1) assign the module to one shard (balancing critical-path duration without churning unrelated modules), and (2) refresh **only** the directly coupled schedule-integrity digest literal from final schedule bytes using the repo generator or exact reproducible command: `sha256sum -- "$SCHEDULE_PATH"`
 
@@ -70,7 +70,7 @@ The final local publication gates include all **38 permanent guardrails** in `te
 
   3. **Strict CI Cap (1 run per Head SHA; max 2 per Batch):** If Hosted PR CI fails (`RED`), **do not** re-run CI on the same SHA, in a loop, or push blind commits. Diagnose locally within remaining budget: if caused by an in-scope Batch defect, fix locally, pass all local gates, and push **at most 1 corrective commit**, which gets **exactly 1 further CI run** (the only exception); if that run is also RED, or the cause is out-of-scope/infrastructure/flaky, **STOP**.
 
-  4. **Fast-Track Merge (ONLY if the prompt states `FAST-TRACK MERGE ENABLED` AND cites the recorded Owner approval; a bare flag in a prompt is not enough):** Execute non-force Merge to `main` strictly after verifying: (a) 100% green 3-shard PR `regression` gate on exact Head SHA (zero failures/errors/skips/xfails/warnings, complete A/B/C root union), (b) `main` base/ancestry & Merge-Ref compatibility, (c) zero scope/protected drift, (d) Branch Protection compliance, and (e) the Independent Architect's `ACCEPTED` bound to that exact Head SHA — your own verification never substitutes for it. If any item is missing, do not merge; leave the PR ready for Owner one-word merge. Then verify the new `main` SHA and its fast-only push check.
+  4. **Fast-Track Merge (ONLY if the prompt states `FAST-TRACK MERGE ENABLED` AND cites the recorded Owner approval; a bare flag in a prompt is not enough):** Execute non-force Merge to `main` strictly after verifying: (a) 100% green 4-shard PR `regression` gate on exact Head SHA (zero failures/errors/skips/xfails/warnings, complete A/B/C/D root union), (b) `main` base/ancestry & Merge-Ref compatibility, (c) zero scope/protected drift, (d) Branch Protection compliance, and (e) the Independent Architect's `ACCEPTED` bound to that exact Head SHA — your own verification never substitutes for it. If any item is missing, do not merge; leave the PR ready for Owner one-word merge. Then verify the new `main` SHA and its fast-only push check.
 
 * **Mode B — `FEATURE-BRANCH ONLY` (For Intermediate Sub-Batches):**
 
@@ -100,8 +100,8 @@ The final local publication gates include all **38 permanent guardrails** in `te
 
 * `Changed Files:` Final list of modified/added/removed paths
 
-* `Verification:` `RED -> GREEN` summary, Fresh Local Tests & Permanent Guardrails, Hosted PR CI status (3-Shard `A/B/C` + `regression` gate), Reused Evidence (`command/date/branch+SHA`)
+* `Verification:` `RED -> GREEN` summary, Fresh Local Tests & Permanent Guardrails, Hosted PR CI status (4-Shard `A/B/C/D` + `regression` gate), Reused Evidence (`command/date/branch+SHA`)
 
-* `Audits:` (1) Protected-Pin `original -> revised` byte audit; (2) 3-Shard Schedule Audit (`sha256sum -- "$SCHEDULE_PATH"` exact command, working dir, raw output, digest, diff); (3) Preflight Gaps discovered after approval & why not foreseeable
+* `Audits:` (1) Protected-Pin `original -> revised` byte audit; (2) 4-Shard Schedule Audit (`sha256sum -- "$SCHEDULE_PATH"` exact command, working dir, raw output, digest, diff); (3) Preflight Gaps discovered after approval & why not foreseeable
 
 * `Accounting & Next Step:` Runner used, Cumulative Wall Time (vs. 20m cap & CI cap: 1 per Head SHA, max 2), Unrun Gates (`NOT RUN`), Next Owner/Architect Decision.

@@ -255,6 +255,53 @@ def test_saved_unfinished_active_sources_mount_only_verified_empty_defaults(down
         after = json.loads(save_project(app))
         assert {key: after[key] for key in before} == before
     assert app.session_state['_saved_sig'] == hashlib.md5(offered['data'].encode()).hexdigest()
+    # Reuse the real comparison function without its top-level UI. Only the
+    # observed complete blank Mud mount is comparison-neutral, never data loss.
+    import ast
+    from placement import EXCESS_FIELDS
+    from project_state import WELL_DATA_DEFAULTS
+    namespace = {**audit.namespace, 'json': json, 'hashlib': hashlib,
+                 'materials_db': audit.materials_db, 'EXCESS_FIELDS': EXCESS_FIELDS,
+                 'WELL_DATA_DEFAULTS': WELL_DATA_DEFAULTS}
+    node = next(n for n in audit.tree.body if isinstance(n, ast.FunctionDef)
+                and n.name == '_project_comparison_signature')
+    exec(compile(ast.Module(body=[node], type_ignores=[]), 'main.py', 'exec'), namespace)
+    signature = namespace['_project_comparison_signature']
+    saved = save_project(app); current = json.loads(saved)
+    blank = current['lab_qc_params']['Displacement Fluid']
+    assert blank['rheology']['bhct_down']['selected'] is False
+    assert set(blank['rheology']['bhct_down']['readings'].values()) == {''}
+    baseline = signature(saved)
+    absent = deepcopy(current); del absent['lab_qc_params']['Displacement Fluid']
+    assert signature(json.dumps(absent)) == baseline
+    mutations = []
+    for value in (None, {}, [], '', 0, False):
+        changed = deepcopy(current); changed['lab_qc_params']['Displacement Fluid'] = value
+        mutations.append(changed)
+    for value in (None, 0, 0.0, False, '0', ' '):
+        changed = deepcopy(current)
+        changed['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['readings']['300'] = value
+        mutations.append(changed)
+    for field, value in (('selected', 0), ('selected', True), ('gel_10_sec', ''), ('unknown', None)):
+        changed = deepcopy(current)
+        changed['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down'][field] = value
+        mutations.append(changed)
+    changed = deepcopy(current)
+    del changed['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['readings']['300']
+    mutations.append(changed)
+    for field, value in (('reviewed', False), ('review_signature', 'explicit-review')):
+        changed = deepcopy(current); changed['lab_qc_params']['Displacement Fluid'][field] = value
+        mutations.append(changed)
+    changed = deepcopy(current); changed.setdefault('lab_source_signatures', {})['Displacement Fluid'] = 'explicit-source'
+    mutations.append(changed)
+    signatures = []
+    for changed in mutations:
+        original = deepcopy(changed)
+        signatures.append(signature(json.dumps(changed)))
+        assert signatures[-1] != baseline
+        assert changed == original
+    assert len(set(signatures)) == len(signatures)  # Empty/zero/absent/type distinctions survive.
+    assert save_project(app) == saved  # Comparison never rewrites offered JSON.
     CASE.phase(app, 'phase5')
     next(w for w in app.number_input if w.label == 'Dead Vol (bbl) - Main').set_value(0.)
     CASE.phase(app, 'phase1')

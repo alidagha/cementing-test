@@ -138,6 +138,7 @@ def _navigation_sources_not_started(state):
     from well_profile import geometry_defaults, geothermal_defaults
     from phase_2_3_well_data import HARDWARE_COLUMNS
     from phase_9_centralizer import new_config
+    from rheology import new_rheology_dataset
 
     if state.get("last_loaded_hash"):
         return False
@@ -178,6 +179,13 @@ def _navigation_sources_not_started(state):
         return isinstance(value, bool) == isinstance(expected, bool) and value == expected
 
     try:
+        empty_mud = {"rheology": {"bhct_down": {
+            **new_rheology_dataset(), "gel_10_sec": "-", "gel_10_min": "-"}}}
+        mud_records = state.get("lab_qc_params", {})
+        current_mud = mud_records.get(materials_db.MUD_LAB_FLUID) if isinstance(mud_records, dict) else None
+        if (json.dumps(serialize_item(current_mud), sort_keys=True, allow_nan=False)
+                == json.dumps(empty_mud, sort_keys=True, allow_nan=False)):
+            defaults["lab_qc_params"][materials_db.MUD_LAB_FLUID] = empty_mud
         return unchanged(serialize_item(sources), serialize_item(defaults))
     except ValueError:
         # Invalid sources are not pristine; saving still rejects them.
@@ -456,6 +464,16 @@ def _project_comparison_signature(project_json):
         if name in materials_db.RHEOLOGY_ONLY_FLUIDS and name != "Pre Flush":
             defaults["lab_qc_params"][name] = {"rheology": {
                 key: new_rheology_dataset() for key, _ in RHEOLOGY_DATASETS}}
+        elif name == materials_db.MUD_LAB_FLUID:
+            empty_mud = {"rheology": {"bhct_down": {
+                **new_rheology_dataset(), "gel_10_sec": "-", "gel_10_min": "-"}}}
+            mud_records = project.get("lab_qc_params", {})
+            current_mud = mud_records.get(name) if isinstance(mud_records, dict) else None
+            # Recognize only the complete, untouched lazy mount. JSON keeps
+            # False distinct from zero; partial/unknown/reviewed records stay.
+            if (json.dumps(current_mud, sort_keys=True, allow_nan=False)
+                    == json.dumps(empty_mud, sort_keys=True, allow_nan=False)):
+                defaults["lab_qc_params"][name] = empty_mud
         elif name == "Pre Flush" and name in project.get("lab_qc_params", {}):
             from centralizer_adapter import _dynamic_fann
             legacy = source.get("centralizer_config", {}).get("aux_rheology", {}).get(name)

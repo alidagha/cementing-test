@@ -17,8 +17,8 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ('tools/round17_shadow.py', 'tools/round17_shadow_plugin.py', 'tools/round17_shadow_schedule.json')
-SHARDS = ('A', 'B', 'C')
-SCHEDULE_SHA = 'ea13171f309d820631c5d9ee03008da66a9c0c65a9896eef106b78fbd0a9a1ee'
+SHARDS = ('A', 'B', 'C', 'D')
+SCHEDULE_SHA = '6bcc06198f3c7eab23bb54b61acd80c5719efd3bf7bc4bb991aa0ffdb47d1b9e'
 # Archived certified reference: diagnostic only, never a fixed current-source admission pin.
 ARCHIVED_BASELINE = {'head': '56afa9efbd52eb89b72f232cad092991decca4ff', 'run_id': '40665991772', 'attempt': '1', 'root_identity_sha256': '4639129d9f11427fea3bfefdedf28590412511e75ddd97a9d38e3413af2f512b', 'protected_source_sha256': '0bf884932475e9704d568dfef07a0e9ec33eb5ecbe1ffe180346e013ac028432', 'phase_counts_sha256': '7667b21d251e30e9da25c9d1faebe157ff2ad1a88c7d123bedc3b340cdd78179', 'roots_diagnostic': 4816, 'call_reports_diagnostic': 6110}
 PACKAGES = ('pytest', 'streamlit', 'pandas', 'numpy', 'pyarrow', 'docxtpl', 'python-docx', 'Jinja2', 'matplotlib')
@@ -277,7 +277,7 @@ def compare(collection, shards, expected, groups, jobs):
     # Legitimate reviewed source/test additions use fresh full discovery, not this historic hash.
     if drift['source_matches'] and drift['roots_match']:
         require(drift['phase_counts_match'], 'unchanged-source certified subtest multiplicity drift')
-    return {'status': 'EVIDENCE_CERTIFIED_THREE_SHARDS', 'roots': len(ids),
+    return {'status': 'EVIDENCE_CERTIFIED_FOUR_SHARDS', 'roots': len(ids),
             'call_reports': sum(combined['call'].values()), 'checkout_sha': expected['checkout_sha'],
             'archived_baseline_drift': drift, 'limitations': expected['environment_limitations']}
 
@@ -341,7 +341,7 @@ def run(role, directory, reference):
     return 0
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     r = sub.add_parser('run')
@@ -356,7 +356,11 @@ def main():
     g = sub.add_parser('gate')
     g.add_argument('--event', required=True, choices=['pull_request', 'push'])
     sub.add_parser('self-test')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = argument_parser().parse_args()
     if args.command == 'run':
         return run(args.role, args.directory, args.reference)
     if args.command == 'gate':
@@ -381,8 +385,10 @@ def self_test():
     results = []
     ids = ['tests/test_synthetic_a.py::test_one[α]', 'tests/test_synthetic_a.py::test_two',
            'tests/test_synthetic_b.py::Case::test_three', 'tests/test_synthetic_b.py::test_four',
-           'tests/test_synthetic_c.py::test_five', 'tests/test_synthetic_c.py::test_six']
-    groups = {'A': ['tests/test_synthetic_a.py'], 'B': ['tests/test_synthetic_b.py'], 'C': ['tests/test_synthetic_c.py']}
+           'tests/test_synthetic_c.py::test_five', 'tests/test_synthetic_c.py::test_six',
+           'tests/test_synthetic_d.py::test_seven', 'tests/test_synthetic_d.py::test_eight']
+    groups = {'A': ['tests/test_synthetic_a.py'], 'B': ['tests/test_synthetic_b.py'],
+              'C': ['tests/test_synthetic_c.py'], 'D': ['tests/test_synthetic_d.py']}
     expected = dict(checkout_sha='a' * 40, github_run_id='123', github_run_attempt='1',
         runner_os='Linux', runner_arch='X64', python='3.12.15 (synthetic fixture)', packages={'pytest': '9.1.1'},
         source={'synthetic-only': 'b' * 64}, schedule_sha256='c' * 64,
@@ -464,20 +470,22 @@ def self_test():
     add('truncated XML', lambda b: (b / 'A/junit.xml').write_text('<testsuites>'), 'A')
     def replace_log(b, old, new, role='A'):
         path = b / role / 'certification.log'; path.write_text(path.read_text().replace(old, new))
-    add('wrong collected count', lambda b: replace_log(b, 'collected 6 items', 'collected 7 items'), 'A')
+    add('wrong collected count', lambda b: replace_log(b, 'collected 8 items', 'collected 9 items'), 'A')
     add('wrong terminal passed', lambda b: replace_log(b, '2 passed,', '3 passed,'), 'A')
     add('truncated terminal', lambda b: replace_log(b, 'in 0.01s', 'unfinished'), 'A')
     add('missing durations', lambda b: replace_log(b, 'slowest durations', 'other heading'), 'A')
     add('unexpected phase grammar', lambda b: replace_log(b, '0.00s setup', '0.00s other'), 'A')
     add('pytest warning summary', lambda b: replace_log(b, 'pytest-9.1.1', 'pytest-9.1.1\n==== warnings summary ===='), 'A')
-    add('pytest warning terminal', lambda b: replace_log(b, '2 passed, 4 deselected', '2 passed, 4 deselected, 1 warning'), 'A')
+    add('pytest warning terminal', lambda b: replace_log(b, '2 passed, 6 deselected', '2 passed, 6 deselected, 1 warning'), 'A')
     add('unknown pytest version', lambda b: replace_log(b, 'pytest-9.1.1', 'pytest-8.0'), 'A')
     add('truncated collector log', lambda b: replace_log(b, 'tests collected in 0.01s', 'unfinished', 'collect'), 'collect')
     add('shadow plugin log drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0'), 'A')
     add('collector Python log drift', lambda b: replace_log(b, 'Python 3.12.15', 'Python 3.11.0', 'collect'), 'collect')
     add('C plugin drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0', 'C'), 'C')
+    add('D plugin drift', lambda b: replace_log(b, 'anyio-1.0', 'anyio-2.0', 'D'), 'D')
     for key in ('checkout_sha', 'github_run_id', 'github_run_attempt', 'python', 'runner_os', 'runner_arch', 'packages'):
         add('C wrong ' + key, lambda b, k=key: mutate_json(b / 'C/metadata.json', lambda x: x.update({k: 'wrong'})), 'C')
+        add('D wrong ' + key, lambda b, k=key: mutate_json(b / 'D/metadata.json', lambda x: x.update({k: 'wrong'})), 'D')
     for key in ('role', 'source', 'schedule_sha256', 'github_run_attempt'):
         add('shadow wrong ' + key, lambda b, k=key: mutate_json(b / 'A/metadata.json', lambda x: x.update({k: 'wrong'})), 'A')
     for outcome in ('failed', 'skipped'):
@@ -513,6 +521,23 @@ def self_test():
     add('collector identity drift', lambda b: mutate_json(b / 'A/manifest.json', lambda x: x['items'][0].update(collector=['wrong'])), 'A')
     add('missing artifact', lambda b: (b / 'A/junit.xml').unlink())
     add('missing C metadata', lambda b: (b / 'C/metadata.json').unlink())
+    add('missing D metadata', lambda b: (b / 'D/metadata.json').unlink())
+    add('duplicate D runner', lambda b: mutate_json(b / 'D/metadata.json',
+        lambda x: x.update(runner_instance=load(b / 'C/metadata.json')['runner_instance'])), 'D')
+    add('D failed report', lambda b: mutate_json(b / 'D/observation.json',
+        lambda x: x['events'][1].update(outcome='failed')), 'D')
+    add('D warning', lambda b: mutate_json(b / 'D/observation.json', lambda x: x['warnings'].append('warning')), 'D')
+    add('D cancelled process', lambda b: mutate_json(b / 'D/process.json',
+        lambda x: x.update(pytest_exit=2, evidence_complete=False)), 'D')
+    add('D routing overlap', lambda b: mutate_json(b / 'D/observation.json',
+        lambda x: x['selected'].append(x['routed'][0])), 'D')
+    def different_d_manifest(b):
+        # Internally valid D bundle, but its complete discovery order differs.
+        mutate_json(b / 'D/manifest.json', lambda x: x['items'].__setitem__(slice(0, 2), list(reversed(x['items'][:2]))))
+        mutate_json(b / 'D/observation.json', lambda x: x['routed'].__setitem__(slice(0, 2), list(reversed(x['routed'][:2]))))
+        seal(b / 'D')
+        check_bundle(b / 'D', expected, groups, 'D')
+    add('D full discovery differs', different_d_manifest, 'D')
     add('empty evidence', lambda b: (b / 'A/junit.xml').write_bytes(b''), 'A')
     add('bad checksum', lambda b: mutate_json(b / 'A/checksums.json', lambda x: x.update({'junit.xml': 'bad'})))
     add('corrupt JSON', lambda b: (b / 'A/observation.json').write_text('{'), 'A')
@@ -538,17 +563,23 @@ def self_test():
         certify(base/'subtests/collect',{k:base/'subtests'/k for k in SHARDS},expected,groups,jobs,artifact)
         for name, value in load(artifact/'aggregate_checksums.json').items():
             require(digest((artifact/name).read_bytes()) == value, 'aggregate copy checksum')
-        require((artifact/'C/junit.xml').is_file(), 'aggregate missing C')
+        require(all((artifact/role/'junit.xml').is_file() for role in SHARDS), 'aggregate missing shard')
+        require(load(artifact/'certification.json')['status'] == 'EVIDENCE_CERTIFIED_FOUR_SHARDS', 'wrong certificate shard count')
         results.append(dict(case='self-contained aggregate artifact',expected='ACCEPT',actual='ACCEPT'))
         complete = {k: base / 'subtests' / k for k in SHARDS}
         for name, altered_jobs, altered_shards, altered_groups in (
             ('missing job', {}, complete, groups),
             ('failed job', {**jobs, 'shadow-modules': {'result': 'failure'}}, complete, groups),
             ('missing C', jobs, {k:v for k,v in complete.items() if k != 'C'}, groups),
+            ('missing D', jobs, {k:v for k,v in complete.items() if k != 'D'}, groups),
             ('duplicate C path', jobs, {**complete,'C':complete['B']}, groups),
+            ('duplicate D path', jobs, {**complete,'D':complete['C']}, groups),
             ('empty matrix', jobs, {}, groups),
             ('overlap assignment', jobs, complete, {**groups,'C':groups['A']}),
-            ('missing assigned module', jobs, complete, {**groups,'C':[]})):
+            ('D overlap assignment', jobs, complete, {**groups,'D':groups['C']}),
+            ('missing assigned module', jobs, complete, {**groups,'C':[]}),
+            ('missing D assignment', jobs, complete, {k:v for k,v in groups.items() if k != 'D'}),
+            ('empty D assignment', jobs, complete, {**groups,'D':[]})):
             try:
                 compare(base / 'subtests/collect', altered_shards, expected, altered_groups, altered_jobs)
             except (ValueError, KeyError) as error:
@@ -573,6 +604,24 @@ def self_test():
             results.append(dict(case='duplicate JSON C',expected='REJECT',actual='REJECT'))
         else:
             raise AssertionError('duplicate C key accepted')
+        try:
+            read_json('{"D":1,"D":2}')
+        except ValueError:
+            results.append(dict(case='duplicate JSON D', expected='REJECT', actual='REJECT'))
+        else:
+            raise AssertionError('duplicate D key accepted')
+        cli = ['compare', '--collection', str(base/'subtests/collect'), '--output', str(base/'cli-output')]
+        cli += [value for role in SHARDS for value in ('--'+role, str(complete[role]))]
+        parsed = argument_parser().parse_args(cli)
+        require(parsed.D == [str(complete['D'])], 'CLI lost D input')
+        require(argument_parser().parse_args(['run','--role','D','--directory',str(base/'cli-D')]).role == 'D', 'CLI rejects D role')
+        results.append(dict(case='four-way CLI inputs and D role', expected='ACCEPT', actual='ACCEPT'))
+        for name, arguments, message in (
+            ('CLI missing D', cli[:-2], '--D'),
+            ('CLI duplicate D', cli+['--D',str(complete['D'])], 'duplicate shard option')):
+            check = subprocess.run([sys.executable, '-B', __file__, *arguments], capture_output=True, text=True)
+            require(check.returncode != 0 and message in check.stderr, 'unsafe CLI acceptance: '+name)
+            results.append(dict(case=name, expected='REJECT', actual='REJECT'))
         # Legitimate new tests in an assigned module: fresh manifest governs, historic counts do not.
         expected['protected_source_identity'] = 'reviewed-new-source'
         expected['source'] = {'reviewed-synthetic-only':'new'}

@@ -49,9 +49,10 @@ def test_original_cement_qc_controls_and_visual_order(cement):
         assert [w.label.split(' RPM')[0] for w in readings] == ['300', '200', '100', '60', '30', '6', '3']
     # The actual AppTest tree places RPM fields directly in their shared tab,
     # rather than inside the old seven horizontal columns.
+    assert [tab.label for tab in app.tabs] == ["Main", "Displacement Fluid (Mud)"]
     for tab in app.tabs:
         direct = [child for child in tab.children.values() if getattr(child, 'label', '').endswith('RPM - BHCT — Ramp-Down - Main')]
-        assert len(direct) == 7
+        assert len(direct) == {"Main": 7, "Displacement Fluid (Mud)": 0}[tab.label]
     result = eng.validate_lab_rheology(cement['lab_qc_params']['Main'], 'Main')
     assert result['bhct_down']['iod'] is not None
 

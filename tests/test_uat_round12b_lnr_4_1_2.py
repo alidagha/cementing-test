@@ -420,6 +420,7 @@ def test_real_new_job_phase_navigation_reuses_existing_iv_through_vii_ui(word_pr
     case.phase(app, 'phase6')
     assert 'Diesel' not in app.session_state.get('spacer_dfs', {})
     case.phase(app, 'phase7')
-    assert {tab.label for tab in app.tabs} == {'Main', 'Diesel', 'Pre Flush'}
+    assert 'Displacement Fluid' in app.session_state['fluids_config']['active']
+    assert {tab.label for tab in app.tabs} == {'Main', 'Diesel', 'Pre Flush', 'Displacement Fluid (Mud)'}
     assert 'Diesel' not in app.session_state['cement_params']
     assert phase9.result_is_current(app.session_state)

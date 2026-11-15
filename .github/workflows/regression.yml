@@ -78,9 +78,9 @@ jobs:
     timeout-minutes: 80
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
-        shard: [A, B, C]
+        shard: [A, B, C, D]
     env:
       SHADOW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -166,13 +166,18 @@ jobs:
         with:
           name: shadow-C-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/C-input
-      - name: Independently certify all three execution shards
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: shadow-D-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/D-input
+      - name: Independently certify all four execution shards
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -o pipefail
           set +e
-          python -B tools/round17_shadow.py compare --collection "$RUNNER_TEMP/collection-input" --A "$RUNNER_TEMP/A-input" --B "$RUNNER_TEMP/B-input" --C "$RUNNER_TEMP/C-input" --output "$RUNNER_TEMP/three-runner-certification" 2>&1 | tee "$RUNNER_TEMP/regression.log"
+          python -B tools/round17_shadow.py compare --collection "$RUNNER_TEMP/collection-input" --A "$RUNNER_TEMP/A-input" --B "$RUNNER_TEMP/B-input" --C "$RUNNER_TEMP/C-input" --D "$RUNNER_TEMP/D-input" --output "$RUNNER_TEMP/four-runner-certification" 2>&1 | tee "$RUNNER_TEMP/regression.log"
           statuses=("${PIPESTATUS[@]}")
           set -e
           if (( statuses[0] != 0 )); then exit "${statuses[0]}"; fi
@@ -183,35 +188,42 @@ jobs:
           name: regression-evidence-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/regression.log
-            ${{ runner.temp }}/three-runner-certification/certification.json
-            ${{ runner.temp }}/three-runner-certification/job_results.json
-            ${{ runner.temp }}/three-runner-certification/aggregate_checksums.json
-            ${{ runner.temp }}/three-runner-certification/collection/manifest.json
-            ${{ runner.temp }}/three-runner-certification/collection/metadata.json
-            ${{ runner.temp }}/three-runner-certification/collection/observation.json
-            ${{ runner.temp }}/three-runner-certification/collection/process.json
-            ${{ runner.temp }}/three-runner-certification/collection/certification.log
-            ${{ runner.temp }}/three-runner-certification/collection/checksums.json
-            ${{ runner.temp }}/three-runner-certification/A/manifest.json
-            ${{ runner.temp }}/three-runner-certification/A/metadata.json
-            ${{ runner.temp }}/three-runner-certification/A/observation.json
-            ${{ runner.temp }}/three-runner-certification/A/process.json
-            ${{ runner.temp }}/three-runner-certification/A/certification.log
-            ${{ runner.temp }}/three-runner-certification/A/checksums.json
-            ${{ runner.temp }}/three-runner-certification/A/junit.xml
-            ${{ runner.temp }}/three-runner-certification/B/manifest.json
-            ${{ runner.temp }}/three-runner-certification/B/metadata.json
-            ${{ runner.temp }}/three-runner-certification/B/observation.json
-            ${{ runner.temp }}/three-runner-certification/B/process.json
-            ${{ runner.temp }}/three-runner-certification/B/certification.log
-            ${{ runner.temp }}/three-runner-certification/B/checksums.json
-            ${{ runner.temp }}/three-runner-certification/B/junit.xml
-            ${{ runner.temp }}/three-runner-certification/C/manifest.json
-            ${{ runner.temp }}/three-runner-certification/C/metadata.json
-            ${{ runner.temp }}/three-runner-certification/C/observation.json
-            ${{ runner.temp }}/three-runner-certification/C/process.json
-            ${{ runner.temp }}/three-runner-certification/C/certification.log
-            ${{ runner.temp }}/three-runner-certification/C/checksums.json
-            ${{ runner.temp }}/three-runner-certification/C/junit.xml
+            ${{ runner.temp }}/four-runner-certification/certification.json
+            ${{ runner.temp }}/four-runner-certification/job_results.json
+            ${{ runner.temp }}/four-runner-certification/aggregate_checksums.json
+            ${{ runner.temp }}/four-runner-certification/collection/manifest.json
+            ${{ runner.temp }}/four-runner-certification/collection/metadata.json
+            ${{ runner.temp }}/four-runner-certification/collection/observation.json
+            ${{ runner.temp }}/four-runner-certification/collection/process.json
+            ${{ runner.temp }}/four-runner-certification/collection/certification.log
+            ${{ runner.temp }}/four-runner-certification/collection/checksums.json
+            ${{ runner.temp }}/four-runner-certification/A/manifest.json
+            ${{ runner.temp }}/four-runner-certification/A/metadata.json
+            ${{ runner.temp }}/four-runner-certification/A/observation.json
+            ${{ runner.temp }}/four-runner-certification/A/process.json
+            ${{ runner.temp }}/four-runner-certification/A/certification.log
+            ${{ runner.temp }}/four-runner-certification/A/checksums.json
+            ${{ runner.temp }}/four-runner-certification/A/junit.xml
+            ${{ runner.temp }}/four-runner-certification/B/manifest.json
+            ${{ runner.temp }}/four-runner-certification/B/metadata.json
+            ${{ runner.temp }}/four-runner-certification/B/observation.json
+            ${{ runner.temp }}/four-runner-certification/B/process.json
+            ${{ runner.temp }}/four-runner-certification/B/certification.log
+            ${{ runner.temp }}/four-runner-certification/B/checksums.json
+            ${{ runner.temp }}/four-runner-certification/B/junit.xml
+            ${{ runner.temp }}/four-runner-certification/C/manifest.json
+            ${{ runner.temp }}/four-runner-certification/C/metadata.json
+            ${{ runner.temp }}/four-runner-certification/C/observation.json
+            ${{ runner.temp }}/four-runner-certification/C/process.json
+            ${{ runner.temp }}/four-runner-certification/C/certification.log
+            ${{ runner.temp }}/four-runner-certification/C/checksums.json
+            ${{ runner.temp }}/four-runner-certification/C/junit.xml
+            ${{ runner.temp }}/four-runner-certification/D/manifest.json
+            ${{ runner.temp }}/four-runner-certification/D/metadata.json
+            ${{ runner.temp }}/four-runner-certification/D/observation.json
+            ${{ runner.temp }}/four-runner-certification/D/process.json
+            ${{ runner.temp }}/four-runner-certification/D/certification.log
+            ${{ runner.temp }}/four-runner-certification/D/checksums.json
+            ${{ runner.temp }}/four-runner-certification/D/junit.xml
           retention-days: 7
           if-no-files-found: error
