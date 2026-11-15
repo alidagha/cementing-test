@@ -13,6 +13,187 @@ from engineering_tools import BBL_TO_CUFT
 from placement import hardware_choices, target_descriptions
 
 
+def b2_measured_source(base, job='CSG 9 5/8"'):
+    from engineering_tools import lab_review_signature
+    from project_state import mud_lab_source_signature
+    state=gate3_case(base,job)
+    for name in ('Main','Displacement Fluid'):
+        qc=state['lab_qc_params'][name]
+        qc['rheology']['bhct_down'].update(gel_10_sec=' 4.50 ',gel_10_min='8.25')
+        qc['review_signature']=lab_review_signature(qc,state.get('lab_grid_dfs',{}).get(name))
+    state['lab_source_signatures']['Displacement Fluid']=mud_lab_source_signature(state)
+    return state
+
+
+@pytest.mark.parametrize('job',['CSG 9 5/8"','LNR 7"','TIE BACK LNR 7"'])
+@pytest.mark.parametrize('directional',[False,True])
+def test_cfw128_b2_source_shoe_bhsp_and_measured_gel(bug01_reviewed_report_base,job,directional,monkeypatch):
+    from dataclasses import replace
+    from engineering_tools import lab_review_signature
+    from project_state import mud_lab_source_signature
+    from well_profile import tvd_at_md
+    from cfw128_preflight import capture_design_inputs
+    import cfw128_er03_numeric_adapter as adapter
+    def forbidden(*args,**kwargs):pytest.fail('Design capture executed a solver or HB fit')
+    for solver in (adapter.vertical,adapter.directional,adapter.event_vertical,adapter.event_directional):
+        monkeypatch.setattr(solver,'simulate',forbidden)
+    monkeypatch.setattr(adapter,'fit_full_hb',forbidden)
+    state=b2_measured_source(bug01_reviewed_report_base,job)
+    state['mud_density']='80-82'
+    state['lab_source_signatures']['Displacement Fluid']=mud_lab_source_signature(state)
+    if directional:
+        state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[6000.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    else:state['well_geometry']={'type':'Vertical','td_m':6000.}
+    before=pickle.dumps(state)
+    inputs=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert inputs.status=='DISABLED_SOURCE_DESIGN_INPUTS',inputs.issues
+    expected_tvd=tvd_at_md(state['well_geometry'],[inputs.shoe_md])[0]
+    assert inputs.shoe_md<6000. and inputs.shoe_tvd_m==expected_tvd
+    assert inputs.bhsp_target_psi==expected_tvd*82.*0.02278
+    assert inputs.bhsp_target_psi!=tvd_at_md(state['well_geometry'],[6000.])[0]*82.*0.02278
+    template=replace(gate3_boundary(),gel_pa_by_fluid=())
+    bound=inputs.bind_boundary(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=template)
+    assert bound.bhsp_target_psi==inputs.bhsp_target_psi
+    assert dict(bound.gel_pa_by_fluid)=={n:8.25*adapter.vertical.LBF100FT2_TO_PA for n in ('Main','Displacement Fluid','Mud')}
+    assert all(row[3:5]==(' 4.50 ','8.25') for row in inputs.gels)
+    assert pickle.dumps(state)==before
+    assert inputs.currentness=='NOT_CURRENTNESS_PROOF' and inputs.qualification=='NOT_GRANTED'
+    assert all(getattr(inputs,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+
+
+@pytest.mark.parametrize('fault',['missing_density','invalid_range','short_trajectory','invalid_survey'])
+def test_cfw128_b2_bad_target_sources_fail_closed(bug01_reviewed_report_base,fault):
+    from cfw128_preflight import capture_design_inputs
+    state=b2_measured_source(bug01_reviewed_report_base)
+    if fault=='missing_density':state['mud_density']=''
+    elif fault=='invalid_range':state['mud_density']='80--82'
+    elif fault=='short_trajectory':state['well_geometry']={'type':'Vertical','td_m':100.}
+    else:state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[100.,60.,0.],[50.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    before=pickle.dumps(state)
+    if fault=='missing_density':
+        inputs=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+        assert inputs.status=='HOLD' and inputs.bhsp_target_psi is None
+        assert any(code=='BHSP_ACTIVE_SHOE_SOURCE_INVALID' for code,detail in inputs.issues)
+    else:
+        with pytest.raises((ValueError,TypeError)):capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert pickle.dumps(state)==before
+
+
+@pytest.mark.parametrize('value',['','-',None,True,-1.,float('nan'),float('inf')])
+def test_cfw128_b2_missing_invalid_gel_holds(bug01_reviewed_report_base,value):
+    from engineering_tools import lab_review_signature
+    from cfw128_preflight import capture_design_inputs
+    from dataclasses import replace
+    state=b2_measured_source(bug01_reviewed_report_base)
+    qc=state['lab_qc_params']['Displacement Fluid']
+    qc['rheology']['bhct_down']['gel_10_min']=value
+    qc['review_signature']=lab_review_signature(qc,None)
+    inputs=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert inputs.status=='HOLD' and inputs.issues
+    with pytest.raises(ValueError,match='HOLD'):
+        inputs.bind_boundary(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),gel_pa_by_fluid=()))
+
+
+@pytest.mark.parametrize('fault',['source','sha','datum','target','gel','forged','resigned','initial_mud','review'])
+def test_cfw128_b2_design_binding_adversarial(bug01_reviewed_report_base,fault):
+    from dataclasses import replace
+    from cfw128_preflight import capture_design_inputs
+    state=b2_measured_source(bug01_reviewed_report_base)
+    inputs=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    boundary=replace(gate3_boundary(),gel_pa_by_fluid=());sha=GATE3_APP_SOURCE_SHA
+    if fault=='source':state['fluids_config']['params']['Main']['pump_rate']+=1.
+    elif fault=='sha':sha='f'*40
+    elif fault=='datum':boundary=replace(boundary,pressure_datum='PSIA')
+    elif fault=='target':boundary=replace(boundary,bhsp_target_psi=1.)
+    elif fault=='gel':boundary=replace(boundary,gel_pa_by_fluid=(('Mud',99.),))
+    elif fault=='forged':inputs=replace(inputs,bhsp_target_psi=1.,projection_identity='a'*64)
+    elif fault=='resigned':
+        from dataclasses import fields
+        from project_state import fingerprint
+        from cfw128_er03_numeric_adapter import _primitive
+        inputs=replace(inputs,bhsp_target_psi=1.)
+        values=tuple(getattr(inputs,f.name) for f in fields(inputs) if f.init and f.name!='projection_identity')
+        inputs=replace(inputs,projection_identity=fingerprint(['CFW128_SOURCE_DESIGN_INPUTS_V1',_primitive(values)]))
+    elif fault=='initial_mud':
+        state['lab_qc_params']['Mud']=deepcopy(state['lab_qc_params']['Displacement Fluid'])
+        inputs=capture_design_inputs(state,expected_app_source_sha=sha)
+        assert ('INITIAL_MUD_SEPARATE_SOURCE_UNSUPPORTED','Distinct initial Mud is not replaced by Displacement measurements.') in inputs.issues
+    else:
+        state['lab_qc_params']['Displacement Fluid']['reviewed']=False
+        inputs=capture_design_inputs(state,expected_app_source_sha=sha)
+    with pytest.raises(ValueError):inputs.bind_boundary(state,expected_app_source_sha=sha,boundary=boundary)
+
+
+def test_cfw128_b2_native_handoff_raw_identity(bug01_reviewed_report_base):
+    from dataclasses import replace
+    import cfw128_er03_numeric_adapter as a
+    state=b2_measured_source(bug01_reviewed_report_base)
+    inputs=a.capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    template=replace(gate3_boundary(),gel_pa_by_fluid=())
+    boundary=inputs.bind_boundary(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=template)
+    kwargs=dict(expected_app_source_sha=GATE3_APP_SOURCE_SHA,stepping='event_aligned_test_only')
+    direct=a.run_numeric_test_case(state,boundary=boundary,**kwargs)
+    sourced=a.run_numeric_test_case(state,boundary=template,source_design_inputs=inputs,**kwargs)
+    assert sourced==direct
+    assert 'BHSP_TARGET_STATION_NOT_PROVED' in sourced.holds  # Field qualification remains held.
+
+
+def test_cfw128_b2_mud_gel_ui_review_restore(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    from cfw128_hb_intake import snapshot_lab_intake
+    case=audit.AuditRegressions();state=b2_measured_source(bug01_reviewed_report_base)
+    # The numeric-only fixture deliberately used a nonpersistent ignored echo.
+    from cfw128_integration_abi import compose_nominal_tracking
+    state['fluids_config']['params']['Displacement Fluid']['volume']=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement.derived_displacement_bbl
+    app=case.app(state);case.phase(app,'phase7')
+    key='10 Min Gel - BHCT — Ramp-Down - Displacement Fluid'
+    app.session_state['_compiled_doc_bytes']=b'old'
+    next(w for w in app.text_input if w.label==key).set_value(' 9.50 ').run()
+    current=app.session_state.to_dict()
+    assert current['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['gel_10_min']==' 9.50 '
+    assert not current['lab_qc_params']['Displacement Fluid']['reviewed'] and not current.get('_compiled_doc_bytes')
+    next(w for w in app.button if w.label=='Confirm measured Mud lab results').click().run()
+    restored=audit.round_trip(app.session_state.to_dict())
+    assert restored['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['gel_10_min']==' 9.50 '
+    assert snapshot_lab_intake(restored,'Displacement Fluid',app_source_sha=GATE3_APP_SOURCE_SHA).status=='CAPTURED_FOR_FUTURE_REVIEW'
+
+
+def test_cfw128_b2_aux_gel_real_ui_existing_saved_schema(bug01_reviewed_report_base):
+    import test_audit_regressions as audit
+    import phase_9_centralizer as p9
+    from cfw128_preflight import capture_design_inputs
+    from cfw128_integration_abi import compose_nominal_tracking
+    state=gate4d_program(b2_measured_source(bug01_reviewed_report_base),('Spacer Ahead','Spacer Behind'))
+    state['fluids_config']['params']['Displacement Fluid']['volume']=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement.derived_displacement_bbl
+    state['centralizer_config']={**p9.new_config(),**state['centralizer_config'],'physics_mode':'dynamic'}
+    # The Phase IX number-input schema requires real numbers, unlike the
+    # text-capable synthetic ABI fixture used to build the rest of this case.
+    state['centralizer_config']['aux_rheology']={name:{rpm:float(value) for rpm,value in readings.items()}
+        for name,readings in state['centralizer_config']['aux_rheology'].items()}
+    before=deepcopy(state['centralizer_config']['aux_rheology'])
+    case=audit.AuditRegressions();app=case.app(state)
+    # Mounting rebuilds the formulation from the changed schedule. Confirm its
+    # actual displayed lab source through the existing UI, never resign it here.
+    case.phase(app,'phase7')
+    next(w for w in app.button if w.label=='Keep reviewed lab entries').click().run()
+    next(w for w in app.button if w.label=='Confirm measured lab results').click().run()
+    case.phase(app,'phase9')
+    for fluid in ('Spacer Ahead','Spacer Behind'):
+        for label,value in (('10 Sec Gel','3.25'),('10 Min Gel','7.50')):
+            next(w for w in app.text_input if w.label==f'{label} — {fluid} (lbf/100 ft²)').set_value(value).run()
+    current=app.session_state.to_dict();p9.validate_config(current['centralizer_config'])
+    assert current['centralizer_config']['aux_rheology']==before
+    restored=audit.round_trip(current)
+    inputs=capture_design_inputs(restored,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert not inputs.issues,inputs.issues
+    assert {'Spacer Ahead','Spacer Behind'}<=set(row[0] for row in inputs.gels)
+    assert all(current['lab_qc_params'][n]['rheology']['bhct_down']['gel_10_min']=='7.50' for n in before)
+    # Gel does not enter the Centralizer's Bingham source or numerical schema.
+    without=deepcopy(current)
+    for name in before:without['lab_qc_params'].pop(name)
+    assert p9.source_signature(current)==p9.source_signature(without)
+
+
 def i1_assert_imports(path):
     import ast
     tree = ast.parse(path.read_text())
@@ -21,7 +202,7 @@ def i1_assert_imports(path):
         'cfw128_er03_contract': ('prepare_er03_preview',),
         'cfw128_er03_boundary': ('assess_er03_boundary',),
         'cfw128_integration_abi': ('compose_nominal_tracking',),
-        'cfw128_er03_numeric_adapter': ('_stage_lab_intake', '_primitive'),
+        'cfw128_er03_numeric_adapter': ('_stage_lab_intake', '_primitive', 'capture_design_inputs'),
         'cfw128_hb_intake': ('LabIntakeSnapshot',),
         'engineering_tools': ('require_positive_pump_rate',), 'project_state': ('fingerprint',)}
     imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
@@ -2504,7 +2685,7 @@ def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed
     for rpm,value in zip((300,200,100,60,30,6,3),dials):
         next(w for w in app.text_input if w.label==f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid').set_value(value).run()
     mud=next(t for t in app.tabs if t.label=='Displacement Fluid (Mud)')
-    assert [w.label for w in mud.text_input]==[f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid' for rpm in (300,200,100,60,30,6,3)]
+    assert [w.label for w in mud.text_input]==[f'{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid' for rpm in (300,200,100,60,30,6,3)]+[f'{name} - BHCT — Ramp-Down - Displacement Fluid' for name in ('10 Sec Gel','10 Min Gel')]
     assert [(m.label,m.value) for m in mud.metric]==[('PV (cP)','159.218'),('Ty (lbf/100ft²)','9.47')]
     qc=app.session_state['lab_qc_params']['Displacement Fluid'];fit,issues=build_lab_rheology(qc,'Displacement Fluid');assert not issues
     assert f"{fit['bhct_down']['pv_cp']:.3f}"=='159.218' and f"{fit['bhct_down']['ty_lbf_100ft2']:.2f}"=='9.47'
@@ -5731,11 +5912,12 @@ def gate3_assert_numeric_imports(path):
         'cfw128_er03_event_aligned_vertical':'event_vertical','cfw128_er03_event_aligned_directional':'event_directional'}
     actual=[(a.name,a.asname) for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
     assert sorted(actual)==sorted([*expected.items(),('math',None)])
-    wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields'),'typing':('Literal',),'fractions':('Fraction',),
+    wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields','replace'),'typing':('Literal',),'fractions':('Fraction',),
         'cfw128_integration_abi':('compose_nominal_tracking','CompositionReceipt'),
         'cfw128_hb_intake':('snapshot_lab_intake','LabIntakeSnapshot','DialReading','_dial','_duplicate_columns','_positional_source'),
         'cfw128_hb03t_frozen':('fit_full_hb','to_engine_field','InstrumentConfig'),
-        'engineering_tools':('require_positive_pump_rate','validate_lab_rheology','lab_temperature_valid'),'centralizer_adapter':('_dynamic_fann',),'project_state':('fingerprint','spacer_lab_payload','phase7_lab_fluids','lab_source_signature','available_fluid_types'),'rheology':('RPM_ORDER','RHEOLOGY_DATASETS'),
+        'engineering_tools':('require_positive_pump_rate','validate_lab_rheology','lab_temperature_valid','require_bhsp_density'),'centralizer_adapter':('_dynamic_fann',),'project_state':('fingerprint','spacer_lab_payload','phase7_lab_fluids','lab_source_signature','available_fluid_types'),'rheology':('RPM_ORDER','RHEOLOGY_DATASETS','_gel'),
+        'well_profile':('tvd_at_md',),
         'fluids_charts_module_v1_4_2':('JobChartsSpec','autoscale_x','autoscale_y','render_three_charts')}
     nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
     assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
