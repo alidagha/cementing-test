@@ -13,6 +13,120 @@ from engineering_tools import BBL_TO_CUFT
 from placement import hardware_choices, target_descriptions
 
 
+def i1_assert_imports(path):
+    import ast
+    tree = ast.parse(path.read_text())
+    wanted = {'copy': ('deepcopy',), 'dataclasses': ('dataclass', 'field', 'fields'),
+        'cfw128_adapter': ('snapshot_geometry', '_positional_source'),
+        'cfw128_er03_contract': ('prepare_er03_preview',),
+        'cfw128_er03_boundary': ('assess_er03_boundary',),
+        'cfw128_integration_abi': ('compose_nominal_tracking',),
+        'cfw128_er03_numeric_adapter': ('_stage_lab_intake', '_primitive'),
+        'cfw128_hb_intake': ('LabIntakeSnapshot',),
+        'engineering_tools': ('require_positive_pump_rate',), 'project_state': ('fingerprint',)}
+    imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
+    assert len(imports) == len(wanted)
+    assert {n.module: tuple(a.name for a in n.names) for n in imports} == wanted
+    assert all(n.level == 0 and all(a.asname is None for a in n.names) for n in imports)
+    assert not any(isinstance(n, ast.Import) for n in ast.walk(tree))
+    forbidden = {'simulate', 'fit_full_hb', 'run_numeric_test_case', 'run_pumping_simulation',
+                 'render_three_charts', 'postprocess_well_report', 'eval', 'exec', 'open', '__import__'}
+    assert not forbidden & {n.id if isinstance(n, ast.Name) else n.attr
+        for n in ast.walk(tree) if isinstance(n, (ast.Name, ast.Attribute))}
+
+
+def test_cfw128_i1_import_firewall_rejects_execution_dependencies(monkeypatch):
+    from pathlib import Path
+    path = Path('cfw128_preflight.py')
+    i1_assert_imports(path)
+    original = Path.read_text
+    for addition in ('\nimport pumping_simulation\n', '\nfrom cfw128_er03_numeric_adapter import run_numeric_test_case\n'):
+        with monkeypatch.context() as m:
+            m.setattr(Path, 'read_text', lambda p, *a, **k: original(p, *a, **k) + addition if p == path else original(p, *a, **k))
+            with pytest.raises(AssertionError):
+                i1_assert_imports(path)
+
+
+@pytest.mark.parametrize('job', ['CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"'])
+def test_cfw128_i1_preflight_sources_are_readonly_and_never_execute(bug01_reviewed_report_base, job, monkeypatch):
+    from cfw128_preflight import preflight_project
+    from dataclasses import FrozenInstanceError
+    import cfw128_er03_numeric_adapter as numeric
+    state = gate3_case(bug01_reviewed_report_base, job)
+    def forbidden(*args, **kwargs):
+        pytest.fail('Preflight executed a solver or fitted rheology')
+    for module in (numeric.vertical, numeric.directional, numeric.event_vertical, numeric.event_directional):
+        monkeypatch.setattr(module, 'simulate', forbidden)
+    monkeypatch.setattr(numeric, 'fit_full_hb', forbidden)
+    before = pickle.dumps(state)
+    receipt = preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert receipt == preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert receipt.inputs_complete and receipt.job == job
+    assert [v.name for v in receipt.fluids] == ['Main', 'Displacement Fluid']
+    assert all(v.lab_status == 'CAPTURED_FOR_FUTURE_REVIEW' for v in receipt.fluids)
+    assert receipt.currentness == 'NOT_CURRENTNESS_PROOF' and receipt.qualification == 'NOT_GRANTED'
+    assert all(getattr(receipt, key) is False for key in ('enabled', 'ready_to_run', 'hb_admissible', 'hydraulic_admissible', 'chart_admissible', 'scientifically_qualified'))
+    assert pickle.dumps(state) == before
+    with pytest.raises(FrozenInstanceError):
+        receipt.job = 'changed'
+    receipt.validate_source(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    state['fluids_config']['params']['Main']['volume'] += 1.
+    with pytest.raises(ValueError, match='Stale'):
+        receipt.validate_source(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+
+
+@pytest.mark.parametrize('fault', ['missing_stage', 'unreviewed', 'stale_lab', 'duplicate', 'rpm', 'geometry', 'rate', 'material', 'job'])
+def test_cfw128_i1_preflight_bad_sources_hold(bug01_reviewed_report_base, fault):
+    from cfw128_preflight import preflight_project
+    state = gate3_case(bug01_reviewed_report_base)
+    if fault == 'missing_stage':
+        del state['fluids_config']['params']['Main']
+        state.get('fluid_data', {}).pop('Main', None)
+    elif fault == 'unreviewed': state['lab_qc_params']['Main']['reviewed'] = False
+    elif fault == 'stale_lab': state['lab_source_signatures']['Main'] = 'stale'
+    elif fault == 'duplicate': state['fluids_config']['active'].append('Main')
+    elif fault == 'rpm': state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300'] = .5
+    elif fault == 'geometry': state['placement_config']['target_row'] = 'not a selected row'
+    elif fault == 'rate': state['fluids_config']['params']['Main']['pump_rate'] = 0.
+    elif fault == 'material': state['fluids_config']['params']['Main']['material_name'] = ''
+    else: state['job_type'] = 'not a canonical job'
+    before = pickle.dumps(state)
+    receipt = preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert not receipt.inputs_complete and receipt.issues
+    assert receipt == preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert pickle.dumps(state) == before
+
+
+def test_cfw128_i1_uat19_partial_preview_and_incomplete_sources():
+    from cfw128_preflight import preflight_project
+    state = cfw128_c1_uat19_state(); before = pickle.dumps(state)
+    receipt = preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert receipt.structural_return_md == (3885., 2800.)
+    assert receipt.injection_intervals == ((0., 2800.), (2800., 3885.))
+    assert receipt.receiver_shoe_md == 4860.
+    assert not receipt.inputs_complete and receipt.issues
+    assert 'HISTORICAL_PARTIAL_PREVIEW_NOT_HYDRAULIC_OUTLET' in receipt.holds
+    assert pickle.dumps(state) == before
+    empty = preflight_project({}, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert not empty.inputs_complete and empty.issues
+    for sha in ('', 'a' * 39, 'A' * 40, None):
+        with pytest.raises((ValueError, TypeError)):
+            preflight_project(state, expected_app_source_sha=sha)
+
+
+def test_cfw128_i1_existing_legacy_stage_authority_and_receipt_tampering(bug01_reviewed_report_base):
+    from cfw128_preflight import preflight_project
+    from dataclasses import replace
+    state = gate3_case(bug01_reviewed_report_base)
+    del state['fluids_config']['params']['Main']
+    receipt = preflight_project(state, expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert receipt.inputs_complete  # Existing fluid_data authority is still present.
+    with pytest.raises(ValueError, match='projection'):
+        replace(receipt, inputs_complete=False)
+    with pytest.raises(ValueError, match='Stale'):
+        receipt.validate_source(state, expected_app_source_sha='f' * 40)
+
+
 def r18c_tapered_state(previous_top=0., expanding=False):
     """Synthetic measured previous string; no product or reviewed-lab claim."""
     state = r18b_previous_state(previous_top=previous_top)
@@ -1926,6 +2040,8 @@ def test_cfw128_adapter_remains_unimported_by_production_and_research_free():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     for path in root.glob('*.py'):
+        if path.name=='cfw128_preflight.py':
+            i1_assert_imports(path);continue
         if path.name=='cfw128_integration_abi.py':
             gate2_assert_bridge_imports(path); continue
         tree = ast.parse(path.read_text())
@@ -2282,6 +2398,8 @@ def test_cfw128_b1_deep_immutability_and_no_fitting_or_physics_imports(bug01_rev
     with pytest.raises(FrozenInstanceError):result.readings[0].dial=9
     root=Path(__file__).resolve().parents[1]
     for file in root.glob('*.py'):
+        if file.name=='cfw128_preflight.py':
+            i1_assert_imports(file);continue
         tree=ast.parse(file.read_text());imports=[n.module for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]+[a.name for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names]
         if file.name=='cfw128_er03_numeric_adapter.py':gate3_assert_numeric_imports(file)
         elif file.name not in ('cfw128_hb_intake.py','cfw128_hb_numeric.py'):assert 'cfw128_hb_intake' not in imports
@@ -3139,6 +3257,8 @@ def test_cfw128_c1_import_call_isolation_and_canonical_metadata():
     forbidden={'scipy','pumping_simulation','fluids_charts_module_v1_4_2','cement_charts_engine','cement_chart_report',
         'centralizer_optimizer_engine','centralizer_adapter','cfw128_hb03t_frozen'}
     for path in root.glob('*.py'):
+        if path.name=='cfw128_preflight.py':
+            i1_assert_imports(path);continue
         if path.name=='cfw128_integration_abi.py':
             gate2_assert_bridge_imports(path); continue
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
@@ -3351,6 +3471,8 @@ def test_cfw128_c2a_import_isolation_in_fresh_process_and_all_root_callers():
         'cement_chart_report','well_report','phase_10_procedure','centralizer_optimizer_engine',
         'centralizer_adapter','cfw128_hb03t_frozen','cfw128_hb_numeric','cfw128_hb_intake'}
     for path in root.glob('*.py'):
+        if path.name=='cfw128_preflight.py':
+            i1_assert_imports(path);continue
         if path.name=='cfw128_integration_abi.py':
             gate2_assert_bridge_imports(path); continue
         tree=ast.parse(path.read_text());imports={n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module}
@@ -5538,6 +5660,8 @@ def test_cfw128_gate2_import_firewall_and_named_exception_mutations(monkeypatch)
     bridge=Path('cfw128_integration_abi.py');gate2_assert_bridge_imports(bridge)
     for p in Path('.').glob('*.py'):
         if p==bridge:continue
+        if p.name=='cfw128_preflight.py':
+            i1_assert_imports(p);continue
         if p.name=='cfw128_c2e8_post_pull_review.py':
             batcha_assert_imports(p);continue
         if p.name=='cfw128_er03_numeric_adapter.py':
@@ -5732,6 +5856,8 @@ def test_cfw128_gate3_sources_and_static_import_firewall(monkeypatch):
     path=Path('cfw128_er03_numeric_adapter.py');gate3_assert_numeric_imports(path)
     for p in Path('.').glob('*.py'):
         if p==path:continue
+        if p.name=='cfw128_preflight.py':
+            i1_assert_imports(p);continue
         if p.name=='cfw128_c2e8_post_pull_review.py':
             batcha_assert_imports(p);continue
         if p.name=='cfw128_c2e7_native_placement.py':
