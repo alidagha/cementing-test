@@ -132,7 +132,16 @@ B1M_PHASE7_CHANGES = ((b'from project_state import lab_source_signature, phase7_
   b'["readings"].get(str(rpm), "")\n                st.session_state[key] = "" if value is None e'
   b'lse str(value)\n            st.text_input(f"{rpm} RPM - BHCT \xe2\x80\x94 Ramp-Down - Displace'
   b'ment Fluid", key=key,\n                          on_change=_commit_rheology, args=(name, "bhc'
-  b't_down", "readings", key, rpm))\n    try:\n        mud_lab_readings(st.session_state)\n        '
+  b't_down", "readings", key, rpm))\n'
+  b'        for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):\n'
+  b'            key = prefix + field + "_" + load_sig\n'
+  b'            if key not in st.session_state:\n'
+  b'                value = row.get(field, "")\n'
+  b'                st.session_state[key] = "" if value is None else str(value)\n'
+  b'            column.text_input(f"{label} - BHCT \xe2\x80\x94 Ramp-Down - Displacement Fluid", key=key,\n'
+  b'                              on_change=_commit_rheology, args=(name, "bhct_down", field, key),\n'
+  b'                              help="Measured lbf/100 ft\xc2\xb2. Missing Gel holds CFW128; ordinary Bingham display is unchanged.")\n'
+  b'    try:\n        mud_lab_readings(st.session_state)\n        '
   b'current = mud_lab_source_signature(st.session_state)\n        display = {"selected": True, "r'
   b'eadings": row["readings"], "gel_10_sec": "-", "gel_10_min": "-"}\n        result, issues = bu'
   b'ild_lab_rheology({"rheology": {"bhct_down": display}}, name)\n        if issues:\n            '
@@ -237,3 +246,39 @@ def test_b1m_mud_normalizer_never_hides_unrelated_source_or_bingham_display_chan
     assert old in source
     with pytest.raises(AssertionError):
         assert hashlib.sha256(r15cd_original_lab_source(source.replace(old,new,1))).hexdigest()=='f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
+
+
+@pytest.mark.parametrize('mutation', ['unchanged', 'label', 'unit', 'callback', 'missing',
+                                      'duplicated', 'relocated', 'inserted'])
+def test_b2_gel_inverse_preserves_fixed_history_and_rejects_widget_mutations(mutation):
+    import hashlib
+    source = Path('phase_7_lab.py').read_bytes()
+    mud_editor = B1M_PHASE7_CHANGES[2][0]
+    # Accepted B2 editor, including its following function boundary; never pin arbitrary current bytes.
+    assert len(mud_editor) == 3548
+    assert hashlib.sha256(mud_editor).hexdigest() == '8d70b3d5d2893aa4d1d80af936d8e394a844b7f72612025aeb50886782863218'
+    assert source.count(mud_editor) == 1
+    expected = 'f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest() == expected
+    start = mud_editor.index(b'        for column, field, label in zip(')
+    end = mud_editor.index(b'    try:\n', start)
+    gel = mud_editor[start:end]
+    assert len(gel) == 644 and source.count(gel) == 1
+    if mutation == 'unchanged':
+        return
+    if mutation == 'label':
+        bad = source.replace(gel, gel.replace(b'10 Min Gel', b'10 Min Changed Gel'), 1)
+    elif mutation == 'unit':
+        bad = source.replace(gel, gel.replace(b'lbf/100 ft', b'Pa/100 ft'), 1)
+    elif mutation == 'callback':
+        bad = source.replace(gel, gel.replace(b'on_change=_commit_rheology', b'on_change=None'), 1)
+    elif mutation == 'missing':
+        bad = source.replace(gel, b'', 1)
+    elif mutation == 'duplicated':
+        bad = source.replace(gel, gel + gel, 1)
+    elif mutation == 'relocated':
+        bad = source.replace(gel, b'', 1) + gel
+    else:
+        bad = source.replace(gel, gel + b'        qc["unapproved"] = True\n', 1)
+    with pytest.raises(AssertionError):
+        assert hashlib.sha256(r15cd_original_lab_source(bad)).hexdigest() == expected

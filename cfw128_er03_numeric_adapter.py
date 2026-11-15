@@ -293,15 +293,15 @@ def _stage_lab_intake(state, name, sha):
     row=data.get('bhct_down') if type(data) is dict else None
     legacy=name=='Pre Flush' and not current
     aux={}
-    if auxiliary or legacy:
+    if legacy:
         config_ix=state.get('centralizer_config',{})
         if type(config_ix) is not dict or type(config_ix.get('aux_rheology',{})) is not dict:raise ValueError('Canonical auxiliary record required.')
         aux=config_ix.get('aux_rheology',{})
-    raw=aux.get(name) if (auxiliary or legacy) and type(aux) is dict else row.get('readings') if type(row) is dict else None
+    raw=aux.get(name) if legacy and type(aux) is dict else row.get('readings') if type(row) is dict else None
     # Only this exact stage's source enters its identity. A present current Lab
     # record excludes historical auxiliary data even when empty or unselected.
-    projection={'fluid':name,'selected_count':active.count(name),'origin':'PHASE_IX' if auxiliary or legacy else 'PHASE_VII',
-                'qc':None if auxiliary or legacy else qc,'readings':raw}
+    projection={'fluid':name,'selected_count':active.count(name),'origin':'PHASE_IX' if legacy else 'PHASE_VII',
+                'qc':None if legacy else qc,'readings':raw}
     if name=='Spacer':
         for key in ('lab_grid_dfs','lab_source_signatures','well_data','fluid_data'):
             if type(state.get(key,{})) is not dict:raise ValueError('Canonical Spacer source records required.')
@@ -318,10 +318,10 @@ def _stage_lab_intake(state, name, sha):
     if active.count(name)==0:return hold('NOT_APPLICABLE','FLUID_NOT_ACTIVE','An actual selected stage is required.')
     if active.count(name)!=1:return hold('INVALID_INPUT','ACTIVE_FLUIDS_INVALID','Duplicate selection is ambiguous.')
     if name not in available_fluid_types(state):return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Existing job/Mud eligibility is required.')
-    if not auxiliary and name not in phase7_lab_fluids(state):
+    if name not in phase7_lab_fluids(state):
         return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Current job/Mud selection does not admit this Phase VII fluid.')
     if _duplicate_columns(projection):return hold('INVALID_INPUT','DUPLICATE_SOURCE_COLUMNS','Ambiguous positional values retained in invalid identity.')
-    if not auxiliary and not legacy:
+    if not legacy:
         if qc is None:return hold('INCOMPLETE_INPUT','LAB_SOURCE_MISSING','Actual measured Phase VII record is missing.')
         if type(qc) is not dict or type(data) is not dict:return hold('INVALID_INPUT','RHEOLOGY_RECORD_INVALID','Canonical lab/ramp records required.')
         if set(data)-{key for key,label in RHEOLOGY_DATASETS}:return hold('INVALID_INPUT','RHEOLOGY_KEYS_INVALID','Unknown ramp keys are not source authority.')
@@ -344,7 +344,7 @@ def _stage_lab_intake(state, name, sha):
         if problem:return hold('INVALID_INPUT',problem,'Finite nonnegative integer dial required without rounding.')
         readings.append(DialReading(rpm,value,type(value).__name__,dial))
     if auxiliary or legacy or name in ('Pre Flush','Diesel'):
-        assumed=auxiliary or legacy
+        assumed=legacy
         # Validation is reused, never PV/YP reconstruction or a review ceremony.
         if not assumed and set(qc)-{'rheology'}:
             return hold('INVALID_INPUT','UNSUPPORTED_REVIEW_OR_PROVENANCE_METADATA','Foreign review/instrument claims cannot grant authority.')

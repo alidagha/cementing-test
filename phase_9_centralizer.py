@@ -10,21 +10,12 @@ import centralizer_adapter as adapter
 import materials_db
 import rheology
 from cement_chart_model import resolve_cement_placement, resolve_chart_geometry
-from project_state import fingerprint, invalidate_document
+from project_state import fingerprint
 
 
 AUX_FLUIDS = ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind")
 
 
-def _commit_aux_gel(fluid, field, key):
-    # Existing lab-row schema; never add fields to the seven-RPM IX record.
-    qc = st.session_state.setdefault("lab_qc_params", {}).setdefault(fluid, {})
-    row = qc.setdefault("rheology", {}).setdefault("bhct_down", rheology.new_rheology_dataset())
-    row["selected"] = True
-    row[field] = st.session_state[key]
-    qc.pop("review_signature", None)
-    qc.pop("reviewed", None)
-    invalidate_document(st.session_state)
 DENSITIES = tuple(f"{p}/{q}" for p, q in adapter.centralizer_engine._DENSITY_LADDER)
 PHYSICS_HELP = (
     "Static Parity: Uses the final displacement fluid columns with hydrostatic/buoyancy effects. "
@@ -185,7 +176,7 @@ def source_signature(state, products=None):
             "aux": {name: ({key: rheology._numeric(value) for key, value in adapter.preflush_readings(state).items()}
                            if isinstance(adapter.preflush_readings(state), dict) else adapter.preflush_readings(state))
                     if name == "Pre Flush" else config["aux_rheology"].get(name)
-                    for name in active if name in AUX_FLUIDS and name != "Spacer"},
+                    for name in active if name == "Pre Flush"},
         }
     return fingerprint(body)
 
@@ -392,30 +383,7 @@ def render():
     _render_zones(config, candidates)
     if config["physics_mode"] == "dynamic":
         st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
-        for fluid in AUX_FLUIDS:
-            if fluid in ("Spacer", "Pre Flush") or fluid not in st.session_state.get("fluids_config", {}).get("active", []):
-                continue
-            st.markdown(f"**{fluid} Bingham rheology**")
-            readings = config["aux_rheology"].get(fluid, {})
-            for column, rpm in zip(st.columns(7), rheology.RPM_ORDER):
-                key = f"_centralizer_aux_{fluid}_{rpm}"
-                st.session_state[key] = readings.get(str(rpm))
-                column.number_input(f"{rpm} RPM — {fluid}", min_value=0., value=None, key=key,
-                                    on_change=_commit, args=("readings", key, None, fluid, rpm))
-            try:
-                fit = adapter._dynamic_fann(readings, fluid)
-                st.caption(f"PV = {fit['pv_cp']:g} cP; Ty = {fit['ty_lbf_100ft2']:g} lbf/100ft²; IOD = {fit['iod']:g}")
-            except ValueError:
-                st.caption("Complete all seven RPM readings; derived PV/Ty/IOD will appear here.")
-            if fluid in ("Spacer Ahead", "Spacer Behind"):
-                row = st.session_state.get("lab_qc_params", {}).get(fluid, {}).get("rheology", {}).get("bhct_down", {})
-                for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):
-                    key = f"_centralizer_aux_gel_{fluid}_{field}"
-                    if key not in st.session_state:
-                        value = row.get(field, "")
-                        st.session_state[key] = "" if value is None else str(value)
-                    column.text_input(f"{label} — {fluid} (lbf/100 ft²)", key=key,
-                                      on_change=_commit_aux_gel, args=(fluid, field, key))
+        st.caption("Selected Spacer Ahead/Behind RPM and Gel are entered once in Phase VII Lab Report.")
     if st.button("Execute Centralizer", type="primary", key="_centralizer_execute"):
         try:
             with st.spinner("Calculating Centralizer..."):

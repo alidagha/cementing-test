@@ -57,7 +57,7 @@ def dynamic_state(kind="casing", **fluids):
         row.update(pump_rate="4-6", min_rate=999.)
     state["lab_qc_params"] = {name: {"rheology": {"bhct_down": {
         "selected": True, "readings": readings(), "gel_10_sec": "", "gel_10_min": ""}}}
-        for name in fluids if name in materials_db.RHEOLOGY_LAB_FLUIDS}
+        for name in fluids if name in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer Ahead", "Spacer Behind")}
     return reviewed_spacer(state)
 
 
@@ -118,7 +118,7 @@ def test_circulation_uses_raw_sources_exact_units_and_annulus_boundaries(catalog
         row = diagnostic["rheology"][fluid]
         assert {key: row[key] for key in ("pv_cp", "ty_lbf_100ft2", "iod")} == {
             key: fit[key] for key in ("pv_cp", "ty_lbf_100ft2", "iod")}
-        assert row["source"] == ("lab_bhct_down" if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer") else "aux_rheology")
+        assert row["source"] == ("lab_bhct_down" if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer", "Spacer Ahead", "Spacer Behind") else "aux_rheology")
     annulus = [r for r in snapshot["annulus_intervals"] if r["fluid"] not in ("Mud", "Displacement Fluid")]
     assert circulation["stages_rheology"] == [{"name": r["fluid"], "top_md": r["top_md"],
         "bottom_md": r["bottom_md"], "pv_pa_s": fit["pv_cp"] * .001,
@@ -167,10 +167,15 @@ def test_every_active_lab_fluid_requires_selected_bhct_down_even_inside(catalog,
 @pytest.mark.parametrize("fluid", ("Pre Flush", "Spacer Ahead", "Spacer Behind"))
 def test_active_auxiliary_including_excluded_spacer_behind_requires_readings(catalog, fluid):
     state = dynamic_state(**{"Displacement Fluid": 1., fluid: 1.})
+    current = state["lab_qc_params"].pop(fluid) if fluid in ("Spacer Ahead", "Spacer Behind") else None
     with pytest.raises(ValueError, match="MissingRheology"):
         solve(state, zones_for(catalog), catalog)
+    if current is not None:
+        with pytest.raises(ValueError, match="MissingRheology"):
+            prepare(state, zones_for(catalog), catalog, aux_rheology={fluid: readings()})
+        state["lab_qc_params"][fluid] = current
     prepared = prepare(state, zones_for(catalog), catalog, aux_rheology={fluid: readings()})
-    assert prepared["diagnostics"]["rheology"][fluid]["source"] == "aux_rheology"
+    assert prepared["diagnostics"]["rheology"][fluid]["source"] == ("lab_bhct_down" if current is not None else "aux_rheology")
     if fluid == "Spacer Behind":
         assert prepared["payload"]["fluids"]["circulation"]["stages_rheology"] == []
 
@@ -286,8 +291,7 @@ def test_every_reading_must_be_positive_finite_and_resolvable(catalog, source, b
     fluid = "Tail" if source == "lab" else "Spacer Ahead"
     state = dynamic_state(**{"Displacement Fluid": 100., fluid: 100.})
     auxiliary_inputs = {"Spacer Ahead": readings()}
-    inputs = (state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"]
-              if source == "lab" else auxiliary_inputs["Spacer Ahead"])
+    inputs = state["lab_qc_params"][fluid]["rheology"]["bhct_down"]["readings"]
     inputs["6"] = bad
     monkeypatch.setattr(engine, "compute_standoff_profile", forbidden)
     with pytest.raises(ValueError, match="MissingRheology"):
@@ -305,7 +309,7 @@ def test_exact_fixed_rpm_key_set_required(catalog, source, change):
     elif change == "integer_keys": values = dict(zip(rheology.RPM_ORDER, DIALS))
     else: values = list(DIALS)
     aux = {"Spacer Ahead": values}
-    if source == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"] = values
+    state["lab_qc_params"][fluid]["rheology"]["bhct_down"]["readings"] = values
     with pytest.raises(ValueError, match="MissingRheology"):
         prepare(state, zones_for(catalog), catalog, aux_rheology=aux)
 
@@ -340,7 +344,7 @@ def test_actual_ty_zero_fit_is_invalid_for_dynamic(catalog, source):
     assert rheology.calculate_cemcade_bingham([(rpm, values[str(rpm)]) for rpm in rheology.RPM_ORDER])["is_valid_bingham"] is False
     fluid = "Tail" if source == "lab" else "Spacer Ahead"
     state = dynamic_state(**{"Displacement Fluid": 100., fluid: 100.})
-    if source == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"] = values
+    state["lab_qc_params"][fluid]["rheology"]["bhct_down"]["readings"] = values
     with pytest.raises(ValueError, match="MissingRheology"):
         prepare(state, zones_for(catalog), catalog, aux_rheology={"Spacer Ahead": values})
 
@@ -354,7 +358,7 @@ def test_all_active_fann_fits_use_authority_in_rpm_order_and_ignore_gels(catalog
     for i, fluid in enumerate(name for name in program if name != "Displacement Fluid"):
         values = {str(rpm): str(dial * (1. + i / 10.)) for rpm, dial in zip(rheology.RPM_ORDER, DIALS)}
         values = dict(reversed(list(values.items())))  # Input dict order is not RPM order.
-        if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer"):
+        if fluid in (*materials_db.RHEOLOGY_LAB_FLUIDS, "Spacer", "Spacer Ahead", "Spacer Behind"):
             row = state["lab_qc_params"][fluid]["rheology"]["bhct_down"]
             row.update(readings=values, gel_10_sec="-" if fluid == "Spacer" else {"not_consumed": True},
                        gel_10_min="-" if fluid == "Spacer" else None)
@@ -418,6 +422,7 @@ def test_excluded_spacer_behind_changes_no_snapshot_or_stage_but_requires_a_fit(
     after = prepare(state, zones_for(catalog), catalog, aux_rheology={"Spacer Behind": readings()})
     assert after == before
     assert all(s["name"] != "Spacer Behind" for s in after["diagnostics"]["stages_rheology"])
+    state["lab_qc_params"]["Spacer Behind"]["rheology"]["bhct_down"]["readings"] = {}
     with pytest.raises(ValueError, match="MissingRheology"):
         prepare(state, zones_for(catalog), catalog, aux_rheology={"Spacer Behind": {}})
 

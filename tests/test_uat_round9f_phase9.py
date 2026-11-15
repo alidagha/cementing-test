@@ -322,12 +322,14 @@ def test_dynamic_consumed_sources_stale(catalog, edit):
     if edit == "aux":
         state["fluids_config"]["active"].append("Spacer Ahead")
         state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
+        state["lab_qc_params"]["Spacer Ahead"] = {"rheology": {"bhct_down": {
+            "selected": True, "readings": auxiliary()["Spacer Ahead"], "gel_10_sec": "", "gel_10_min": ""}}}
     phase9().execute(state, catalog)
     if edit == "pv": state["plastic_viscosity"] = "20"
     elif edit == "yp": state["yield_point"] = "11"
     elif edit == "q": state["fluids_config"]["params"]["Displacement Fluid"]["pump_rate"] = "5"
     elif edit == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"]["300"] += 1.
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] += 1.
+    elif edit == "aux": state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] += 1.
     elif edit == "inside_only": state["fluids_config"]["params"]["Displacement Fluid"]["volume"] = 1.
     else: state["fluids_config"]["active"].append("Spacer Behind")
     assert not phase9().result_is_current(state, catalog)
@@ -467,7 +469,7 @@ def test_na_ui_has_no_centralizer_controls_or_solver(catalog, job):
     assert "centralizer_config" not in app.session_state
 
 
-def test_dynamic_widgets_are_exact_active_aux_readings_and_persist(catalog):
+def test_auxiliary_widgets_are_single_phase7_inputs_in_both_modes_and_persist(catalog):
     state = configured(catalog)
     state["fluids_config"]["active"] = ["Spacer Ahead" if name == "Spacer" else name
                                          for name in state["fluids_config"]["active"]]
@@ -475,15 +477,18 @@ def test_dynamic_widgets_are_exact_active_aux_readings_and_persist(catalog):
     app = ui_app(state)
     app.radio(key="_centralizer_physics").set_value("dynamic").run()
     readings = [widget for widget in app.number_input if (widget.key or "").startswith("_centralizer_aux_")]
-    assert len(readings) == 7
-    assert {widget.label for widget in readings} == {f"{rpm} RPM — Spacer Ahead" for rpm in phase9().rheology.RPM_ORDER}
-    app.number_input(key="_centralizer_aux_Spacer Ahead_300").set_value(169.)
+    assert not readings
     app.radio(key="_app_mode_key").set_value("phase7").run()
-    assert not app.exception and app.session_state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] == 169.
+    next(w for w in app.checkbox if w.label=="BHCT — Ramp-Down - Spacer Ahead").check().run()
+    for rpm,value in zip(phase9().rheology.RPM_ORDER,(169,116,64,41,24,8,6)):
+        next(w for w in app.text_input if w.label==f"{rpm} RPM - BHCT — Ramp-Down - Spacer Ahead").set_value(str(value)).run()
+    assert not app.exception
+    assert app.session_state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] == "169"
     app.radio(key="_app_mode_key").set_value("phase9").run()
     app.radio(key="_centralizer_physics").set_value("static").run()
     assert not any((widget.key or "").startswith("_centralizer_aux_") for widget in app.number_input)
-    assert app.session_state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] == 169.
+    assert app.session_state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] == "169"
+    assert app.session_state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] == 168.
 
 
 def test_custom_manager_ui_invalid_save_valid_save_edit_delete(catalog):
@@ -617,13 +622,22 @@ def test_restored_finite_out_of_widget_bounds_draft_remains_editable(catalog,fie
         state["fluids_config"]["active"].append("Spacer Ahead")
         state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
         state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] = value
+        state["lab_qc_params"]["Spacer Ahead"] = {"rheology": {"bhct_down": {
+            "selected": True, "readings": {**auxiliary()["Spacer Ahead"], "300": value},
+            "gel_10_sec": "", "gel_10_min": ""}}}
     else: state["centralizer_config"]["zones"][0][field] = value
     restored = audit.round_trip(state)
     app = ui_app(restored)
     assert not app.exception
     assert app.session_state["centralizer_config"] == restored["centralizer_config"]
-    key = "_centralizer_aux_Spacer Ahead_300" if field=="aux" else f"_centralizer_zone_0_0_{field}"
-    app.number_input(key=key).set_value(10.).run()
+    if field=="aux":
+        app.radio(key="_app_mode_key").set_value("phase7").run()
+        next(w for w in app.text_input if w.label=="300 RPM - BHCT — Ramp-Down - Spacer Ahead").set_value("10").run()
+        assert not app.exception
+        assert app.session_state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] == "10"
+        assert app.session_state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] == value
+        return
+    app.number_input(key=f"_centralizer_zone_0_0_{field}").set_value(10.).run()
     assert not app.exception and app.radio(key="_app_mode_key").value=="phase9"
     config = app.session_state["centralizer_config"]
-    assert (config["aux_rheology"]["Spacer Ahead"]["300"] if field=="aux" else config["zones"][0][field]) == 10.
+    assert config["zones"][0][field] == 10.

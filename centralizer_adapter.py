@@ -554,7 +554,7 @@ def _dynamic_fann(readings, fluid):
             raise ValueError("Invalid Bingham PV/Ty.")
         return result
     except ValueError as exc:
-        guidance = (f"Complete {fluid} rheology in Phase VII BHCT — Ramp-Down. " if fluid in ("Diesel", "Spacer", "Pre Flush") else
+        guidance = (f"Complete {fluid} rheology in Phase VII BHCT — Ramp-Down. " if fluid in ("Diesel", "Spacer", "Pre Flush", "Spacer Ahead", "Spacer Behind") else
                     "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. ")
         raise ValueError(f"[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid '{fluid}'. "
                          f"{guidance}{exc}") from None

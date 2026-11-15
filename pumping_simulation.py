@@ -117,6 +117,30 @@ def prepare_pumping_simulation(state):
             except ValueError as exc:
                 raise ValueError(f"Phase VII Spacer: Pumping Simulation requires current reviewed bhct_down rheology. {exc}") from None
             fluid_data[name].update(pv_cp=fit["pv_cp"], yp_lbf100ft2=fit["ty_lbf_100ft2"])
+        elif name in ("Spacer Ahead", "Spacer Behind"):
+            try:
+                lab = _record(state.get("lab_qc_params", {}), "Phase VII Lab")
+                qc = _record(lab.get(name, {}), f"Phase VII {name}")
+                data = _record(qc.get("rheology", {}), f"Phase VII {name} rheology")
+                row = _record(data.get("bhct_down", {}), f"Phase VII {name} bhct_down")
+                if set(qc) - {"rheology"} or set(row) - {"selected", "readings", "gel_10_sec", "gel_10_min"}:
+                    raise ValueError("Use the actual Phase VII rheology record without foreign provenance claims.")
+                if row.get("selected") is not True:
+                    raise ValueError("Select Phase VII BHCT — Ramp-Down explicitly.")
+                source = row.get("readings")
+                if not isinstance(source, dict) or set(source) != {str(rpm) for rpm in rheology.RPM_ORDER}:
+                    raise ValueError("Complete exactly all seven RPM readings.")
+                points = [(rpm, rheology._numeric(source[str(rpm)])) for rpm in rheology.RPM_ORDER]
+                if any(value is None or value <= 0 for _, value in points):
+                    raise ValueError("All seven readings must be finite and positive.")
+                fit = rheology.calculate_cemcade_bingham(points)
+                if fit["is_valid_bingham"] is not True:
+                    raise ValueError(fit["validation_message"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"Phase VII {name}: Pumping Simulation requires complete valid seven-RPM bhct_down rheology. {exc}") from None
+            # Preserve the original spacer PV/YP handoff. Gel admission belongs
+            # to CFW128; it does not enter this legacy Pumping projection.
+            fluid_data[name].update(pv_cp=fit["pv_cp"], yp_lbf100ft2=fit["ty_lbf_100ft2"])
         elif name in materials_db.PHASE7_LAB_FLUIDS and name != "Pre Flush":
             try:
                 lab = _record(state.get("lab_qc_params", {}), "Phase VII Lab")
