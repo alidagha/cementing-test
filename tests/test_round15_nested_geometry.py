@@ -7345,14 +7345,15 @@ def test_cfw128_gate7_native_multiple_cement_fluid_identities(gate7_cases,scaven
 def gate8_assert_imports(path):
     import ast
     tree=ast.parse(path.read_text())
-    wanted={'contextlib':('contextmanager',),'copy':('deepcopy',),'dataclasses':('dataclass','field'),
+    wanted={'contextlib':('contextmanager',),'copy':('deepcopy',),'dataclasses':('dataclass','field','fields'),
         'io':('BytesIO',),'docxtpl':('DocxTemplate',),'project_state':('fingerprint','prepare_calculations'),
         'pumping_simulation':('source_signature',),'well_report':('canonical_report_source','prepared_well_report','postprocess_well_report'),
         'cement_chart_report':('prepared_cement_report',),'well_schematic_adapter':('source_signature','prepare_schematic'),
         'phase_10_procedure':('TEMPLATE_PATH','document_signature','_word_quantity_context'),
-        'cfw128_er03_numeric_adapter':('NumericBoundary','NumericEvidence','_primitive','run_numeric_test_case','validate_numeric_evidence','render_numeric_test_charts'),
+        'cfw128_er03_numeric_adapter':('NumericBoundary','NumericEvidence','_primitive','run_numeric_test_case','validate_numeric_evidence','render_numeric_test_charts','SourceDesignInputs','capture_design_inputs'),
         'cfw128_c2e7_native_placement':('NativePlacementAssessment','assess_native_placement'),
-        'cfw128_c2e8_post_pull_review':('PostPullConditions','PostPullReview','assess_post_pull','validate_post_pull_review')}
+        'cfw128_c2e8_post_pull_review':('PostPullConditions','PostPullReview','assess_post_pull','validate_post_pull_review','NativeEndStateAssessment','assess_native_end_state','validate_native_end_state'),
+        'cfw128_preflight':('SourcePreflight','preflight_project')}
     nodes=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom)]
     assert len(nodes)==len(wanted) and {n.module:tuple(a.name for a in n.names) for n in nodes}==wanted
     assert all(n.level==0 for n in nodes)
@@ -8910,6 +8911,11 @@ def test_cfw128_b3_no_new_production_routing_and_existing_import_firewall():
     names={'NativeEndStateAssessment','assess_native_end_state','validate_native_end_state'}
     for path in Path('.').glob('*.py'):
         if path.name=='cfw128_c2e8_post_pull_review.py':continue
+        if path.name=='cfw128_shadow_word_bridge.py':
+            # B4 authorizes this exact disabled opt-in consumer only. Keep the
+            # explicit import firewall and forbid all ordinary production callers.
+            gate8_assert_imports(path)
+            continue
         tree=ast.parse(path.read_text())
         assert not names & {n.id for n in ast.walk(tree) if isinstance(n,ast.Name)},path
         assert not names & {n.attr for n in ast.walk(tree) if isinstance(n,ast.Attribute)},path
@@ -8994,3 +9000,332 @@ def test_cfw128_b3_nonzero_counterfeit_within_old_audit_bound_is_hold(gate7_case
     else:
         assert a.rate_residuals and 'HOLD_EXECUTED_RATE_TOKEN_RESIDUAL' in a.case_holds
     assert a.qualification==a.final_field_toc=='NOT_GRANTED' and a.scientifically_qualified is False
+
+
+def b4_bound_shadow(base,job='LNR 7"',*,engine='vertical',geometry=None,volume=200.,tail=.35,float_on=True,word_context=None):
+    """Existing measured synthetic records; never purported field inputs."""
+    from dataclasses import replace
+    from engineering_tools import lab_review_signature
+    from project_state import lab_source_signature,mud_lab_source_signature
+    from cfw128_er03_numeric_adapter import capture_design_inputs
+    from cfw128_integration_abi import compose_nominal_tracking
+    import cfw128_shadow_word_bridge as bridge
+    state=b2_measured_source(base,job)
+    if geometry is not None:
+        for key in ('job_type','hardware_table','placement_config','well_geometry'):
+            state[key]=deepcopy(geometry[key])
+    if engine=='directional':
+        state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[100.,60.,0.],[6000.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+    state['fluids_config']['params']['Main'].update(volume=volume,pump_rate=volume/4.)
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    state['fluids_config']['params']['Displacement Fluid']['pump_rate']=c.displacement.derived_displacement_bbl/4.
+    for name in ('Main','Displacement Fluid'):
+        state['lab_source_signatures'][name]=lab_source_signature(state,name) if name=='Main' else mud_lab_source_signature(state)
+        qc=state['lab_qc_params'][name]
+        qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs'].get(name))
+    design=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    boundary=design.bind_boundary(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+        boundary=replace(gate3_boundary(),gel_pa_by_fluid=(),float_equipment=float_on,tail_cap_min=tail))
+    return state,boundary,bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+        boundary=boundary,engine=engine,word_context=word_context)
+
+
+@pytest.fixture(scope='module')
+def b4_cases(bug01_reviewed_report_base):
+    return {job:b4_bound_shadow(bug01_reviewed_report_base,job) for job in BUG01_JOBS}
+
+
+def b4_integrate(state,b,parent,**kwargs):
+    import cfw128_shadow_word_bridge as bridge
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    return bridge.prepare_shadow_integration(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+        boundary=b,engine=parent.engine,conditions=PostPullConditions(True,True,True),**kwargs)
+
+
+def b4_resign(receipt,**changes):
+    from dataclasses import fields,replace
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    values=tuple(changes.get(f.name,getattr(receipt,f.name)) for f in fields(receipt) if f.init and f.name!='projection_identity')
+    return replace(receipt,**changes,projection_identity=fingerprint([receipt.schema,_primitive(values)]))
+
+
+@pytest.mark.parametrize('job',BUG01_JOBS)
+def test_cfw128_b4_source_bound_eight_job_end_state(b4_cases,job,monkeypatch,record_testsuite_property):
+    import cfw128_shadow_word_bridge as bridge
+    import cfw128_er03_numeric_adapter as numeric
+    from cfw128_c2e8_post_pull_review import assess_native_end_state,PostPullConditions
+    from cfw128_integration_abi import compose_nominal_tracking
+    from well_profile import tvd_at_md
+    state,b,parent=b4_cases[job];before=pickle.dumps((state,parent))
+    def forbidden(*a,**k):pytest.fail('B4 sidecar ran a solver, fit, render or Word export')
+    for module in (numeric.vertical,numeric.directional,numeric.event_vertical,numeric.event_directional):
+        monkeypatch.setattr(module,'simulate',forbidden)
+    for name in ('run_numeric_test_case','render_numeric_test_charts','shadow_word_bytes'):
+        monkeypatch.setattr(bridge,name,forbidden)
+    monkeypatch.setattr(numeric,'fit_full_hb',forbidden)
+    child=b4_integrate(state,b,parent)
+    bridge.validate_shadow_integration(state,parent,child,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+        boundary=b,engine='vertical',conditions=PostPullConditions(True,True,True))
+    expected=assess_native_end_state(state,parent.numeric,expected_app_source_sha=GATE3_APP_SOURCE_SHA,conditions=PostPullConditions(True,True,True))
+    assert child.end_state==expected and child.end_state.review.eod_balances==parent.placement.fluid_balances
+    assert child.shadow_identity==parent.projection_identity and child.source_identity==parent.source_identity
+    assert child.preflight.inputs_complete and child.preflight.composition_identity==child.design.composition_identity==parent.numeric.composition_projection_identity
+    shoe=expected.shoe_md
+    assert child.design.shoe_tvd_m==tvd_at_md(state['well_geometry'],[shoe])[0]
+    assert b.bhsp_target_psi==child.design.shoe_tvd_m*80.*.02278 and b.back_pressure_psi==0.
+    assert parent.numeric.pressure_station_md==shoe
+    assert expected.terminal_top_md==shoe-25. and expected.float_design_md==shoe-24.4
+    assert expected.terminal_status=='HOLD_TERMINAL_25M_NOT_PROVED'
+    assert child.qout_semantics=='ANNULAR_MOUTH_PLUS_PIPE_HEAD'
+    assert set(expected.holds)<=set(child.holds) and 'INV014_FAIL_WITH_OWNER_EXCEPTION' in child.holds
+    for receipt in (child,child.preflight,child.design,child.end_state):
+        assert receipt.currentness=='NOT_CURRENTNESS_PROOF' and receipt.qualification=='NOT_GRANTED'
+        assert all(getattr(receipt,n) is False for n in ('enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'))
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert c.geometry.pumping_return[0].top_md==0. and c.geometry.pumping_return[-1].bottom_md==shoe
+    if job.startswith('CSG'):
+        assert expected.review.additional_mud_bbl is None and not expected.review.returned_dp_mud
+    else:
+        assert expected.review.achieved_cement_top_md is not None
+        assert expected.review.additional_mud_bbl==math.fsum(row[5] for row in expected.review.withdrawn_sections)
+        assert all(row[-1]==0. for row in expected.review.post_pull_balances)
+    if job.startswith('TIE BACK'):
+        assert child.preflight.structural_return_md[-1]!=0. and child.preflight.composition_return_md[-1]==0.
+        assert 'HISTORICAL_PARTIAL_PREVIEW_NOT_HYDRAULIC_OUTLET' in child.holds
+    record_testsuite_property('B4 '+job,repr((child.projection_identity,expected.terminal_status,
+        expected.review.eod_balances,expected.fluid_residuals,expected.rate_residuals,
+        expected.review.achieved_cement_top_md,expected.review.region,expected.review.additional_mud_bbl)))
+    assert pickle.dumps((state,parent))==before
+
+
+@pytest.mark.parametrize('fault',['volume','rate','material','lab','review','gel','mud','host','job','sha','boundary','engine','conditions','parent','preflight','design','end','source','context','flags','missing_native'])
+def test_cfw128_b4_fresh_and_resigned_negatives(b4_cases,fault):
+    from dataclasses import replace
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=b4_cases['LNR 7"'];state=deepcopy(state);child=b4_integrate(state,b,parent)
+    sha=GATE3_APP_SOURCE_SHA;engine='vertical';cond=PostPullConditions(True,True,True);context=None
+    if fault in ('volume','rate','material'):
+        state['fluids_config']['params']['Main'][{'rate':'pump_rate','material':'material_name'}.get(fault,fault)]='changed'
+    elif fault=='lab':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=46
+    elif fault=='review':state['lab_qc_params']['Main']['reviewed']=False
+    elif fault=='gel':state['lab_qc_params']['Main']['rheology']['bhct_down']['gel_10_min']='-'
+    elif fault=='mud':state['lab_qc_params']['Mud']=deepcopy(state['lab_qc_params']['Displacement Fluid'])
+    elif fault=='host':state['hardware_table'].iloc[0,0]='unexpected host'
+    elif fault=='job':state['job_type']='TIE BACK LNR 7"'
+    elif fault=='sha':sha='0'*40
+    elif fault=='boundary':b=replace(b,bhsp_target_psi=b.bhsp_target_psi+1.)
+    elif fault=='engine':engine='directional'
+    elif fault=='conditions':cond=PostPullConditions(False,True,True)
+    elif fault=='parent':child=b4_resign(child,shadow_identity='0'*64)
+    elif fault=='source':child=b4_resign(child,source_identity='0'*64)
+    elif fault=='preflight':child=b4_resign(child,preflight=b4_resign(child.preflight,job='forged'))
+    elif fault=='design':child=b4_resign(child,design=b4_resign(child.design,bhsp_target_psi=1.))
+    elif fault=='end':child=b4_resign(child,end_state=b4_resign(child.end_state,terminal_status='TERMINAL_25M_CEMENT_COVERAGE_OBSERVED_IN_NATIVE_MODEL'))
+    elif fault=='context':context={}
+    elif fault=='flags':object.__setattr__(child,'enabled',True)
+    elif fault=='missing_native':
+        from project_state import fingerprint
+        from cfw128_er03_numeric_adapter import _primitive
+        parent=deepcopy(parent)
+        object.__setattr__(parent,'numeric',gate4f_resign(parent.numeric,native_observation=None))
+        object.__setattr__(parent,'projection_identity',fingerprint([bridge.SCHEMA,parent.app_source_sha,parent.source_identity,
+            _primitive(parent.boundary),parent.engine,_primitive(parent.numeric),_primitive(parent.placement),parent.context_identity,parent.document_identity]))
+    with pytest.raises((ValueError,TypeError)):
+        bridge.validate_shadow_integration(state,parent,child,expected_app_source_sha=sha,boundary=b,engine=engine,conditions=cond,word_context=context)
+
+
+@pytest.mark.parametrize('fault',['pressure','surface','gels','missing_gel','rpm','survey'])
+def test_cfw128_b4_research_controls_are_not_source_bound(b4_cases,bug01_reviewed_report_base,fault):
+    from dataclasses import replace
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=b4_cases['LNR 7"']
+    if fault in ('pressure','surface','gels'):
+        if fault=='pressure':b=replace(b,bhsp_target_psi=b.bhsp_target_psi+1.)
+        elif fault=='surface':b=replace(b,back_pressure_psi=250.)
+        else:b=replace(b,gel_pa_by_fluid=tuple((n,0.) for n,v in b.gel_pa_by_fluid))
+        # A genuine matching parent with different explicit research controls
+        # remains valid research evidence, but cannot claim B4 source binding.
+        parent=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+        with pytest.raises(ValueError):b4_integrate(state,b,parent)
+    else:
+        state=b2_measured_source(bug01_reviewed_report_base)
+        if fault=='missing_gel':state['lab_qc_params']['Main']['rheology']['bhct_down']['gel_10_min']='-'
+        elif fault=='rpm':state['lab_qc_params']['Main']['rheology']['bhct_down']['readings']['300']=0.
+        else:state['well_geometry']={'type':'Directional','survey':pd.DataFrame([[0.,0.,0.],[0.,60.,0.]],columns=['MD','Deviation','Azimuth'])}
+        with pytest.raises((ValueError,TypeError)):
+            bridge.prepare_shadow_integration(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,engine='vertical',conditions=PostPullConditions(True,True,True))
+
+
+@pytest.mark.parametrize('geometry',['directional','sectional','uat19'])
+def test_cfw128_b4_directional_sections_and_historical_preview(bug01_reviewed_report_base,geometry):
+    from cfw128_integration_abi import compose_nominal_tracking
+    from well_profile import tvd_at_md
+    model=cfw128_c2e5_tapered_state(686.) if geometry=='sectional' else cfw128_c1_uat19_state() if geometry=='uat19' else None
+    state,b,parent=b4_bound_shadow(bug01_reviewed_report_base,'TIE BACK LNR 7"',
+        geometry=model,engine='directional' if geometry=='directional' else 'vertical')
+    before=pickle.dumps((state,parent));child=b4_integrate(state,b,parent)
+    c=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    assert child.design.shoe_tvd_m==tvd_at_md(state['well_geometry'],[child.end_state.shoe_md])[0]
+    assert child.preflight.composition_return_md==(child.end_state.shoe_md,0.)
+    assert child.preflight.structural_return_md[-1]==c.captured_geometry.string_top_md
+    if geometry=='directional':
+        assert child.design.shoe_tvd_m<child.design.shoe_md and parent.numeric.engine=='event_aligned_directional'
+        assert parent.numeric.directional_tvd_proof
+    elif geometry=='sectional':
+        assert {row[4] for row in child.end_state.terminal_sections}=={6.,5.8}
+        assert len(child.end_state.review.withdrawn_sections)==2
+    else:
+        assert [(p.top_md,p.bottom_md) for p in c.captured_geometry.active_sections]==[(0.,2800.),(2800.,3885.)]
+        assert child.preflight.receiver_shoe_md==4860. and child.design.shoe_md==3885.
+        assert child.preflight.structural_return_md==(3885.,2800.)
+        assert c.geometry.pumping_return[0].top_md==0. and c.geometry.pumping_return[-1].bottom_md==3885.
+        assert not any(row.Description=='Open Hole Size' for row in state['hardware_table'].itertuples())
+    assert pickle.dumps((state,parent))==before
+
+
+@pytest.mark.parametrize('tail',[0.,.35])
+def test_cfw128_b4_raw_panels_and_tail_unchanged(bug01_reviewed_report_base,tail):
+    import cfw128_shadow_word_bridge as bridge
+    import cfw128_er03_numeric_adapter as numeric
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from io import BytesIO
+    state,b,parent=b4_bound_shadow(bug01_reviewed_report_base,tail=tail)
+    before=pickle.dumps((state,parent))
+    def image():
+        with bridge.shadow_pumping_report(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b) as report:
+            fig=report['figure'];assert len(fig.axes)==3
+            assert report['result'] is parent and 'integration' not in report
+            assert any('ANNULAR_MOUTH_PLUS_PIPE_HEAD' in s for s in report['warnings'])
+            fig.canvas.draw();pixels=np.asarray(fig.canvas.buffer_rgba()).copy()
+            # Acquired/Back conventions may be legend-only, never supplied data.
+            data=tuple(tuple((line.get_label(),tuple(line.get_xdata()),tuple(line.get_ydata())) for line in ax.lines) for ax in fig.axes)
+            png=BytesIO();fig.savefig(png,format='png',dpi=200,facecolor='white')
+            return pixels,png.getvalue(),data
+    figures=plt.get_fignums();pixels,png,data=image()
+    child=b4_integrate(state,b,parent)
+    other,png_after,data_after=image()
+    assert np.array_equal(pixels,other) and png==png_after and data==data_after
+    assert plt.get_fignums()==figures and pickle.dumps((state,parent))==before
+    assert child.end_state.pump_end_min==parent.numeric.native_observation.payload[3][0]
+    if tail==0.:
+        assert parent.numeric.native_observation.payload[2][-1][2]==0.
+        assert numeric._pump_end_display_length(parent.numeric)==len(parent.numeric.time_min)-1
+    else:
+        assert parent.numeric.native_observation.payload[3]!=parent.numeric.native_observation.payload[4]
+        assert numeric._pump_end_display_length(parent.numeric)==len(parent.numeric.time_min)
+        assert any(q!=0 for t,q in zip(parent.numeric.time_min,parent.numeric.q_out_bpm) if t>child.end_state.pump_end_min)
+
+
+def test_cfw128_b4_word_context_and_png_are_isolated(bug01_reviewed_report_base,tmp_path):
+    from unittest.mock import patch
+    from io import BytesIO
+    from zipfile import ZipFile
+    from docx import Document
+    from dataclasses import replace
+    from engineering_tools import lab_review_signature
+    from project_state import prepare_calculations,lab_source_signature,mud_lab_source_signature
+    from centralizer_fixtures import execute_centralizer
+    from cfw128_er03_numeric_adapter import capture_design_inputs
+    from cfw128_integration_abi import compose_nominal_tracking
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    import phase_10_procedure as procedure
+    import cfw128_shadow_word_bridge as bridge
+    state=b2_measured_source(bug01_reviewed_report_base)
+    state['fluids_config']['params']['Main'].update(volume=40.,pump_rate=10.)
+    state['fluids_config']['params']['Displacement Fluid']['volume']=compose_nominal_tracking(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA).displacement.derived_displacement_bbl
+    prepare_calculations(state)  # Rebuild formulation before its existing synthetic review.
+    for name in ('Main','Displacement Fluid'):
+        state['lab_source_signatures'][name]=lab_source_signature(state,name) if name=='Main' else mud_lab_source_signature(state)
+        qc=state['lab_qc_params'][name];qc['reviewed']=True
+        qc['review_signature']=lab_review_signature(qc,state['lab_grid_dfs'].get(name))
+    execute_centralizer(state)
+    with patch.object(procedure.st,'session_state',state):context=procedure.build_master_context()
+    design=capture_design_inputs(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA)
+    b=design.bind_boundary(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=replace(gate3_boundary(),gel_pa_by_fluid=()))
+    parent=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b,word_context=context)
+    before=pickle.dumps((state,parent,context))
+    def word():return bridge.shadow_word_bytes(state,parent,context,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b)
+    original=word();child=b4_integrate(state,b,parent,word_context=context);after=word()
+    assert set(original)==set(after) and all('integration' not in key for key in after)
+    with ZipFile(BytesIO(original['bytes'])) as a,ZipFile(BytesIO(after['bytes'])) as z:
+        assert a.namelist()==z.namelist() and all(a.read(n)==z.read(n) for n in a.namelist())
+        assert not any(child.projection_identity.encode() in z.read(n) for n in z.namelist())
+    with bridge.shadow_pumping_report(state,parent,expected_app_source_sha=GATE3_APP_SOURCE_SHA,boundary=b) as report:
+        png=BytesIO();report['figure'].savefig(png,format='png',dpi=200,facecolor='white')
+    document=Document(BytesIO(after['bytes']))
+    drawing=next(p for p in document.paragraphs if p._p.xpath('.//wp:docPr[@descr="Pumping Simulation Charts"]'))
+    assert document.part.related_parts[drawing._p.xpath('.//a:blip/@r:embed')[0]].blob==png.getvalue()
+    (tmp_path/'b4-shadow.docx').write_bytes(after['bytes']);(tmp_path/'b4-shadow.png').write_bytes(png.getvalue())
+    for bad in (None,{},dict(context,pumping_simulation_source='stale')):
+        with pytest.raises(ValueError):b4_integrate(state,b,parent,word_context=bad)
+    assert pickle.dumps((state,parent,context))==before
+    assert child.end_state.review.surface_status=='HOLD_SURFACE_NOT_PROVED'
+
+
+def b4_assert_original_shadow(source):
+    import ast,hashlib,subprocess
+    original=subprocess.check_output(['git','show','d867885b65cfe95d28274a3331e76e947989038a:cfw128_shadow_word_bridge.py'],text=True)
+    assert hashlib.sha256(original.encode()).hexdigest()=='e3caeb0f9c476ce84945ab6c305ae314fe9c451567f4f095baa002ccd18dc22f'
+    prior=ast.parse(original);current=ast.parse(source)
+    for node in prior.body:
+        if isinstance(node,(ast.FunctionDef,ast.ClassDef)):
+            matches=[n for n in current.body if getattr(n,'name',None)==node.name]
+            assert len(matches)==1 and ast.get_source_segment(source,matches[0])==ast.get_source_segment(original,node),node.name
+
+
+@pytest.mark.parametrize('mutation',['unchanged','numeric_call','missing','duplicate','word','renderer','flags'])
+def test_cfw128_b4_original_shadow_contract_and_mutation_negatives(mutation):
+    from pathlib import Path
+    source=Path('cfw128_shadow_word_bridge.py').read_text()
+    if mutation=='numeric_call':source=source.replace('numeric=run_numeric_test_case(captured,','numeric=unapproved_solver(captured,')
+    elif mutation=='missing':source=source.replace("if wanted!=self.projection_identity:raise ValueError('Shadow projection differs.')",'pass')
+    elif mutation=='duplicate':source+='\ndef shadow_word_bytes(*args):pass\n'
+    elif mutation=='word':source=source.replace('template.render(_word_quantity_context(captured))','template.render(captured)')
+    elif mutation=='renderer':source=source.replace('figure=render_numeric_test_charts(evidence.numeric)','figure=other_renderer(evidence.numeric)')
+    elif mutation=='flags':source=source.replace("enabled: bool=field(default=False,init=False)","enabled: bool=field(default=True,init=False)")
+    if mutation=='unchanged':b4_assert_original_shadow(source)
+    else:
+        with pytest.raises(AssertionError):b4_assert_original_shadow(source)
+
+
+def test_cfw128_b4_resigned_boundary_swap_rejects_real_other_run(b4_cases):
+    from dataclasses import replace
+    from project_state import fingerprint
+    from cfw128_er03_numeric_adapter import _primitive
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=b4_cases['LNR 7"']
+    # Authentic second research run, then counterfeit the outer boundary/source
+    # claim only. Hashing this lie does not bind the numeric input identity.
+    other=bridge.prepare_shadow(state,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+        boundary=replace(b,float_equipment=not b.float_equipment))
+    forged=replace(other,boundary=b,source_identity=parent.source_identity,
+        projection_identity=fingerprint([bridge.SCHEMA,other.app_source_sha,parent.source_identity,_primitive(b),other.engine,
+            _primitive(other.numeric),_primitive(other.placement),other.context_identity,other.document_identity]))
+    with pytest.raises(ValueError,match='numeric input identity'):
+        b4_integrate(state,b,forged)
+
+
+@pytest.mark.parametrize('target',['main.py','pumping_simulation.py','phase_10_procedure.py','well_report.py'])
+def test_cfw128_b4_production_import_mutations_still_reject(target,monkeypatch):
+    from pathlib import Path
+    original=Path.read_text
+    def mutation(path,*args,**kwargs):
+        text=original(path,*args,**kwargs)
+        return text+'\nfrom cfw128_c2e8_post_pull_review import assess_native_end_state\n' if path==Path(target) else text
+    monkeypatch.setattr(Path,'read_text',mutation)
+    with pytest.raises(AssertionError):test_cfw128_b3_no_new_production_routing_and_existing_import_firewall()
+
+
+@pytest.mark.parametrize('flag',['enabled','ready_to_run','hb_admissible','hydraulic_admissible','chart_admissible','scientifically_qualified'])
+def test_cfw128_b4_every_release_flag_rejects_forgery(b4_cases,flag):
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    import cfw128_shadow_word_bridge as bridge
+    state,b,parent=b4_cases['LNR 7"'];child=b4_integrate(state,b,parent)
+    object.__setattr__(child,flag,True)
+    with pytest.raises(ValueError,match='literal False'):
+        bridge.validate_shadow_integration(state,parent,child,expected_app_source_sha=GATE3_APP_SOURCE_SHA,
+            boundary=b,engine='vertical',conditions=PostPullConditions(True,True,True))
