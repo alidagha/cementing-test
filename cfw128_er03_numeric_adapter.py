@@ -875,10 +875,33 @@ def render_numeric_test_charts(evidence: NumericEvidence):
 def render_app_prediction(state, receipt, *, expected_app_source_sha, session_scope):
     validate_app_prediction(state, receipt, expected_app_source_sha=expected_app_source_sha,
                             session_scope=session_scope)
-    return _render_native_charts(receipt)
+    figure = _render_native_charts(receipt, stop=_app_pumping_display_length(receipt))
+    pressure, downhole, _ = figure.axes
+    width = downhole.get_legend().get_lines()[0].get_linewidth()  # Hydrostatic.
+    legend = pressure.get_legend()
+    samples = dict(zip((label.get_text() for label in legend.get_texts()), legend.get_lines(), strict=True))
+    # The pinned renderer appends these two calculated lines in this order.
+    for name, line in zip(('Calc. Pump Press.', 'Calc. CemHP'), pressure.lines[-2:], strict=True):
+        for artist in (line, samples[name]):
+            # Matplotlib scales dash lengths on linewidth changes. Keep the
+            # rendered dash spacing of the original line and legend sample.
+            dashes = artist._dash_pattern
+            artist.set_linewidth(width)
+            artist._dash_pattern = dashes
+    return figure
 
 
-def _render_native_charts(evidence):
+def _app_pumping_display_length(receipt):
+    """Select complete pumping intervals from the validated native record."""
+    eod = dict(receipt.events)['t_eod']
+    stop = sum(t < eod for t in receipt.time_min)
+    rows = receipt.native_observation.payload[2]
+    if not 2 <= stop <= len(rows) or rows[stop-1][1] != eod:
+        raise ValueError('Unrepresentable App pumping chart domain.')
+    return stop
+
+
+def _render_native_charts(evidence, *, stop=None):
     r=evidence;t=r.time_min;events=dict(r.events)
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']
@@ -893,7 +916,9 @@ def _render_native_charts(evidence):
     except (OverflowError,ZeroDivisionError) as exc:raise ValueError('Unrepresentable presentation axes.') from exc
     # Scale and authoritative events above always use the complete raw record.
     # Slices are a read-only presentation, never a new numerical receipt.
-    stop=_pump_end_display_length(r);view_t=t[:stop]
+    if stop is None:
+        stop=_pump_end_display_length(r)
+    view_t=t[:stop]
     spec=JobChartsSpec(calc_cem_hp=(view_t,r.whp_kpsi[:stop]),calc_pump_press=(view_t,r.pump_kpsi[:stop]),
         hydrostatic=(view_t,hydro[:stop]),dynamic=(view_t,dynamic[:stop]) if dynamic else None,q_in=(view_t,r.q_in_bpm[:stop]),q_out=(view_t,r.q_out_bpm[:stop]),
         acquired_pressure=None,back_pressure=None,acquired_q_in=None,acquired_q_out=None,

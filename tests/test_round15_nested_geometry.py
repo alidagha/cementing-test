@@ -7961,6 +7961,12 @@ def test_cfw128_gate8p_native_domains(gate8p_cases,engine,mode,monkeypatch):
             assert any(q>0 for t,q in zip(r.time_min,r.q_out_bpm) if t>dict(r.events)['t_eod'])
         if mode=='shutin':
             assert dict(r.events)['t_shutin'] is not None and r.time_min[-1]>dict(r.events)['t_eod']
+        # Exercise the App-only interval selector on this independently
+        # validated native history while the research figure keeps its domain.
+        stop=a._app_pumping_display_length(r)
+        assert r.time_min[:stop]==tuple(t for t in r.time_min if t<dict(r.events)['t_eod'])
+        assert r.native_observation.payload[2][stop-1][1]==dict(r.events)['t_eod']
+        assert tuple(line.get_linewidth() for line in fig.axes[0].lines[-2:])==(1.5,2.5)
         assert pickle.dumps(r)==before
     finally:plt.close(fig)
 
@@ -9441,6 +9447,7 @@ def stage3_reviewed_app(base, job, *, directional=False, geometry=None):
 
 @pytest.mark.parametrize('job', (*BUG01_JOBS, 'UAT19'))
 def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeypatch, tmp_path):
+    import json
     from io import BytesIO
     from docx import Document
     import cfw128_er03_numeric_adapter as adapter
@@ -9460,12 +9467,21 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
                         lambda **kwargs: pytest.fail('Gate ON reached the legacy solver'))
     reports = []
     launches = []
+    solver_receipts = []
+    chart_specs = []
     postprocess = phase_x.postprocess_well_report
     run = adapter.run_app_prediction
+    render = adapter.render_three_charts
+
+    def observe_chart(spec):
+        chart_specs.append(spec)
+        return render(spec)
 
     def capture(source, **scope):
         launches.append((deepcopy(source), scope))
-        return run(source, **scope)
+        result = run(source, **scope)
+        solver_receipts.append(pickle.dumps(result))
+        return result
 
     def observe(*args, **kwargs):
         reports.append(kwargs['pumping_report'])
@@ -9473,6 +9489,7 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
 
     monkeypatch.setattr(phase_x, 'postprocess_well_report', observe)
     monkeypatch.setattr(adapter, 'run_app_prediction', capture)
+    monkeypatch.setattr(adapter, 'render_three_charts', observe_chart)
     case.phase(app, 'phase10')
     assert not reports and not launches
     build = next(b for b in app.button if b.label == 'Build Word Document')
@@ -9481,8 +9498,10 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
     build.click().run(timeout=240)
     assert not app.error, [e.value for e in app.error]
     one, = reports
+    spec, = chart_specs
     (source, scope), = launches
     numeric, end_state = one['result'], one['end_state']
+    assert solver_receipts == [pickle.dumps(numeric)]
     assert type(numeric) is adapter.AppPrediction and type(end_state) is placement.AppEndStateAssessment
     assert numeric.app_source_sha == STAGE3_MAIN
     assert end_state.review.numeric_identity == numeric.projection_identity
@@ -9492,6 +9511,56 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
     assert 'INV014_FAIL_WITH_OWNER_EXCEPTION' in end_state.holds and end_state.final_field_toc == 'NOT_GRANTED'
     assert not numeric.chart_admissible and not numeric.scientifically_qualified
     assert len(one['figure'].axes) == 3 and pumping_simulation.fcm.plt.get_fignums() == before
+    events = dict(numeric.events)
+    cutoff = tuple(t for t in numeric.time_min if t < events['t_eod'])
+    channels = (
+        (spec.calc_pump_press, numeric.pump_kpsi), (spec.calc_cem_hp, numeric.whp_kpsi),
+        (spec.hydrostatic, numeric.hydrostatic_kpsi), (spec.dynamic, numeric.total_pressure_kpsi),
+        (spec.q_in, numeric.q_in_bpm), (spec.q_out, numeric.q_out_bpm),
+    )
+    axes = one['figure'].axes
+    pump, cem = axes[0].lines[-2:]
+    legend = dict(zip((item.get_text() for item in axes[0].get_legend().texts),
+                      axes[0].get_legend().get_lines(), strict=True))
+    if job == 'CSG 9 5/8"':
+        stop = len(cutoff)
+        native = numeric.native_observation.payload
+        samples = [stop-2, stop-1, stop, stop+1, len(numeric.time_min)-1]
+        (tmp_path / 'app-chart-domain.json').write_text(json.dumps({
+            'events': events, 'last_pumping': cutoff[-1], 'plotted_end': spec.q_in[0][-1],
+            'sample_columns': ['time', 'pump', 'whp', 'hydrostatic', 'total_pressure', 'Qin', 'Qout'],
+            'samples': [[series[i] for series in (numeric.time_min, *(raw for _, raw in channels))]
+                        for i in sorted(set(samples)) if 0 <= i < len(numeric.time_min)],
+            'native_boundary_rows': native[2][stop-1:stop+2], 'native_eod_and_tail': native[3:5],
+            'raw_fingerprint': adapter.fingerprint((numeric.time_min, *(raw for _, raw in channels),
+                                                    numeric.events, native)),
+            'research_crop_length': adapter._pump_end_display_length(numeric),
+            'principal_widths': [pump.get_linewidth(), cem.get_linewidth(),
+                                  axes[1].lines[-1].get_linewidth(), axes[2].lines[-1].get_linewidth()],
+        }, indent=2))
+        one['figure'].savefig(tmp_path / 'app-three-charts.png', dpi=200, facecolor='white')
+        assert any(b < a for a, b in zip(numeric.pump_kpsi[:stop-1], numeric.pump_kpsi[1:stop]))
+        assert any(row[0] >= events['t_eod'] and row[2] > 0 for row in native[2])
+    assert len(cutoff) >= 2
+    assert all(plotted == (cutoff, raw[:len(cutoff)]) for plotted, raw in channels)
+    assert events['t_eod'] in spec.event_times
+    assert spec.marker_time == events['t_marker'] or events['t_marker'] in spec.event_times
+    assert all(item is None for item in (spec.acquired_pressure, spec.back_pressure,
+                                         spec.acquired_q_in, spec.acquired_q_out))
+    assert (pump.get_color(), pump.get_linestyle()) == (pumping_simulation.fcm.BLUE, '-')
+    assert (cem.get_color(), cem.get_linestyle()) == (pumping_simulation.fcm.GREEN, '--')
+    assert [(sample.get_color(), sample.get_linestyle(), sample.get_linewidth()) for sample in
+            (legend['Calc. Pump Press.'], legend['Calc. CemHP'])] == [
+        (pump.get_color(), pump.get_linestyle(), 3.75), (cem.get_color(), cem.get_linestyle(), 3.75)]
+    assert all(line.get_linewidth() == 3.75 for line in (pump, cem, *axes[1].lines[-2:], *axes[2].lines[-2:]))
+    assert tuple(legend) == ('Calc. CemHP', 'Acquired Pressure', 'Back Pressure', 'Calc. Pump Press.')
+    assert legend['Acquired Pressure'].get_linewidth() == pumping_simulation.fcm.LW_THIN
+    assert legend['Back Pressure'].get_linewidth() == pumping_simulation.fcm.LW_THICK
+    assert spec.axis_x == adapter.autoscale_x(numeric.time_min[-1])
+    for axis in axes[1:]:
+        assert tuple(line.get_xdata()[0] for line in axis.lines
+                     if line.get_color() == pumping_simulation.fcm.EVENT_GREEN
+                     and line.get_zorder() == 4.5) == spec.event_times
     for axis, channels in zip(one['figure'].axes, (
         (numeric.pump_kpsi, numeric.whp_kpsi), (numeric.hydrostatic_kpsi, numeric.total_pressure_kpsi),
         (numeric.q_in_bpm, numeric.q_out_bpm),
@@ -9516,6 +9585,33 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
         from dataclasses import replace
         from test_uat_round10b_pumping_word import drawing_paragraph, image_bytes
         from test_uat_round10c_integration import restore_project, save_project
+        # The untouched renderer on the same domain supplies the independent
+        # reference for all other artists, including grid and event markers.
+        reference = render(spec)
+        try:
+            def appearance(line):
+                return (tuple(line.get_xdata()), tuple(line.get_ydata()), line.get_color(),
+                        line.get_linestyle(), line.get_zorder(), line._unscaled_dash_pattern,
+                        line._dash_pattern)
+
+            for index, (actual, original) in enumerate(zip(axes, reference.axes, strict=True)):
+                assert actual.get_xlim() == original.get_xlim()
+                assert actual.get_ylim() == original.get_ylim()
+                assert actual.get_title() == original.get_title()
+                assert [appearance(line) for line in actual.lines] == [
+                    appearance(line) for line in original.lines]
+                original_widths = [line.get_linewidth() for line in original.lines]
+                if index == 0:
+                    assert original_widths[-2:] == [1.5, 2.5]
+                    original_widths[-2:] = [3.75, 3.75]
+                assert [line.get_linewidth() for line in actual.lines] == original_widths
+                actual_legend, original_legend = actual.get_legend(), original.get_legend()
+                assert [line.get_text() for line in actual_legend.texts] == [
+                    line.get_text() for line in original_legend.texts]
+                assert [appearance(line) for line in actual_legend.get_lines()] == [
+                    appearance(line) for line in original_legend.get_lines()]
+        finally:
+            pumping_simulation.fcm.plt.close(reference)
         png = BytesIO()
         one['figure'].savefig(png, format='png', dpi=200, facecolor='white')
         assert image_bytes(doc, drawing_paragraph(doc, one['prediction_description'])) == png.getvalue()
