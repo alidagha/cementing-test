@@ -45,7 +45,9 @@ def test_operational_taxonomy_order_and_fixed_default():
 
 
 def test_rheology_only_declaration_keeps_downstream_taxonomy_separate():
-    assert db.RHEOLOGY_ONLY_FLUIDS == ("Diesel", "Pre Flush")
+    assert db.RHEOLOGY_ONLY_FLUIDS == ("Diesel", "Pre Flush", "Spacer Ahead", "Spacer Behind")
+    assert not {"Spacer Ahead", "Spacer Behind"} & set(db.CEMENT_FORMULATION_FLUIDS)
+    assert not {"Spacer Ahead", "Spacer Behind"} & set(db.PLACEMENT_SLURRIES)
     assert db.CEMENT_FORMULATION_FLUIDS == ("Scavenger", *db.PLACEMENT_SLURRIES)
     assert "Diesel" not in db.CEMENT_FORMULATION_FLUIDS
     assert "Diesel" not in db.PLACEMENT_SLURRIES

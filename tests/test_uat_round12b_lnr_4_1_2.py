@@ -188,7 +188,9 @@ def test_closed_diesel_taxonomy_and_order_are_unchanged():
     assert db.HYDRAULIC_EXECUTION_ORDER == ('Diesel', 'Pre Flush', 'Spacer', 'Spacer Ahead',
         'Scavenger', 'Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail', 'Spacer Behind', 'Displacement Fluid')
     assert db.PHASE7_LAB_FLUIDS == (*db.CEMENT_FORMULATION_FLUIDS, *db.RHEOLOGY_ONLY_FLUIDS)
-    assert db.RHEOLOGY_ONLY_FLUIDS == ('Diesel', 'Pre Flush')
+    assert db.RHEOLOGY_ONLY_FLUIDS == ('Diesel', 'Pre Flush', 'Spacer Ahead', 'Spacer Behind')
+    assert not {'Spacer Ahead', 'Spacer Behind'} & set(db.CEMENT_FORMULATION_FLUIDS)
+    assert not {'Spacer Ahead', 'Spacer Behind'} & set(db.PLACEMENT_SLURRIES)
     assert db.RHEOLOGY_LAB_FLUIDS == db.CEMENT_FORMULATION_FLUIDS
 
 

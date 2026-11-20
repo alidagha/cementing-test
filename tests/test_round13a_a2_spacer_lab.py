@@ -351,7 +351,12 @@ def test_real_phase_iv_order_tabs_and_manual_sources_stay_independent():
     app = CASE.app(source)
     CASE.phase(app, "phase4")
     CASE.phase(app, "phase7")
-    assert [tab.label for tab in app.tabs] == ["Diesel", "Spacer", "Main"]
+    assert [tab.label for tab in app.tabs] == ["Diesel", "Spacer", "Spacer Ahead", "Main", "Spacer Behind"]
+    for fluid in ("Spacer Ahead", "Spacer Behind"):
+        widget(app, "checkbox", "BHCT — Ramp-Down - " + fluid).check().run()
+        assert widget(app, "text_input", "300 RPM - BHCT — Ramp-Down - " + fluid)
+        assert widget(app, "text_input", "10 Sec Gel - BHCT — Ramp-Down - " + fluid)
+        assert widget(app, "text_input", "10 Min Gel - BHCT — Ramp-Down - " + fluid)
     before = deepcopy(app.session_state["lab_qc_params"]["Diesel"])
     widget(app, "checkbox", "Surface — Ramp-Down - Spacer").check().run()
     widget(app, "text_input", "300 RPM - Surface — Ramp-Down - Spacer").set_value("168")
