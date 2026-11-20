@@ -352,7 +352,9 @@ Verify all of the following:
 
 Use one commit per owner-approved implementation unit. For an explicitly approved batch, one batch commit is allowed.
 
-**Corrective-commit exception (`docs/codex_operative_card_v5_4_rev1.md`, §4 Mode A, item 3):** When the active Batch prompt cites v5.4 rev1 and its Hosted PR CI run fails because of an in-scope defect introduced by that Batch, **one (1) corrective commit** is permitted after the defect is fixed locally and all mandatory local gates pass. It receives exactly one further Hosted CI run (maximum two Hosted CI runs per Batch). It never permits unrelated, exploratory, or blind commits, and a second failure is a STOP.
+**Corrective-commit exception (`docs/codex_operative_card_v5_4_rev1.md`, §4 Mode A, item 3):** When the active Batch prompt cites v5.4 rev1 and its Hosted PR CI run fails because of an in-scope defect introduced by that Batch, **one (1) corrective commit** is permitted after the defect is fixed locally and all mandatory local gates pass. It receives exactly one further Hosted CI run (maximum two Hosted CI runs per Batch). It never permits unrelated, exploratory, or blind commits. Except for the PR #40 exception below, a second failure is a STOP.
+
+**Existing `alidagha/cementing-test` PR #40 only (Owner approval, 20 Nov 2026):** An approved Stage 1 continuation may publish further corrective commits sequentially on the existing PR branch after each completed failed run identifies a proven in-scope failure class. Each candidate requires a substantive fix, fresh mandatory local gates on its final bytes, and one normal non-force push that automatically triggers one full PR CI run on the new exact HEAD. Stop after verifying the trigger for independent review. No rerun on an unchanged SHA, empty or trial commit, or history rewrite is permitted. Preserve cumulative local time and per-cluster attempt limits and all other STOP conditions. This exception changes only the corrective-commit and Hosted CI run counts for this PR.
 
 Recommended format:
 

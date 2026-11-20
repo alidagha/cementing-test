@@ -196,7 +196,7 @@ def test_save_fresh_restore_real_execute_and_build_are_deterministic(built_proje
 
 @pytest.mark.parametrize("missing, phase, fluid", [
     ("mud", "Phase II", "YP > 0"), ("slurry", "Phase VII", "Main"),
-    ("aux", "Phase IX", "Spacer Behind"), ("scavenger", "Phase VII", "Scavenger"),
+    ("aux", "Phase VII", "Spacer Behind"), ("scavenger", "Phase VII", "Scavenger"),
 ])
 def test_missing_required_sources_block_before_solver_and_retire_real_doc(built_projects, missing, phase, fluid):
     state = deepcopy(built_projects["casing"][0])
@@ -204,7 +204,8 @@ def test_missing_required_sources_block_before_solver_and_retire_real_doc(built_
     if missing == "mud":
         state["yield_point"] = state["well_data"]["yield_point"] = "0"
     elif missing == "aux":
-        del state["centralizer_config"]["aux_rheology"]["Spacer Behind"]
+        assert state["centralizer_config"]["aux_rheology"]["Spacer Behind"]
+        del state["lab_qc_params"]["Spacer Behind"]["rheology"]["bhct_down"]
     else:
         del state["lab_qc_params"]["Main" if missing == "slurry" else "Scavenger"]["rheology"]["bhct_down"]
     records = []
