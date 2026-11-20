@@ -1,6 +1,7 @@
-"""Pure current-project boundary for the byte-frozen v1.4.2 pumping engine."""
+"""Current-project dispatch for frozen legacy and CFW128 prediction engines."""
 from copy import deepcopy
 import math
+import os
 
 import pandas as pd
 
@@ -14,6 +15,101 @@ from engineering_tools import parse_effective_numeric
 from placement import HOST_DESCRIPTIONS, hardware_choices, measured_depth, target_depth, target_descriptions
 from project_state import fingerprint, refresh_fluids
 import rheology
+
+
+_PREDICTION_SOURCE_KEYS = (
+    'job_type', 'hardware_table', 'hardware_editor_draft', 'placement_config',
+    'well_geometry', 'formation_pressure_config', chart_model.PORE_FIELD, chart_model.FRAC_FIELD,
+    'well_data', 'mud_density', 'mud_type', 'bhct', 'bhst', 'fluids_config', 'fluid_data',
+    'cement_params', 'cement_additives_dfs', 'material_property_schema',
+    'lab_qc_params', 'lab_grid_dfs', 'lab_source_signatures', 'standalone_spacer_config',
+)
+
+
+def _prediction_enabled(state):
+    # Server-side deployment control; saved projects cannot select an engine.
+    flag = os.environ.get('CFW128_DESIGN_PREDICTION', '0')
+    if flag not in ('0', '1'):
+        raise ValueError('CFW128_DESIGN_PREDICTION must be 0 or 1.')
+    if flag != '1':
+        return False
+    # Detached calculation and research snapshots retain their existing lane.
+    import streamlit as st
+    return state is st.session_state
+
+
+def _prediction_request(state):
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    context = get_script_run_ctx(suppress_warning=True)
+    if context is None:
+        raise ValueError('Live App session required for CFW128 Design/Prediction.')
+    scope = dict(expected_app_source_sha=os.environ.get('CFW128_APP_SOURCE_SHA'),
+                 session_scope=context.session_id)
+    return {key: state[key] for key in _PREDICTION_SOURCE_KEYS if key in state}, scope
+
+
+def _prepare_prediction(state):
+    from cfw128_preflight import preflight_project
+    from cfw128_er03_numeric_adapter import prepare_app_prediction
+    source, scope = _prediction_request(state)
+    preflight = preflight_project(source, expected_app_source_sha=scope['expected_app_source_sha'])
+    if not preflight.inputs_complete:
+        raise ValueError('CFW128 Design/Prediction input HOLD: ' + repr(preflight.issues))
+    prepare_app_prediction(source, **scope)
+    return {'applicable': True, 'inputs': None, 'warnings': [], 'prediction': True}
+
+
+def _run_prediction(state):
+    from cfw128_er03_numeric_adapter import run_app_prediction, render_app_prediction
+    from cfw128_c2e8_post_pull_review import assess_native_end_state
+    source, scope = _prediction_request(state)
+    result = run_app_prediction(source, **scope)
+    source, scope = _prediction_request(state)
+    assessment = assess_native_end_state(source, result, conditions=_post_pull_conditions(), **scope)
+    figure = render_app_prediction(source, result, **scope)
+    try:
+        report = {'applicable': True, 'figure': figure, 'result': result, 'end_state': assessment,
+                  'warnings': list(assessment.holds), 'prediction': True}
+        report['prediction_description'] = _prediction_description(assessment)
+        validate_pumping_report(state, report)
+        return report
+    except Exception:
+        fcm.plt.close(figure)
+        raise
+
+
+def _post_pull_conditions():
+    from cfw128_c2e8_post_pull_review import PostPullConditions
+    # H09/H12/H14 nominal design assumptions. The B3 model still checks
+    # actual simulated DP occupancy and retains withdrawal/field HOLDs.
+    return PostPullConditions(surface_connected=True, lossless=True, full_dp_mud_recovery=True)
+
+
+def _prediction_description(assessment):
+    top = assessment.review.achieved_cement_top_md
+    toc = ('Conditional cement top unavailable' if top is None else
+           f'Conditional cement top: {top:g} m MD ({assessment.review.region})')
+    holds = ', '.join(dict.fromkeys((*assessment.case_holds, 'FIELD_PRESSURE_DATUM_NOT_CERTIFIED',
+                                   'INV014_FAIL_WITH_OWNER_EXCEPTION', 'FINAL_FIELD_TOC_NOT_GRANTED')))
+    displacement = next(row[2] for row in assessment.review.eod_balances if row[0] == 'Displacement Fluid')
+    return (f'CFW128 Design/Prediction. Model displacement: {displacement:g} bbl from the '
+            f'active shoe minus 25 m target. Qout = annular mouth plus pipe head. {toc}. '
+            f'Terminal: {assessment.terminal_status}. HOLDs: {holds}.')
+
+
+def validate_pumping_report(state, report):
+    """Verify result lineage before the current Phase X transaction publishes."""
+    if not report.get('applicable'):
+        return
+    if bool(report.get('prediction')) != _prediction_enabled(state):
+        raise ValueError('Pumping engine selection changed during the Word build.')
+    if report.get('prediction'):
+        from cfw128_c2e8_post_pull_review import validate_native_end_state
+        source, scope = _prediction_request(state)
+        end_state = report['end_state']
+        validate_native_end_state(source, report['result'], end_state, conditions=_post_pull_conditions(), **scope)
+        if report['prediction_description'] != _prediction_description(end_state):
+            raise ValueError('CFW128 prediction description differs from native assessment.')
 
 
 def _record(value, label):
@@ -104,6 +200,8 @@ def prepare_pumping_simulation(state):
         message = (SHALLOW_CASING_NOT_APPLICABLE if state.get("job_type") in SHALLOW_CASING_JOBS
                    else "Not applicable (Plug/Squeeze).")
         return {"applicable": False, "message": message, "inputs": None, "warnings": []}
+    if _prediction_enabled(state):
+        return _prepare_prediction(state)
     mud = _mud_rheology(state)
     geometry, warnings = _geometry(state, kind)
     projected = deepcopy({key: state[key] for key in ("fluids_config", "fluid_data", "mud_density", "mud_type", "well_data") if key in state})
@@ -194,6 +292,10 @@ def source_signature(state):
     job = state.get("job_type")
     if chart_model.chart_job_kind(job) is None or not centralizer_applicable(job):
         return fingerprint({"job": job})
+    if _prediction_enabled(state):
+        from cfw128_er03_numeric_adapter import app_prediction_signature
+        source, scope = _prediction_request(state)
+        return app_prediction_signature(source, **scope)
     well = _record(state.get("well_data", {}), "Phase II Well Data")
     config = _record(state.get("fluids_config", {}), "Phase IV fluid train")
     params = _record(config.get("params", {}), "Phase IV fluid inputs")
@@ -230,6 +332,8 @@ def run_pumping_simulation(state):
     prepared = prepare_pumping_simulation(state)
     if not prepared["applicable"]:
         return {**prepared, "figure": None, "result": None}
+    if prepared.get('prediction'):
+        return _run_prediction(state)
     figure, result, warnings = fcm.build_three_charts(**prepared["inputs"])
     return {"applicable": True, "figure": figure, "result": result,
             "warnings": [*prepared["warnings"], *warnings]}

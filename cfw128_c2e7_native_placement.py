@@ -5,7 +5,7 @@ Owns diagnostic static composition only; no transport replay, pressure or TOC
 qualification. Writes/persistence/UI/Word: none. Existing capacity, taxonomy,
 source intake and numeric validation authorities are consumed unchanged.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from fractions import Fraction
 import math
 from materials_db import PLACEMENT_SLURRIES
@@ -13,7 +13,8 @@ from cement_chart_model import _capacity
 from engineering_tools import require_positive_pump_rate
 from project_state import fingerprint
 from cfw128_integration_abi import CompositionReceipt, compose_nominal_tracking
-from cfw128_er03_numeric_adapter import NumericEvidence, _primitive, _stage_lab_intake, validate_numeric_evidence
+from cfw128_er03_numeric_adapter import (APP_PREDICTION, NumericEvidence, _primitive,
+                                         _stage_lab_intake, validate_app_prediction, validate_numeric_evidence)
 
 
 @dataclass(frozen=True,slots=True)
@@ -52,16 +53,19 @@ class NativePlacementAssessment:
 
     def __post_init__(self):
         _primitive(self)
-        if (self.evidence_class!='SYNTHETIC_TEST_ONLY' or self.status!='DISABLED_NATIVE_STATIC_CANDIDATE_HOLD'
-                or self.currentness!='NOT_CURRENTNESS_PROOF' or self.qualification!='NOT_GRANTED'
-                or self.final_post_pull_toc!='FINAL_POST_PULL_TOC_NOT_EVALUATED'):
-            raise ValueError('Held synthetic placement declarations required.')
+        if any(getattr(self, f.name) != f.default for f in fields(self) if not f.init):
+            raise ValueError('Placement evidence declarations differ.')
         values=(self.kind,self.basis,self.pump_end_min,self.fluid_balances,self.annular_cement_bbl,
                 self.pipe_cement_bbl,self.annular_mouth_cement_bbl,self.pipe_head_cement_bbl,
                 self.pipe_gap_bbl,self.mapped_intervals,self.static_candidate_md,self.region,self.case_holds,self.holds)
         want=fingerprint(['cfw128-gate7-native-placement/1',self.app_source_sha,self.composition_identity,
                           self.geometry_identity,self.numeric_identity,values])
         if want!=self.projection_identity:raise ValueError('Placement projection identity differs.')
+
+@dataclass(frozen=True, slots=True)
+class AppPlacementAssessment(NativePlacementAssessment):
+    evidence_class: str = field(default=APP_PREDICTION, init=False)
+    status: str = field(default='APP_NATIVE_STATIC_CANDIDATE_WITH_HOLDS', init=False)
 
 
 def _map_static(chunks, sections, shoe):
@@ -94,13 +98,19 @@ def _map_static(chunks, sections, shoe):
 
 
 def assess_native_placement(state: dict, numeric: NumericEvidence, *, expected_app_source_sha: str,
-                            composition: CompositionReceipt | None=None) -> NativePlacementAssessment:
+                            composition: CompositionReceipt | None=None, session_scope=None) -> NativePlacementAssessment:
     """Fresh supplied-source consistency only; never authenticate live field data."""
     fresh=compose_nominal_tracking(state,expected_app_source_sha=expected_app_source_sha)
     if composition is not None and (type(composition) is not CompositionReceipt or _primitive(composition)!=_primitive(fresh)):
         raise ValueError('Supplied composition differs from freshly captured source.')
     c=fresh;g=c.geometry;s=c.captured_geometry
-    validate_numeric_evidence(numeric)
+    if session_scope is None:
+        validate_numeric_evidence(numeric)
+        receipt_type = NativePlacementAssessment
+    else:
+        validate_app_prediction(state, numeric, expected_app_source_sha=expected_app_source_sha,
+                                session_scope=session_scope)
+        receipt_type = AppPlacementAssessment
     r=numeric
     if (r.app_source_sha!=expected_app_source_sha or r.composition_projection_identity!=c.projection_identity
             or r.pressure_station_md!=s.shoe_md or r.app_nominal_injection_capacity_bbl!=g.nominal_injection_bbl):
@@ -170,4 +180,4 @@ def assess_native_placement(state: dict, numeric: NumericEvidence, *, expected_a
     holds=tuple(dict.fromkeys((*r.holds,*c.holds,*science,*reasons)))
     values=(s.kind,basis,eod_time,balances,ann_cement,pipe_cement,mouth_cement,head_cement,gap,rows,candidate,region,tuple(reasons),holds)
     identity=fingerprint(['cfw128-gate7-native-placement/1',expected_app_source_sha,c.projection_identity,g.projection_identity,r.projection_identity,values])
-    return NativePlacementAssessment(expected_app_source_sha,c.projection_identity,g.projection_identity,r.projection_identity,identity,*values)
+    return receipt_type(expected_app_source_sha,c.projection_identity,g.projection_identity,r.projection_identity,identity,*values)

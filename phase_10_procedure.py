@@ -2205,6 +2205,7 @@ def render():
                 try:
                     with st.spinner("Compiling full engineering dossier..."):
                         pumping = pumping_simulation.run_pumping_simulation(st.session_state)
+                        pumping_simulation.validate_pumping_report(st.session_state, pumping)
                         schematic = prepare_schematic(st.session_state)
                         # BUG-28: render from the cached template bytes instead
                         # of re-reading the 650 KB file on every Build.
@@ -2224,10 +2225,16 @@ def render():
                                                               schematic_report=schematic,
                                                               section_vi_programs={key: master_context[key]
                                                                   for key in ("has_preflush", "has_spacer")})
+                        pumping_simulation.validate_pumping_report(st.session_state, pumping)
+                        if pumping.get("prediction") and (
+                                pumping_simulation.source_signature(st.session_state)
+                                != master_context["pumping_simulation_source"]):
+                            raise ValueError("CFW128 App source changed during the Word build.")
                         st.session_state["_compiled_doc_bytes"] = final_bytes
                         st.session_state["_compiled_doc_filename"] = filename
                         st.session_state["_compiled_doc_signature"] = current_doc_signature
-                        st.success("✓ Document generated.")
+                        st.success("✓ Document generated (CFW128 Design/Prediction)." if pumping.get("prediction")
+                                   else "✓ Document generated.")
                 except Exception as e:
                     st.error(f"✕ Template rendering error: {e}")
                 finally:
