@@ -15,7 +15,7 @@ from cement_chart_model import _capacity
 from materials_db import PLACEMENT_SLURRIES
 from project_state import fingerprint
 from cfw128_integration_abi import compose_nominal_tracking
-from cfw128_er03_numeric_adapter import NumericEvidence, _primitive
+from cfw128_er03_numeric_adapter import APP_PREDICTION, NumericEvidence, _primitive
 from cfw128_c2e7_native_placement import assess_native_placement, _map_static
 from cfw128_c2e3_post_pull_gap import audit_post_pull_gap
 
@@ -93,6 +93,12 @@ class PostPullReview:
             raise ValueError('Post-pull review identity differs.')
 
 
+@dataclass(frozen=True, slots=True)
+class AppPostPullReview(PostPullReview):
+    evidence_class: str = field(default=APP_PREDICTION, init=False)
+    status: str = field(default='APP_NOMINAL_POST_PULL_WITH_HOLDS', init=False)
+
+
 def _sum(tokens,name):
     return sum((Fraction(v) for n,v in tokens if n==name),Fraction())
 
@@ -140,7 +146,7 @@ def _native_bands(tokens,channel,lap,terminal,boundaries=()):
 
 
 def assess_post_pull(state: dict,numeric: NumericEvidence,*,expected_app_source_sha: str,
-                     conditions: PostPullConditions) -> PostPullReview:
+                     conditions: PostPullConditions, session_scope=None) -> PostPullReview:
     """Conditional nominal reconstruction, never a field-final TOC decision.
 
     Surface connection is not a claim that the pumped fluid front is at surface.
@@ -152,7 +158,8 @@ def assess_post_pull(state: dict,numeric: NumericEvidence,*,expected_app_source_
     if type(conditions) is not PostPullConditions:raise TypeError('Explicit nominal conditions required.')
     conditions.__post_init__()
     c=compose_nominal_tracking(state,expected_app_source_sha=expected_app_source_sha)
-    a=assess_native_placement(state,numeric,expected_app_source_sha=expected_app_source_sha,composition=c)
+    a=assess_native_placement(state,numeric,expected_app_source_sha=expected_app_source_sha,composition=c,
+                              session_scope=session_scope)
     s=c.captured_geometry;g=c.geometry;reasons=[];capacity=[]
     pipe=sections=returned=bands=balances=();additional=None;top=None;region='UNDEFINED'
     surface='NOT_APPLICABLE';o=numeric.native_observation
@@ -242,7 +249,8 @@ def assess_post_pull(state: dict,numeric: NumericEvidence,*,expected_app_source_
                         residual=before_pipe+ann+makeup-after_pipe-after_ann
                         rows.append((name,float(before_pipe),float(ann),float(makeup),float(after_pipe),float(after_ann),float(residual)))
                     balances=tuple(rows)
-    science=('CASING_SURFACE_PROOF_SYNTHETIC_ONLY',) if s.kind=='casing' else (
+    casing_basis = 'CASING_SURFACE_PROOF_SYNTHETIC_ONLY' if session_scope is None else 'CASING_SURFACE_PREDICTION_ONLY'
+    science=(casing_basis,) if s.kind=='casing' else (
         'POST_PULL_IDEALIZED_STATIC_CANDIDATE','WITHDRAWAL_RETURN_ORDER_NOT_OBSERVED',
         'ISOLATION_MIXING_SWABBING_NOT_QUALIFIED')
     inherited=(*a.holds,*science,'FINAL_FIELD_TOC_NOT_GRANTED')
@@ -251,7 +259,8 @@ def assess_post_pull(state: dict,numeric: NumericEvidence,*,expected_app_source_
     values=(expected_app_source_sha,c.projection_identity,numeric.projection_identity,a.projection_identity,basis,conditions,
         a.fluid_balances,pipe,sections,returned,additional,bands,balances,tuple(capacity),top,region,surface,
         a.static_candidate_md,tuple(dict.fromkeys(reasons)),holds)
-    return PostPullReview(*values,fingerprint([SCHEMA,_primitive(values)]))
+    receipt_type = PostPullReview if session_scope is None else AppPostPullReview
+    return receipt_type(*values,fingerprint([SCHEMA,_primitive(values)]))
 
 
 def validate_post_pull_review(state,numeric,review,*,expected_app_source_sha,conditions):
@@ -316,7 +325,8 @@ class NativeEndStateAssessment:
 
     def __post_init__(self):
         _primitive(self)
-        if type(self.review) is not PostPullReview:raise TypeError('Typed native post-pull review required.')
+        review_type = PostPullReview if type(self) is NativeEndStateAssessment else AppPostPullReview
+        if type(self.review) is not review_type:raise TypeError('Typed native post-pull review required.')
         self.review.__post_init__()
         if any(getattr(self,f.name)!=f.default for f in fields(self) if not f.init):
             raise ValueError('Held native assessment declarations must remain unchanged.')
@@ -330,11 +340,17 @@ class NativeEndStateAssessment:
                           if not r[-1] and r[0] in PLACEMENT_SLURRIES),Fraction()))
 
 
+@dataclass(frozen=True, slots=True)
+class AppEndStateAssessment(NativeEndStateAssessment):
+    evidence_class: str = field(default=APP_PREDICTION, init=False)
+    status: str = field(default='APP_NATIVE_END_STATE_WITH_HOLDS', init=False)
+
+
 def _ratio(value):
     return (value.numerator,value.denominator)
 
 
-def assess_native_end_state(state,numeric,*,expected_app_source_sha,conditions):
+def assess_native_end_state(state,numeric,*,expected_app_source_sha,conditions,session_scope=None):
     """Read-only B3 completion; no solver, transport replay or prior-ID trust.
 
     A nominal Shoe-25 endpoint is deliberately not an occupancy proof. Actual
@@ -343,7 +359,8 @@ def assess_native_end_state(state,numeric,*,expected_app_source_sha,conditions):
     existing 1e-9 bbl bookkeeping admission. Any nonzero residual stays a HOLD.
     A source hash cannot reveal Float ON/OFF or authenticate field observations.
     """
-    review=assess_post_pull(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    review=assess_post_pull(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions,
+                            session_scope=session_scope)
     c=compose_nominal_tracking(state,expected_app_source_sha=expected_app_source_sha)
     if c.projection_identity!=review.composition_identity:
         raise ValueError('Source changed during native end-state composition.')
@@ -416,12 +433,15 @@ def assess_native_end_state(state,numeric,*,expected_app_source_sha,conditions):
         'DP_RECOVERY_AND_MAKEUP_CONDITIONAL_NOT_OBSERVED')))
     values=(review,c.geometry.projection_identity,eod_time,shoe,terminal,float_md,tuple(rows),fluids,terminal_status,
             fluid_rows,rate_rows,case_holds,holds)
-    return NativeEndStateAssessment(*values,fingerprint([END_STATE_SCHEMA,_primitive(values)]))
+    receipt_type = NativeEndStateAssessment if session_scope is None else AppEndStateAssessment
+    return receipt_type(*values,fingerprint([END_STATE_SCHEMA,_primitive(values)]))
 
 
-def validate_native_end_state(state,numeric,assessment,*,expected_app_source_sha,conditions):
+def validate_native_end_state(state,numeric,assessment,*,expected_app_source_sha,conditions,session_scope=None):
     """Fresh source/observation recomposition; never a field authenticity claim."""
-    if type(assessment) is not NativeEndStateAssessment:raise TypeError('Typed native end-state assessment required.')
+    receipt_type = NativeEndStateAssessment if session_scope is None else AppEndStateAssessment
+    if type(assessment) is not receipt_type:raise TypeError('Typed native end-state assessment required.')
     assessment.__post_init__()
-    fresh=assess_native_end_state(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    fresh=assess_native_end_state(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions,
+                                  session_scope=session_scope)
     if _primitive(assessment)!=_primitive(fresh):raise ValueError('Native end-state differs from fresh EOD/source evidence.')

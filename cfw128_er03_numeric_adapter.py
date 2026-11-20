@@ -7,8 +7,12 @@ Owns typed packaging/provenance only, not geometry, transport or pressure laws.
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
 from fractions import Fraction
+from hashlib import sha256
+from pathlib import Path
 from typing import Literal
+import hmac
 import math
+import secrets
 
 import DOC58_SI_CANDIDATE_03_TF2R_ER03 as vertical
 import DOC58_G2D1_DIR_SCRATCH_01_ER03 as directional
@@ -244,6 +248,76 @@ class NumericEvidence:
     @property
     def native_observation_status(self):
         return 'ABSENT_UNQUALIFIED' if self.native_observation is None else 'OBSERVATION_ONLY_HOLD'
+
+
+APP_PREDICTION = 'CFW128_APP_DESIGN_PREDICTION_V1'
+_PREDICTION_KEY = secrets.token_bytes(32)
+
+
+@dataclass(frozen=True, slots=True)
+class AppPrediction(NumericEvidence):
+    """Transient numerical result bound to one canonical source and App session."""
+    app_signature: str = field(kw_only=True)
+    seal: str = field(kw_only=True, repr=False, default='')
+    evidence_class: str = field(default=APP_PREDICTION, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _AppBoundary:
+    """H01/H03–05 model controls and B2 measured inputs, not field metrology."""
+    bhsp_target_psi: float
+    gel_pa_by_fluid: tuple
+    back_pressure_psi: float = field(default=0., init=False)
+    surface_line_kpsi_at_8bpm: float = field(default=vertical.JobDesign.surface_line_kpsi_at_8bpm, init=False)
+    float_equipment: bool = field(default=True, init=False)
+    dt_min: float = field(default=vertical.JobDesign.dt_min, init=False)
+    tail_cap_min: float = field(default=vertical.JobDesign.tail_cap_min, init=False)
+    shutin_ramp_min: float = field(default=vertical.JobDesign.shutin_ramp_min, init=False)
+
+
+def app_prediction_signature(state, *, expected_app_source_sha, session_scope):
+    if type(session_scope) is not str or not session_scope:
+        raise ValueError('Live App session required for CFW128 Design/Prediction.')
+    if (type(expected_app_source_sha) is not str or len(expected_app_source_sha) != 40
+            or any(c not in '0123456789abcdef' for c in expected_app_source_sha)):
+        raise ValueError('Verified CFW128 App build SHA required.')
+    return fingerprint([APP_PREDICTION, expected_app_source_sha, session_scope, _positional_source(state)])
+
+
+def prepare_app_prediction(state, *, expected_app_source_sha, session_scope):
+    """Reuse canonical geometry, review, Gel and Active Shoe target validators."""
+    signature = app_prediction_signature(state, expected_app_source_sha=expected_app_source_sha,
+                                         session_scope=session_scope)
+    design = capture_design_inputs(state, expected_app_source_sha=expected_app_source_sha)
+    if design.issues:
+        raise ValueError('CFW128 Design/Prediction input HOLD: ' + repr(design.issues))
+    boundary = _AppBoundary(design.bhsp_target_psi, tuple((row[0], row[5]) for row in design.gels))
+    engine = 'directional' if state['well_geometry']['type'] == 'Directional' else 'vertical'
+    return signature, boundary, engine
+
+
+def _prediction_seal(receipt):
+    # Process-local integrity for solver output. No key, report, or receipt is
+    # loaded from a saved project. This is not field or external authentication.
+    token = fingerprint(tuple(_primitive(getattr(receipt, f.name)) for f in fields(receipt) if f.name != 'seal'))
+    return hmac.digest(_PREDICTION_KEY, token.encode(), 'sha256').hex()
+
+
+def run_app_prediction(state, *, expected_app_source_sha, session_scope):
+    signature, boundary, engine = prepare_app_prediction(
+        state, expected_app_source_sha=expected_app_source_sha, session_scope=session_scope)
+    sources = (vertical.__file__, directional.__file__,
+               Path(__file__).with_name('cfw128_hb03t_frozen.py'),
+               event_vertical.__file__, event_directional.__file__)
+    if tuple(sha256(Path(path).read_bytes()).hexdigest() for path in sources) != (
+            VERTICAL_SHA256, DIRECTIONAL_SHA256, HB_SHA256, *EVENT_SHA256):
+        raise ValueError('CFW128 frozen source identity differs from its pinned bytes.')
+    result = _run_numeric(state, expected_app_source_sha, boundary, engine,
+                          'event_aligned', None, app_signature=signature)
+    result = replace(result, seal=_prediction_seal(result))
+    validate_app_prediction(state, result, expected_app_source_sha=expected_app_source_sha,
+                            session_scope=session_scope)
+    return result
 
 
 def _number(v,positive=False):
@@ -499,6 +573,10 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     if type(boundary.float_equipment) is not bool or type(engine) is not str or engine not in ('vertical','directional'):raise ValueError('Unknown engine/model option.')
     if type(stepping) is not str or stepping not in ('frozen','event_aligned_test_only'):
         raise ValueError('Explicit frozen or event_aligned_test_only stepping required.')
+    return _run_numeric(state, expected_app_source_sha, boundary, engine, stepping, composition)
+
+
+def _run_numeric(state, expected_app_source_sha, boundary, engine, stepping, composition, *, app_signature=None):
     v,d=(vertical,directional) if stepping=='frozen' else (event_vertical,event_directional)
     source_hashes=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256)+(EVENT_SHA256 if stepping!='frozen' else ())
     engine_label=engine if stepping=='frozen' else 'event_aligned_'+engine
@@ -515,12 +593,19 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     options=tuple(getattr(boundary,f.name) for f in fields(boundary))
     base=fingerprint(['cfw128-gate3-input/1',sha,c.projection_identity,options,engine,VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256])
     if stepping!='frozen':base=fingerprint(['cfw128-gate4b-event-input/1',base,source_hashes])
+    if app_signature is not None:base=fingerprint([APP_PREDICTION,base,app_signature])
     holds=('PHYSICAL_INSTRUMENT_UNVERIFIED','FIELD_PRESSURE_DATUM_NOT_CERTIFIED','FINAL_POST_PULL_TOC_NOT_EVALUATED',
            'INV014_FAIL_WITH_OWNER_EXCEPTION','DOWNSTREAM_PLACEMENT_AND_CLOSURE_NOT_COMPOSED')
-    if stepping!='frozen':holds=(*holds,'EVENT_ALIGNED_TEST_ONLY','BHSP_AND_DIRECTIONAL_SEMANTICS_NOT_QUALIFIED')
+    if stepping!='frozen':
+        holds=(*holds,'BHSP_AND_DIRECTIONAL_SEMANTICS_NOT_QUALIFIED')
+        if app_signature is None:
+            # Retain historical ordering in the synthetic result identity.
+            holds=(*holds[:-1],'EVENT_ALIGNED_TEST_ONLY',holds[-1])
     compare=();lab_bindings=[];tvd_proof=()
     trajectory_source='APP_DIRECTIONAL_STATION_TVD_V1' if source['well_geometry']['type']=='Directional' else 'VERTICAL_SOURCE_V1'
     def held(reason):
+        if app_signature is not None:
+            raise ValueError('CFW128 Design/Prediction HOLD: '+reason)
         held_source=fingerprint(['cfw128-gate3-held-source/1',base,tuple(lab_bindings)])
         identity=fingerprint(['cfw128-gate3-hold/1',held_source,reason,compare])
         identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])
@@ -624,12 +709,15 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
             status='HOLD'
             code='FROZEN_TIMESTEP_STAGE_VOLUME_NOT_PROVED' if stepping=='frozen' else 'EVENT_INTERVAL_STAGE_VOLUME_NOT_PROVED'
             if code not in holds:holds=(*holds,code)
+            if app_signature is not None:return held(code)
         cursor=end
     if boundary.bhsp_target_psi is not None:
         # bottom_shutin_psi echoes the target; endpoint equality establishes
         # neither its station nor its datum. No independent certificate enters
         # this synthetic boundary. Preserve raw diagnostic series and fail closed.
         status='HOLD';holds=(*holds,'BHSP_TARGET_STATION_NOT_PROVED')
+    if app_signature is not None:
+        status = 'APP_PREDICTION_WITH_HOLDS'
     audit=tuple(audit)
     observation=None
     if stepping!='frozen':
@@ -642,7 +730,9 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     identity=fingerprint(['cfw128-gate3-result/1',numeric_source,channels,events,geo.total_pipe_bbl,compare,audit,status,holds])
     identity=fingerprint(['cfw128-gate5bp1-result/1',identity,trajectory_source,tvd_proof])
     if observation is not None:identity=fingerprint(['cfw128-gate6c-observation/1',identity,_primitive(observation)])
-    return NumericEvidence(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source,native_observation=observation)
+    receipt_type = NumericEvidence if app_signature is None else AppPrediction
+    app_fields = {} if app_signature is None else {'app_signature': app_signature}
+    return receipt_type(sha,c.projection_identity,numeric_source,identity,status,holds,engine_label,s.shoe_md,encoded,tuple(proofs),geo.total_pipe_bbl,g.nominal_injection_bbl,*channels,events,compare,stage_volume_audit=audit,source_hashes=source_hashes,directional_tvd_proof=tvd_proof,trajectory_source=trajectory_source,native_observation=observation,**app_fields)
 
 
 def validate_numeric_evidence(evidence: NumericEvidence):
@@ -653,7 +743,24 @@ def validate_numeric_evidence(evidence: NumericEvidence):
     if (r.evidence_class!='SYNTHETIC_TEST_ONLY' or r.currentness!='NOT_CURRENTNESS_PROOF'
             or r.final_post_pull_toc!='NOT_EVALUATED' or r.qualification!='NOT_GRANTED'):
         raise ValueError('Disabled evidence declarations required.')
-    if r.status not in ('NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED','HOLD'):
+    _validate_numeric_series(r)
+
+
+def validate_app_prediction(state, receipt, *, expected_app_source_sha, session_scope):
+    if type(receipt) is not AppPrediction or receipt.evidence_class != APP_PREDICTION:
+        raise TypeError('App Design/Prediction receipt required.')
+    signature = app_prediction_signature(state, expected_app_source_sha=expected_app_source_sha,
+                                         session_scope=session_scope)
+    if receipt.app_source_sha != expected_app_source_sha or receipt.app_signature != signature:
+        raise ValueError('CFW128 prediction belongs to a different or stale App source/session.')
+    if type(receipt.seal) is not str or not hmac.compare_digest(receipt.seal, _prediction_seal(receipt)):
+        raise ValueError('CFW128 prediction solver output identity differs.')
+    _validate_numeric_series(receipt)
+
+
+def _validate_numeric_series(r):
+    statuses = ('APP_PREDICTION_WITH_HOLDS',) if type(r) is AppPrediction else ('NUMERIC_ABI_CANDIDATE_ENGINE_DISABLED','HOLD')
+    if r.status not in statuses:
         raise ValueError('Unsupported numerical evidence status.')
     expected_hashes=(VERTICAL_SHA256,DIRECTIONAL_SHA256,HB_SHA256)
     if r.engine in ('event_aligned_vertical','event_aligned_directional'):expected_hashes+=EVENT_SHA256
@@ -762,6 +869,16 @@ def render_numeric_test_charts(evidence: NumericEvidence):
     all source holds survive unchanged. Labels do not certify a pressure datum.
     """
     validate_numeric_evidence(evidence)
+    return _render_native_charts(evidence)
+
+
+def render_app_prediction(state, receipt, *, expected_app_source_sha, session_scope):
+    validate_app_prediction(state, receipt, expected_app_source_sha=expected_app_source_sha,
+                            session_scope=session_scope)
+    return _render_native_charts(receipt)
+
+
+def _render_native_charts(evidence):
     r=evidence;t=r.time_min;events=dict(r.events)
     green=tuple(events[name] for name in ('t_atcp','t_eod') if events[name] is not None)
     marker=events['t_marker']

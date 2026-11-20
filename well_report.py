@@ -649,7 +649,7 @@ def postprocess_well_report(rendered_bytes, payload, vertical_note, cement_repor
             pumping_report["figure"].savefig(output, format="png", dpi=200, facecolor="white")
             run = Run(texts[0].getparent(), pumping_anchor)
             picture = run.add_picture(BytesIO(output.getvalue()), width=_content_width(doc, pumping_anchor))
-            picture._inline.docPr.set("descr", "Pumping Simulation Charts")
+            picture._inline.docPr.set("descr", pumping_report.get("prediction_description", "Pumping Simulation Charts"))
     if centralizer_report is not None:
         _postprocess_centralizer(doc, centralizer_report)
     if schematic_anchor is not None:
