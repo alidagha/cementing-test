@@ -7,7 +7,7 @@ lifetime; no persistence, UI, engineering, renderer or report-text authority.
 """
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from io import BytesIO
 import matplotlib.pyplot as plt
 from docxtpl import DocxTemplate
@@ -17,12 +17,128 @@ from well_report import canonical_report_source, prepared_well_report, postproce
 from cement_chart_report import prepared_cement_report
 from well_schematic_adapter import source_signature as schematic_source_signature, prepare_schematic
 from phase_10_procedure import TEMPLATE_PATH, document_signature, _word_quantity_context
-from cfw128_er03_numeric_adapter import NumericBoundary, NumericEvidence, _primitive, run_numeric_test_case, validate_numeric_evidence, render_numeric_test_charts
+from cfw128_er03_numeric_adapter import NumericBoundary, NumericEvidence, _primitive, run_numeric_test_case, validate_numeric_evidence, render_numeric_test_charts, SourceDesignInputs, capture_design_inputs
 from cfw128_c2e7_native_placement import NativePlacementAssessment, assess_native_placement
-from cfw128_c2e8_post_pull_review import PostPullConditions, PostPullReview, assess_post_pull, validate_post_pull_review
+from cfw128_c2e8_post_pull_review import PostPullConditions, PostPullReview, assess_post_pull, validate_post_pull_review, NativeEndStateAssessment, assess_native_end_state, validate_native_end_state
+from cfw128_preflight import SourcePreflight, preflight_project
 
 SCHEMA='CFW128_DISABLED_WORD_SHADOW_V1'
 POST_PULL_SIDECAR_SCHEMA='CFW128_DISABLED_SHADOW_POST_PULL_V1'
+B4_SCHEMA='CFW128_DISABLED_SHADOW_INTEGRATION_V1'
+
+
+@dataclass(frozen=True,slots=True)
+class ShadowIntegrationEvidence:
+    """Opt-in source consistency and B3 assessment; never a Word payload.
+
+    Preflight's historical preview and NO_NATIVE_EXECUTION describe that
+    validator's scope, separately from the parent's surface-connected numerics.
+    No identity here authenticates an external live source or field pressure.
+    """
+    shadow_identity: str
+    source_identity: str
+    boundary_identity: str
+    engine: str
+    preflight: SourcePreflight
+    design: SourceDesignInputs
+    end_state: NativeEndStateAssessment
+    context_identity: str | None
+    document_identity: str | None
+    projection_identity: str
+    schema: str=field(default=B4_SCHEMA,init=False)
+    status: str=field(default='DISABLED_SHADOW_INTEGRATION_HOLD',init=False)
+    evidence_class: str=field(default='SYNTHETIC_TEST_ONLY',init=False)
+    currentness: str=field(default='NOT_CURRENTNESS_PROOF',init=False)
+    qualification: str=field(default='NOT_GRANTED',init=False)
+    final_field_toc: str=field(default='NOT_GRANTED',init=False)
+    pressure_binding: str=field(default='ACTIVE_SHOE_TVD_SOURCE_TARGET_ONLY',init=False)
+    qout_semantics: str=field(default='ANNULAR_MOUTH_PLUS_PIPE_HEAD',init=False)
+    enabled: bool=field(default=False,init=False)
+    ready_to_run: bool=field(default=False,init=False)
+    hb_admissible: bool=field(default=False,init=False)
+    hydraulic_admissible: bool=field(default=False,init=False)
+    chart_admissible: bool=field(default=False,init=False)
+    scientifically_qualified: bool=field(default=False,init=False)
+
+    def __post_init__(self):
+        _primitive(self)
+        if (type(self.preflight) is not SourcePreflight or type(self.design) is not SourceDesignInputs
+                or type(self.end_state) is not NativeEndStateAssessment):
+            raise TypeError('Typed source preflight, design and B3 assessment required.')
+        self.preflight.__post_init__();self.end_state.__post_init__()
+        if any(getattr(self,f.name)!=f.default for f in fields(self) if not f.init):
+            raise ValueError('Disabled B4 declarations must remain unchanged.')
+        values=tuple(getattr(self,f.name) for f in fields(self) if f.init and f.name!='projection_identity')
+        if self.projection_identity!=fingerprint([B4_SCHEMA,_primitive(values)]):
+            raise ValueError('Shadow integration projection differs.')
+
+    @property
+    def holds(self):
+        return tuple(dict.fromkeys((*self.preflight.holds,*self.design.holds,
+            *self.end_state.holds,*self.end_state.case_holds)))
+
+
+def _integration_source(state,evidence,sha,boundary,engine,word_context):
+    _validate(state,evidence,sha,boundary)
+    if engine!=evidence.engine:raise ValueError('Mixed shadow integration engine.')
+    preflight=preflight_project(state,expected_app_source_sha=sha)
+    if not preflight.inputs_complete:raise ValueError('B4 source preflight HOLD: '+repr(preflight.issues))
+    design=capture_design_inputs(state,expected_app_source_sha=sha)
+    bound=design.bind_boundary(state,expected_app_source_sha=sha,boundary=boundary)
+    if _primitive(bound)!=_primitive(boundary) or boundary.back_pressure_psi!=0.:
+        raise ValueError('B4 requires source-bound Active Shoe target/Gel and open surface back pressure.')
+    if (preflight.composition_identity!=evidence.numeric.composition_projection_identity
+            or design.composition_identity!=preflight.composition_identity
+            or evidence.numeric.pressure_station_md!=design.shoe_md):
+        raise ValueError('Mixed source composition or Active Shoe pressure station.')
+    # Rebuild the adapter's versioned input identity, without fitting or solving.
+    # An outer Shadow hash alone cannot bind a real run to its claimed controls.
+    numeric=evidence.numeric;hashes=numeric.source_hashes
+    options=tuple(getattr(boundary,f.name) for f in fields(boundary))
+    base=fingerprint(['cfw128-gate3-input/1',sha,preflight.composition_identity,options,engine,*hashes[:3]])
+    base=fingerprint(['cfw128-gate4b-event-input/1',base,hashes])
+    intakes={row.name:row.intake for row in preflight.fluids}
+    bindings=tuple((intakes[p.name].source_identity,intakes[p.name].request_identity,intakes[p.name].status) for p in numeric.fluids)
+    proofs=tuple(tuple(getattr(p,f.name) for f in fields(p)) for p in numeric.fluids)
+    identity=fingerprint(['cfw128-gate3-numeric-source/1',base,numeric.stages,proofs,bindings])
+    identity=fingerprint(['cfw128-gate5bp1-source/1',identity,numeric.trajectory_source,numeric.directional_tvd_proof])
+    if identity!=numeric.source_identity:
+        raise ValueError('B4 numeric input identity differs from fresh source/boundary/engine.')
+    context=(None,None) if word_context is None else _context(state,word_context)
+    if context!=(evidence.context_identity,evidence.document_identity):
+        raise ValueError('Missing, stale or mixed integration Word context.')
+    return preflight,design,context
+
+
+def prepare_shadow_integration(state,evidence,*,expected_app_source_sha,boundary,engine,conditions,word_context=None):
+    """Explicit B4 sidecar from one existing solve; no render or state write."""
+    preflight,design,context=_integration_source(state,evidence,expected_app_source_sha,boundary,engine,word_context)
+    end=assess_native_end_state(state,evidence.numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    values=(evidence.projection_identity,evidence.source_identity,fingerprint(_primitive(boundary)),engine,
+        preflight,design,end,*context)
+    result=ShadowIntegrationEvidence(*values,fingerprint([B4_SCHEMA,_primitive(values)]))
+    validate_shadow_integration(state,evidence,result,expected_app_source_sha=expected_app_source_sha,
+        boundary=boundary,engine=engine,conditions=conditions,word_context=word_context)
+    return result
+
+
+def validate_shadow_integration(state,evidence,integration,*,expected_app_source_sha,boundary,engine,conditions,word_context=None):
+    """Fresh recomposition rejects re-signed, stale and mixed supplied evidence."""
+    preflight,design,context=_integration_source(state,evidence,expected_app_source_sha,boundary,engine,word_context)
+    if type(integration) is not ShadowIntegrationEvidence:raise TypeError('Typed B4 integration required.')
+    integration.__post_init__()
+    values=(evidence.projection_identity,evidence.source_identity,fingerprint(_primitive(boundary)),engine,
+        preflight,design,integration.end_state,*context)
+    if integration.projection_identity!=fingerprint([B4_SCHEMA,_primitive(values)]):
+        raise ValueError('Mixed B4 parent, source, design or context.')
+    if (integration.end_state.review.numeric_identity!=evidence.numeric.projection_identity
+            or integration.end_state.review.placement_identity!=evidence.placement.projection_identity):
+        raise ValueError('Mixed B4 numeric or placement parent.')
+    validate_native_end_state(state,evidence.numeric,integration.end_state,
+        expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    _validate(state,evidence,expected_app_source_sha,boundary)
+    if word_context is not None and _context(state,word_context)!=context:
+        raise ValueError('Word context changed during integration validation.')
 
 
 @dataclass(frozen=True,slots=True)

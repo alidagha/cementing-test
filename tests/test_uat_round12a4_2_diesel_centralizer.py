@@ -49,6 +49,9 @@ def carrier(state):
     cfg = state["fluids_config"]
     cfg["active"] = ["Spacer Ahead" if name == "Diesel" else name for name in cfg["active"]]
     cfg["params"]["Spacer Ahead"] = cfg["params"].pop("Diesel")
+    # Explicit comparison-fixture translation; production legacy IX data is
+    # never promoted to the new Phase VII authority.
+    state["lab_qc_params"]["Spacer Ahead"] = deepcopy(state["lab_qc_params"]["Diesel"])
     return state
 
 
@@ -405,10 +408,10 @@ def test_diesel_does_not_create_phase9_auxiliary_controls(catalog):
     assert "Diesel" not in app.session_state["centralizer_config"]["aux_rheology"]
 
 
-def test_existing_non_diesel_missing_rheology_guidance_is_unchanged():
+def test_auxiliary_missing_rheology_guidance_uses_the_single_lab_source():
     with pytest.raises(ValueError) as error:
         adapter._dynamic_fann(None, "Spacer Ahead")
     assert str(error.value) == (
         "[MissingRheology] Missing Bingham parameters (PV/Ty) for fluid 'Spacer Ahead'. "
-        "Complete fluid rheology in Phase IX/Lab Report or switch to Static Parity mode. "
+        "Complete Spacer Ahead rheology in Phase VII BHCT — Ramp-Down. "
         "Exactly all seven RPM readings are required.")

@@ -153,6 +153,7 @@ def test_consumed_source_edit_blocks_report_without_implicit_reexecution(catalog
     if edit == "aux":
         state["fluids_config"]["active"].append("Spacer Ahead")
         state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
+        state["lab_qc_params"]["Spacer Ahead"] = {"rheology": audit.valid_export_rheology_fixture()}
     phase9.execute(state, catalog)
     if edit == "geometry": state["well_geometry"]["td_m"] = 1300.
     elif edit == "fluid": state["fluids_config"]["params"]["Tail"]["volume"] += 1.
@@ -160,7 +161,7 @@ def test_consumed_source_edit_blocks_report_without_implicit_reexecution(catalog
     elif edit == "zone": state["centralizer_config"]["zones"][0]["target_standoff_pct"] = 71.
     elif edit == "mud": state["plastic_viscosity"] = "18"
     elif edit == "lab": state["lab_qc_params"]["Tail"]["rheology"]["bhct_down"]["readings"]["300"] += 1.
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] += 1.
+    elif edit == "aux": state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] = "169"
     else: state["fluids_config"]["params"]["Displacement Fluid"]["pump_rate"] = "5-7"
     with patch.object(adapter, "solve_dynamic", side_effect=AssertionError("Implicit re-execution")):
         assert not phase9.result_is_current(state, catalog)
@@ -188,22 +189,24 @@ def test_all_active_dynamic_sources_and_excluded_spacer_behind(catalog):
         state["fluids_config"]["active"].append(name)
         state["fluids_config"]["params"][name] = {"volume": 20., "density": "95", "pump_rate": "4"}
     state["lab_qc_params"]["Scavenger"] = {"rheology": {"bhct_down": {"selected": True, "readings": readings()}}}
+    for name in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
+        state["lab_qc_params"][name] = {"rheology": audit.valid_export_rheology_fixture()}
     result = phase9.execute(state, catalog)
     diagnostics = result["diagnostics"]
     assert diagnostics["pump_rate_bpm"] == tools.require_positive_pump_rate("4-6")
     assert diagnostics["rheology"]["Displacement Fluid"]["source"] == "phase_ii_mud"
     assert diagnostics["rheology"]["Scavenger"]["source"] == "lab_bhct_down"
-    assert diagnostics["rheology"]["Spacer Behind"]["source"] == "aux_rheology"
+    assert diagnostics["rheology"]["Spacer Behind"]["source"] == "lab_bhct_down"
     snapshot = adapter.build_fluid_snapshot(state)
     assert [(row["name"], row["top_md"], row["bottom_md"]) for row in diagnostics["stages_rheology"]] == [
         (row["fluid"], row["top_md"], row["bottom_md"]) for row in snapshot["annulus_intervals"]
         if row["fluid"] not in ("Mud", "Displacement Fluid")]
     assert all(row["name"] != "Spacer Behind" for row in diagnostics["stages_rheology"])
-    del state["centralizer_config"]["aux_rheology"]["Spacer Behind"]
+    measured = state["lab_qc_params"].pop("Spacer Behind")
     with pytest.raises(ValueError, match="MissingRheology.*Spacer Behind"):
         phase9.execute(state, catalog)
     assert not phase9.result_is_current(state, catalog)
-    state["centralizer_config"]["aux_rheology"]["Spacer Behind"] = readings()
+    state["lab_qc_params"]["Spacer Behind"] = measured
     phase9.execute(state, catalog)
     assert bridge.prepare_report(state)["applicable"]
 

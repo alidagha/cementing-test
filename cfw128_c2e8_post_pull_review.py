@@ -263,3 +263,165 @@ def validate_post_pull_review(state,numeric,review,*,expected_app_source_sha,con
     review.__post_init__()
     fresh=assess_post_pull(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
     if _primitive(review)!=_primitive(fresh):raise ValueError('Post-pull review differs from fresh native/source evidence.')
+
+
+# Separate diagnostic format: all pre-existing receipts/identities stay unchanged.
+END_STATE_SCHEMA='CFW128_B3_NATIVE_END_STATE_V1'
+
+
+@dataclass(frozen=True,slots=True)
+class NativeEndStateAssessment:
+    """EOD observations plus conditional review; never a field certificate.
+
+    terminal_sections: source index/rows, top/bottom MD, measured ID, then exact
+    bbl ratios for App capacity, native capacity, native coordinate window,
+    observed stock and observed Cement. No conversion residual is corrected.
+    fluid_residuals: fluid, signed exact bbl, ratio, older fsum audit residual.
+    rate_residuals: interval index/end, signed injected-minus-Qin*dt ratio,
+    and returned-minus-Qout*dt ratio; zero rows are omitted, never integrated
+    using nominal dt. Only intervals ending at/before the actual EOD are used.
+    terminal_status describes coverage of the fixed last-25m window, not the
+    total remaining Cement length. Located Cement above it is separate evidence.
+    """
+    review: PostPullReview
+    geometry_identity: str
+    pump_end_min: float | None
+    shoe_md: float
+    terminal_top_md: float
+    float_design_md: float
+    terminal_sections: tuple
+    terminal_fluids: tuple
+    terminal_status: str
+    fluid_residuals: tuple
+    rate_residuals: tuple
+    case_holds: tuple
+    holds: tuple
+    projection_identity: str
+    schema: str=field(default=END_STATE_SCHEMA,init=False)
+    status: str=field(default='DISABLED_NATIVE_END_STATE_HOLD',init=False)
+    evidence_class: str=field(default='SYNTHETIC_TEST_ONLY',init=False)
+    currentness: str=field(default='NOT_CURRENTNESS_PROOF',init=False)
+    qualification: str=field(default='NOT_GRANTED',init=False)
+    final_field_toc: str=field(default='NOT_GRANTED',init=False)
+    float_basis: str=field(default='OWNER_TWO_12_2M_JOINTS_METADATA_ONLY',init=False)
+    float_operating_state: str=field(default='NOT_EXPORTED_BY_NUMERIC_EVIDENCE',init=False)
+    float_terminal_separation_m: float=field(default=0.6,init=False)
+    qout_semantics: str=field(default='ANNULAR_MOUTH_PLUS_PIPE_HEAD',init=False)
+    enabled: bool=field(default=False,init=False)
+    ready_to_run: bool=field(default=False,init=False)
+    hb_admissible: bool=field(default=False,init=False)
+    hydraulic_admissible: bool=field(default=False,init=False)
+    chart_admissible: bool=field(default=False,init=False)
+    scientifically_qualified: bool=field(default=False,init=False)
+
+    def __post_init__(self):
+        _primitive(self)
+        if type(self.review) is not PostPullReview:raise TypeError('Typed native post-pull review required.')
+        self.review.__post_init__()
+        if any(getattr(self,f.name)!=f.default for f in fields(self) if not f.init):
+            raise ValueError('Held native assessment declarations must remain unchanged.')
+        values=tuple(getattr(self,f.name) for f in fields(self) if f.init and f.name!='projection_identity')
+        if self.projection_identity!=fingerprint([END_STATE_SCHEMA,_primitive(values)]):
+            raise ValueError('Native end-state assessment identity differs.')
+
+    @property
+    def cement_above_terminal_bbl(self):
+        return float(sum((Fraction(*r[5]) for r in self.review.pipe_bands
+                          if not r[-1] and r[0] in PLACEMENT_SLURRIES),Fraction()))
+
+
+def _ratio(value):
+    return (value.numerator,value.denominator)
+
+
+def assess_native_end_state(state,numeric,*,expected_app_source_sha,conditions):
+    """Read-only B3 completion; no solver, transport replay or prior-ID trust.
+
+    A nominal Shoe-25 endpoint is deliberately not an occupancy proof. Actual
+    Gate6C EOD stock is located by the existing Channel/pipe-band authority.
+    Exact signed float-rational residuals supplement (never loosen) Gate6C's
+    existing 1e-9 bbl bookkeeping admission. Any nonzero residual stays a HOLD.
+    A source hash cannot reveal Float ON/OFF or authenticate field observations.
+    """
+    review=assess_post_pull(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    c=compose_nominal_tracking(state,expected_app_source_sha=expected_app_source_sha)
+    if c.projection_identity!=review.composition_identity:
+        raise ValueError('Source changed during native end-state composition.')
+    s=c.captured_geometry;shoe=s.shoe_md;terminal=shoe-25.
+    float_md=float(Fraction(shoe)-2*Fraction('12.2'))
+    pipe,_=_native_channels(c);o=numeric.native_observation
+    rows=[];fluid_rows=rate_rows=();actual={};reasons=[];eod_time=None
+    bands=tuple(r for r in review.pipe_bands if r[-1])
+    if o is None:reasons.append('HOLD_NATIVE_EOD_ABSENT')
+    else:
+        initial,intervals,eod,tail=o.payload[1:];eod_time=eod[0]
+        if eod[3]!=0.:reasons.append('HOLD_TERMINAL_PIPE_UNDERFILLED')
+        for name,role,t,b,v,ratio,last in bands:
+            actual[name]=actual.get(name,Fraction())+Fraction(*ratio)
+            if t>=b:reasons.append('HOLD_TERMINAL_BAND_MD_UNREPRESENTABLE')
+            if role=='WITHDRAWABLE_DP':reasons.append('HOLD_TERMINAL_CROSSES_WITHDRAWABLE_DP')
+        residuals=[]
+        for name,_,_,_,_,_,_,reported in review.eod_balances:
+            start=sum((_sum(col,name) for col in initial[1:3]),Fraction())
+            injected=sum((_sum(row[5],name) for row in intervals if row[1]<=eod_time),Fraction())
+            returned=sum((_sum(tokens,name) for row in intervals if row[1]<=eod_time
+                          for port,tokens in row[6]),Fraction())
+            value=start+injected-returned-_sum(eod[1],name)-_sum(eod[2],name)
+            residuals.append((name,float(value),_ratio(value),reported))
+        fluid_rows=tuple(residuals)
+        if any(Fraction(*r[2])!=0 or r[3]!=0. for r in fluid_rows):
+            reasons.append('HOLD_NATIVE_EOD_SIGNED_FLUID_RESIDUAL')
+        residuals=[]
+        for i,row in enumerate(intervals):
+            if row[1]>eod_time:continue
+            incoming=sum((Fraction(v) for n,v in row[5]),Fraction())-Fraction(numeric.q_in_bpm[i])*Fraction(row[2])
+            outgoing=sum((Fraction(v) for port,tokens in row[6] for n,v in tokens),Fraction())-Fraction(numeric.q_out_bpm[i])*Fraction(row[2])
+            if incoming or outgoing:residuals.append((i,row[1],_ratio(incoming),_ratio(outgoing)))
+        rate_rows=tuple(residuals)
+        if rate_rows:reasons.append('HOLD_EXECUTED_RATE_TOKEN_RESIDUAL')
+    full=bool(o);cement_only=bool(o)
+    for section,lo,hi in pipe._windows(True):
+        top=max(terminal,section.z_top);bottom=min(shoe,section.z_bot)
+        if top>=bottom:continue
+        index,source=next((i,v) for i,v in enumerate(s.active_sections)
+            if (v.top_md,v.bottom_md,v.id_in)==(section.z_top,section.z_bot,section.dims[0]))
+        cap=Fraction(section.cap_bbl_per_m)
+        a=Fraction(lo) if bottom==section.z_bot else Fraction(lo)+cap*(Fraction(section.z_bot)-Fraction(bottom))
+        b=Fraction(hi) if top==section.z_top else Fraction(lo)+cap*(Fraction(section.z_bot)-Fraction(top))
+        native=cap*(Fraction(bottom)-Fraction(top));app=Fraction(_capacity(source.id_in))*(Fraction(bottom)-Fraction(top))
+        selected=tuple(r for r in bands if section.z_top<=(r[2]+r[3])/2.<section.z_bot)
+        stock=sum((Fraction(*r[5]) for r in selected),Fraction()) if o else None
+        cement=sum((Fraction(*r[5]) for r in selected if r[0] in PLACEMENT_SLURRIES),Fraction()) if o else None
+        rows.append((index,source.source_rows,top,bottom,source.id_in,_ratio(app),_ratio(native),_ratio(b-a),
+                     _ratio(stock) if o else None,_ratio(cement) if o else None))
+        if app!=native:reasons.append('HOLD_TERMINAL_NATIVE_APP_VOLUME_BASIS')
+        if b-a!=native:reasons.append('HOLD_TERMINAL_NATIVE_COORDINATE_BASIS')
+        if o and stock!=b-a:full=False
+        if o and cement!=stock:cement_only=False
+    if o:
+        if not full:reasons.append('HOLD_TERMINAL_NATIVE_COVERAGE_INCOMPLETE')
+        if not cement_only:reasons.append('HOLD_TERMINAL_CONTAINS_NONCEMENT')
+        if any(not r[-1] and r[0] in PLACEMENT_SLURRIES for r in review.pipe_bands):
+            reasons.append('HOLD_EXACT_25M_TOTAL_CEMENT_SLUG_NOT_PROVED')
+    terminal_reasons=('HOLD_TERMINAL_PIPE_UNDERFILLED','HOLD_TERMINAL_BAND_MD_UNREPRESENTABLE',
+                      'HOLD_TERMINAL_CROSSES_WITHDRAWABLE_DP','HOLD_TERMINAL_NATIVE_COVERAGE_INCOMPLETE',
+                      'HOLD_TERMINAL_CONTAINS_NONCEMENT','HOLD_TERMINAL_NATIVE_COORDINATE_BASIS')
+    terminal_status='TERMINAL_25M_CEMENT_COVERAGE_OBSERVED_IN_NATIVE_MODEL' if full and cement_only and not any(r in reasons for r in terminal_reasons) else 'HOLD_TERMINAL_25M_NOT_PROVED'
+    fluids=tuple((n,float(v),_ratio(v)) for n,v in sorted(actual.items()))
+    if any(v!=0. for name,v in review.capacity_residuals):reasons.append('HOLD_NATIVE_CANONICAL_CAPACITY_RESIDUAL')
+    if any(row[-1]!=0. for row in review.post_pull_balances):reasons.append('HOLD_POST_PULL_SIGNED_FLUID_RESIDUAL')
+    case_holds=tuple(dict.fromkeys((*review.case_holds,*reasons)))
+    holds=tuple(dict.fromkeys((*review.holds,*case_holds,'FLOAT_POSITION_METADATA_NOT_INSTALLATION_PROOF',
+        'NATIVE_TERMINAL_OCCUPANCY_NOT_FIELD_CERTIFICATION',
+        'DP_RECOVERY_AND_MAKEUP_CONDITIONAL_NOT_OBSERVED')))
+    values=(review,c.geometry.projection_identity,eod_time,shoe,terminal,float_md,tuple(rows),fluids,terminal_status,
+            fluid_rows,rate_rows,case_holds,holds)
+    return NativeEndStateAssessment(*values,fingerprint([END_STATE_SCHEMA,_primitive(values)]))
+
+
+def validate_native_end_state(state,numeric,assessment,*,expected_app_source_sha,conditions):
+    """Fresh source/observation recomposition; never a field authenticity claim."""
+    if type(assessment) is not NativeEndStateAssessment:raise TypeError('Typed native end-state assessment required.')
+    assessment.__post_init__()
+    fresh=assess_native_end_state(state,numeric,expected_app_source_sha=expected_app_source_sha,conditions=conditions)
+    if _primitive(assessment)!=_primitive(fresh):raise ValueError('Native end-state differs from fresh EOD/source evidence.')

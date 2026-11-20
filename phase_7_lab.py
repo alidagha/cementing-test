@@ -236,6 +236,14 @@ def _render_mud_lab(load_sig):
                 st.session_state[key] = "" if value is None else str(value)
             st.text_input(f"{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid", key=key,
                           on_change=_commit_rheology, args=(name, "bhct_down", "readings", key, rpm))
+        for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):
+            key = prefix + field + "_" + load_sig
+            if key not in st.session_state:
+                value = row.get(field, "")
+                st.session_state[key] = "" if value is None else str(value)
+            column.text_input(f"{label} - BHCT — Ramp-Down - Displacement Fluid", key=key,
+                              on_change=_commit_rheology, args=(name, "bhct_down", field, key),
+                              help="Measured lbf/100 ft². Missing Gel holds CFW128; ordinary Bingham display is unchanged.")
     try:
         mud_lab_readings(st.session_state)
         current = mud_lab_source_signature(st.session_state)

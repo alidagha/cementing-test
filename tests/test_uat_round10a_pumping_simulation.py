@@ -46,7 +46,7 @@ def program_state(kind="casing", fluids=None):
         for name, volume in fluids.items()}}
     state["lab_qc_params"] = {name: {"rheology": {"bhct_down": {
         "selected": True, "readings": readings(), "gel_10_sec": "-", "gel_10_min": "10"}}}
-        for name in fluids if name in ("Main", "Tail", "Lead", "Lead #1", "Lead #2", "Scavenger")}
+        for name in fluids if name in ("Main", "Tail", "Lead", "Lead #1", "Lead #2", "Scavenger", "Spacer Ahead", "Spacer Behind")}
     state["centralizer_config"] = {"aux_rheology": auxiliary()}
     return reviewed_spacer(state)
 
@@ -378,9 +378,9 @@ def test_each_auxiliary_uses_exact_seven_rpm_bingham_authority(fluid, monkeypatc
 @pytest.mark.parametrize("fault", ["absent", "incomplete", "extra", "bool", "nonfinite", "zero", "invalid_fit", "wrong_shape"])
 def test_bad_auxiliary_readings_are_controlled(fault):
     state = program_state(fluids={"Spacer Ahead": 1., "Tail": 2., "Displacement Fluid": 2.})
-    source = state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]
+    source = state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]
     if fault == "absent":
-        state["centralizer_config"]["aux_rheology"].pop("Spacer Ahead")
+        state["lab_qc_params"].pop("Spacer Ahead")
     elif fault == "incomplete":
         source.pop("3")
     elif fault == "extra":
@@ -388,11 +388,58 @@ def test_bad_auxiliary_readings_are_controlled(fault):
     elif fault == "invalid_fit":
         source.update({str(rpm): float(rpm) for rpm in rheology.RPM_ORDER})
     elif fault == "wrong_shape":
-        state["centralizer_config"]["aux_rheology"] = None
+        state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"] = None
     else:
         source["300"] = {"bool": True, "nonfinite": float("inf"), "zero": 0.}[fault]
-    with pytest.raises(ValueError, match="Phase IX Spacer Ahead.*seven-RPM"):
+    with pytest.raises(ValueError, match="Phase VII Spacer Ahead.*bhct_down"):
         adapter().prepare_pumping_simulation(state)
+
+
+@pytest.mark.parametrize("kind", ["casing", "liner", "tieback"])
+@pytest.mark.parametrize("names", [("Spacer Ahead",), ("Spacer Behind",), ("Spacer Ahead", "Spacer Behind")])
+def test_h07_phase7_auxiliary_preserves_spacer_handoff_without_gel_physics(kind, names):
+    app = adapter()
+    state = program_state(kind, fluids={**{name: 1. for name in names}, "Tail": 2., "Displacement Fluid": 2.})
+    before = pickle.dumps(state)
+    prepared = app.prepare_pumping_simulation(state)
+    assert pickle.dumps(state) == before
+    for name in names:
+        assert name not in prepared["inputs"]["rheology"]
+        state["centralizer_config"]["aux_rheology"][name] = {"300": 999.}
+        row = state["lab_qc_params"][name]["rheology"]["bhct_down"]
+        row.update(gel_10_sec="", gel_10_min="-")
+    assert app.prepare_pumping_simulation(state) == prepared
+    inputs = prepared["inputs"]
+    stages, _ = app.fcm.stages_from_fluid_data(inputs["fluid_data"])
+    fluids, warnings, hydrostatic = app.fcm._build_fluids(stages,
+        inputs["fluid_data"]["Displacement Fluid"]["effective_density"],
+        mud_pv_yp=inputs["mud_pv_yp"], slurry_rheology=inputs["slurry_rheology"], rheology=inputs["rheology"])
+    assert not hydrostatic and not warnings
+    for name in names:
+        assert not fluids[name].frictionless_fluid and fluids[name].gel_pa == 0.
+        assert fluids[name].mu_p_cp == inputs["fluid_data"][name]["pv_cp"]
+        assert fluids[name].tau_y == inputs["fluid_data"][name]["yp_lbf100ft2"]
+
+
+@pytest.mark.parametrize("fluid", ["Spacer Ahead", "Spacer Behind"])
+@pytest.mark.parametrize("fault", ["unselected", "numeric_selection", "negative", "infinity", "legacy_only", "qc_claim", "row_claim"])
+def test_h07_auxiliary_bad_source_rejects_before_fluid_handoff(fluid, fault, monkeypatch):
+    app = adapter();state = program_state(fluids={fluid: 1., "Tail": 2., "Displacement Fluid": 2.})
+    qc = state["lab_qc_params"][fluid];row = qc["rheology"]["bhct_down"]
+    if fault == "unselected": row["selected"] = False
+    elif fault == "numeric_selection": row["selected"] = 1
+    elif fault == "negative": row["readings"]["300"] = -1.
+    elif fault == "infinity": row["readings"]["300"] = float("inf")
+    elif fault == "legacy_only": state["lab_qc_params"].pop(fluid)
+    elif fault == "qc_claim": qc.update(reviewed=True, review_signature="forged")
+    else: row["instrument_provenance"] = "VERIFIED"
+    before = pickle.dumps(state)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid auxiliary source reached native fluid handoff")
+    monkeypatch.setattr(app.fcm, "_build_fluids", forbidden)
+    with pytest.raises(ValueError, match=f"Phase VII {fluid}.*bhct_down"):
+        app.prepare_pumping_simulation(state)
+    assert pickle.dumps(state) == before
 
 
 def test_real_engine_scavenger_smoke_retains_actual_train_and_no_project_writes(monkeypatch):

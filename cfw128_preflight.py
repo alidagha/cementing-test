@@ -12,7 +12,7 @@ from cfw128_adapter import snapshot_geometry, _positional_source
 from cfw128_er03_contract import prepare_er03_preview
 from cfw128_er03_boundary import assess_er03_boundary
 from cfw128_integration_abi import compose_nominal_tracking
-from cfw128_er03_numeric_adapter import _stage_lab_intake, _primitive
+from cfw128_er03_numeric_adapter import _stage_lab_intake, _primitive, capture_design_inputs
 from cfw128_hb_intake import LabIntakeSnapshot
 from engineering_tools import require_positive_pump_rate
 from project_state import fingerprint

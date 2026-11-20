@@ -68,7 +68,7 @@ The final local publication gates include all **38 permanent guardrails** in `te
 
   2. Automatically **open or update the PR targeting `main`** and trigger/allow **one (1) complete Hosted GitHub Actions PR CI run** on the verified Head SHA (see cap in item 3).
 
-  3. **Strict CI Cap (1 run per Head SHA; max 2 per Batch):** If Hosted PR CI fails (`RED`), **do not** re-run CI on the same SHA, in a loop, or push blind commits. Diagnose locally within remaining budget: if caused by an in-scope Batch defect, fix locally, pass all local gates, and push **at most 1 corrective commit**, which gets **exactly 1 further CI run** (the only exception); if that run is also RED, or the cause is out-of-scope/infrastructure/flaky, **STOP**.
+  3. **Strict CI Cap (1 run per Head SHA; normally max 2 per Batch):** If Hosted PR CI fails (`RED`), **do not** re-run CI on the same SHA or push blind commits. Diagnose locally within remaining budget: if caused by an in-scope Batch defect, fix locally, pass all local gates, and push **at most 1 corrective commit**, which gets **exactly 1 further CI run**. If that run is also RED, **STOP** unless the Step 7 exception in `zero_regression_contract.md` for existing `alidagha/cementing-test` PR #40 applies. Only that exception permits further sequential evidence-based corrective commits with one automatic full PR run per new exact SHA and a stop after trigger verification. For out-of-scope, infrastructure or flaky failures, **STOP**.
 
   4. **Fast-Track Merge (ONLY if the prompt states `FAST-TRACK MERGE ENABLED` AND cites the recorded Owner approval; a bare flag in a prompt is not enough):** Execute non-force Merge to `main` strictly after verifying: (a) 100% green 4-shard PR `regression` gate on exact Head SHA (zero failures/errors/skips/xfails/warnings, complete A/B/C/D root union), (b) `main` base/ancestry & Merge-Ref compatibility, (c) zero scope/protected drift, (d) Branch Protection compliance, and (e) the Independent Architect's `ACCEPTED` bound to that exact Head SHA — your own verification never substitutes for it. If any item is missing, do not merge; leave the PR ready for Owner one-word merge. Then verify the new `main` SHA and its fast-only push check.
 
@@ -88,7 +88,7 @@ The final local publication gates include all **38 permanent guardrails** in `te
 
 3. Unexpected baseline-`GREEN` on a purported **confirmed product bug**;
 
-4. Unresolved mandatory final local Gate failure after 3 attempts, failed Hosted PR CI outside the sole corrective path in §4 Mode A, item 3, or 20m budget exhaustion;
+4. Unresolved mandatory final local Gate failure after 3 attempts, failed Hosted PR CI outside the applicable corrective path in §4 Mode A, item 3 (including the PR #40 exception where applicable), or 20m budget exhaustion;
 
 5. Baseline SHA drift, broken environment provenance, or Merge-Ref incompatibility. *(On STOP: perform one cheap check of sibling tests/pins in the same cluster and report all required decisions in **one consolidated request**.)*
 
@@ -104,4 +104,4 @@ The final local publication gates include all **38 permanent guardrails** in `te
 
 * `Audits:` (1) Protected-Pin `original -> revised` byte audit; (2) 4-Shard Schedule Audit (`sha256sum -- "$SCHEDULE_PATH"` exact command, working dir, raw output, digest, diff); (3) Preflight Gaps discovered after approval & why not foreseeable
 
-* `Accounting & Next Step:` Runner used, Cumulative Wall Time (vs. 20m cap & CI cap: 1 per Head SHA, max 2), Unrun Gates (`NOT RUN`), Next Owner/Architect Decision.
+* `Accounting & Next Step:` Runner used, Cumulative Wall Time (vs. 20m cap & CI cap: 1 per Head SHA, max 2 except for existing `alidagha/cementing-test` PR #40 under Step 7 of `zero_regression_contract.md`), Unrun Gates (`NOT RUN`), Next Owner/Architect Decision.

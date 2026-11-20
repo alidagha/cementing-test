@@ -315,6 +315,11 @@ class AuditRegressions(unittest.TestCase):
         app.session_state["lab_qc_params"] = {"Main": {"rheology": measured, **thickening_fixture(), **compressive_fixture()}}
         if optional_fluids and include_standalone_spacer:
             app.session_state["lab_qc_params"]["Spacer"] = {"rheology": valid_export_rheology_fixture()}
+        if optional_fluids:
+            # H07: these selected synthetic measurements belong to Phase VII,
+            # before its existing confirmation/navigation/export sequence.
+            for fluid in ("Pre Flush", "Spacer Ahead", "Spacer Behind"):
+                app.session_state["lab_qc_params"][fluid] = {"rheology": valid_export_rheology_fixture()}
         self.phase(app, "phase7")
         for label, value in (("Free Water Collected (45° angle) (ml) - Main", 0.0),
                              ("Surface Sample Hours - Main", 8.0)):
@@ -325,7 +330,8 @@ class AuditRegressions(unittest.TestCase):
             app.button(key=key).click().run()
         ensure_current_centralizer(app.session_state)
         if optional_fluids and job not in ('CMT PLUG', 'CMT SQUEEZE'):
-            # These explicit legacy Pre Flush readings also feed Phase VII.
+            # Retain legacy saved records for roundtrip coverage. H07 consumes
+            # the Phase-VII rows above; these are not a second lab authority.
             # N/A jobs do not create config through Centralizer execution.
             if 'centralizer_config' not in app.session_state:
                 from phase_9_centralizer import new_config
@@ -394,6 +400,27 @@ class AuditRegressions(unittest.TestCase):
                 app = self.configured_app(job)
                 self.assertTrue(app.session_state["cement_additives_dfs"]["Main"].empty)
                 self.assertEqual(compute_phase_status(app.session_state)["phase5"]["level"], "ok")
+                self.export(app)
+
+    def test_h07_valid_fixture_does_not_repair_invalid_phase7_from_legacy_aux(self):
+        app = self.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
+        self.export(app)
+        legacy = deepcopy(app.session_state['centralizer_config']['aux_rheology'])
+        for fluid in ('Spacer Ahead', 'Spacer Behind'):
+            with self.subTest(fluid=fluid):
+                self.phase(app, 'phase7')
+                row = app.session_state['lab_qc_params'][fluid]['rheology']['bhct_down']
+                self.assertTrue(row['selected'])
+                self.assertEqual(set(row['readings']), {'300', '200', '100', '60', '30', '6', '3'})
+                self.assertEqual((row['gel_10_sec'], row['gel_10_min']), ('8', '12'))
+                selected = next(w for w in app.checkbox if w.label == 'BHCT — Ramp-Down - ' + fluid)
+                selected.uncheck().run()
+                self.phase(app, 'phase10')
+                self.assertTrue(next(b for b in app.button if b.label == 'Build Word Document').disabled)
+                self.assertNotIn('_compiled_doc_bytes', app.session_state)
+                self.assertEqual(app.session_state['centralizer_config']['aux_rheology'], legacy)
+                self.phase(app, 'phase7')
+                next(w for w in app.checkbox if w.label == 'BHCT — Ramp-Down - ' + fluid).check().run()
                 self.export(app)
 
     def test_additives_optional_fluids_and_saved_project_export(self):

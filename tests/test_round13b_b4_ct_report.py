@@ -33,7 +33,14 @@ def valid_ct():
     button=next(w for w in app.button if w.label=='Confirm measured lab results')
     assert not button.disabled, [w.value for w in app.warning]+[w.value for w in app.error]+[w.value for w in app.caption]
     button.click().run()
-    return app.session_state.to_dict()
+    source=app.session_state.to_dict()
+    # Explicit synthetic Phase VII sources for the operational-fluid tests below;
+    # legacy Phase IX drafts are never promoted into measured Lab authority.
+    from test_uat_round10a_pumping_simulation import readings
+    for name in ('Spacer Ahead','Spacer Behind'):
+        source['lab_qc_params'][name]={'rheology':{'bhct_down':{
+            'selected':True,'readings':readings(),'gel_10_sec':'-','gel_10_min':'-'}}}
+    return source
 
 
 def context(s,prepared=False):
@@ -127,6 +134,18 @@ def test_applicable_jobs_still_require_executed_centralizer(job):
         'view':None, 'source':None, 'warning':True}
 
 COMBINATIONS=[(),('Spacer Ahead',),('Spacer Behind',),('Spacer Ahead','Spacer Behind'),('Pre Flush',),('Pre Flush','Spacer Ahead')]
+
+
+@pytest.mark.parametrize('fluid',['Spacer Ahead','Spacer Behind'])
+def test_h07_ct_selected_auxiliary_without_phase7_source_still_blocks_report(valid_ct,fluid):
+    s=deepcopy(valid_ct)
+    s['fluids_config']['active'].insert(0,fluid)
+    s['fluids_config']['params'][fluid]={'volume':7.5,'density':'80','pump_rate':'0.7-1.2','material_name':fluid}
+    s['lab_qc_params'].pop(fluid)
+    ps.refresh_fluids(s)
+    with pytest.raises(ValueError,match='Phase VII:.*'+fluid):
+        context(s)
+
 
 @pytest.mark.parametrize('job',db.JOB_TYPES)
 @pytest.mark.parametrize('selected',COMBINATIONS)

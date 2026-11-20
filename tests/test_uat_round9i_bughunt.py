@@ -41,10 +41,11 @@ def saved_bytes(state):
 @pytest.mark.parametrize("use_custom", [False, True])
 def test_repeated_restore_execute_failure_repair_cannot_resurrect_success(catalog, use_custom):
     state = configured(catalog, physics="dynamic", use_custom=use_custom)
-    # Keep the auxiliary failure/repair cycle on an actual Phase-IX auxiliary.
+    # H07 keeps the same failure/repair cycle on its actual Phase-VII source.
     state["fluids_config"]["active"] = ["Spacer Ahead" if name == "Spacer" else name
                                          for name in state["fluids_config"]["active"]]
     state["fluids_config"]["params"]["Spacer Ahead"] = dict(state["fluids_config"]["params"]["Spacer"])
+    state["lab_qc_params"]["Spacer Ahead"] = {"rheology": audit.valid_export_rheology_fixture()}
     state["hardware_table"] = state["hardware_table"].assign(**{"Collapse (psi)": None, "Burst (psi)": None})
     state["well_data"] = {}
     restore_canonical_fields(state)
@@ -65,10 +66,10 @@ def test_repeated_restore_execute_failure_repair_cannot_resurrect_success(catalo
         pending = bridge.prepare_report(state)
         assert pending["current"] is False and pending["view"] is None
         phase9.execute(state, catalog)
-        state["centralizer_config"]["aux_rheology"].pop("Spacer Ahead")
+        measured = state["lab_qc_params"].pop("Spacer Ahead")
         with pytest.raises(ValueError, match="MissingRheology"):
             phase9.execute(state, catalog)
-        state["centralizer_config"]["aux_rheology"]["Spacer Ahead"] = readings()
+        state["lab_qc_params"]["Spacer Ahead"] = measured
         assert not phase9.result_is_current(state, catalog)  # Repair alone is not Execute.
         assert "_centralizer_result" not in state and "_centralizer_signature" not in state
         phase9.execute(state, catalog)
@@ -136,10 +137,10 @@ def test_mode_and_active_auxiliary_transition_cycle_consumes_only_current_source
     state["fluids_config"]["active"].append("Spacer Behind")
     assert phase9.result_is_current(state, catalog) == (physics == "static")
     if physics == "dynamic":
-        state["centralizer_config"]["aux_rheology"].pop("Spacer Behind")
+        state["lab_qc_params"].pop("Spacer Behind", None)
         with pytest.raises(ValueError, match="MissingRheology.*Spacer Behind"):
             phase9.execute(state, catalog)
-        state["centralizer_config"]["aux_rheology"]["Spacer Behind"] = readings()
+        state["lab_qc_params"]["Spacer Behind"] = {"rheology": audit.valid_export_rheology_fixture()}
         assert not phase9.result_is_current(state, catalog)
         phase9.execute(state, catalog)
     state["fluids_config"]["active"].remove("Spacer Behind")

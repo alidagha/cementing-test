@@ -205,7 +205,10 @@ def test_other_consumed_sources_change_signature_without_execution(edit):
         row = state["lab_qc_params"]["Main"]["rheology"]["bhct_down"]
         if edit == "lab": row["readings"]["300"] = "169"
         else: row["gel_10_min"] = "11"
-    elif edit == "aux": state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] = "169"
+    elif edit == "aux":
+        state["centralizer_config"]["aux_rheology"]["Spacer Ahead"]["300"] = "169"
+        assert pumping.source_signature(state) == old  # unused legacy draft
+        state["lab_qc_params"]["Spacer Ahead"]["rheology"]["bhct_down"]["readings"]["300"] = "169"
     elif edit == "hardware": state["hardware_table"].at[0, "ID (in)"] = 6.1
     else: state["placement_config"][edit + "_row"] = "changed selection"
     with patch.object(pumping.fcm, "build_three_charts", side_effect=AssertionError("Signature ran solver")):

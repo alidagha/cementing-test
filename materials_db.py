@@ -62,7 +62,7 @@ DEFAULT_HOLE_SIZES = {
 # Roles are distinct: Scavenger is formulated and tested, never placed.
 PLACEMENT_SLURRIES = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 CEMENT_FORMULATION_FLUIDS = ("Scavenger", *PLACEMENT_SLURRIES)
-RHEOLOGY_ONLY_FLUIDS = ("Diesel", "Pre Flush")
+RHEOLOGY_ONLY_FLUIDS = ("Diesel", "Pre Flush", "Spacer Ahead", "Spacer Behind")
 RHEOLOGY_LAB_FLUIDS = CEMENT_FORMULATION_FLUIDS
 # Phase VII can render rheology-only fluids; downstream consumers stay deferred.
 PHASE7_LAB_FLUIDS = (*CEMENT_FORMULATION_FLUIDS, *RHEOLOGY_ONLY_FLUIDS)

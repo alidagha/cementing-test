@@ -5,7 +5,7 @@ Writes/schema/UI/persistence/Word: none. Frozen engines and HB math are unchange
 Owns typed packaging/provenance only, not geometry, transport or pressure laws.
 """
 from copy import deepcopy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from fractions import Fraction
 from typing import Literal
 import math
@@ -18,10 +18,11 @@ from cfw128_integration_abi import compose_nominal_tracking, CompositionReceipt
 from cfw128_hb_intake import (snapshot_lab_intake, LabIntakeSnapshot, DialReading,
                               _dial, _duplicate_columns, _positional_source)
 from cfw128_hb03t_frozen import fit_full_hb, to_engine_field, InstrumentConfig
-from engineering_tools import require_positive_pump_rate, validate_lab_rheology, lab_temperature_valid
+from engineering_tools import require_positive_pump_rate, validate_lab_rheology, lab_temperature_valid, require_bhsp_density
 from centralizer_adapter import _dynamic_fann
 from project_state import fingerprint, spacer_lab_payload, phase7_lab_fluids, lab_source_signature, available_fluid_types
-from rheology import RPM_ORDER, RHEOLOGY_DATASETS
+from rheology import RPM_ORDER, RHEOLOGY_DATASETS, _gel
+from well_profile import tvd_at_md
 from fluids_charts_module_v1_4_2 import JobChartsSpec, autoscale_x, autoscale_y, render_three_charts
 
 VERTICAL_SHA256='79d1a76962c706c305cf9a44ee58778d8ee2ca4231fd02f1a6d52f5b5f231e5f'
@@ -44,6 +45,102 @@ class NumericBoundary:
     bhsp_semantics: str
     instrument_declaration: str
     gel_pa_by_fluid: tuple[tuple[str,float],...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDesignInputs:
+    """B2 source-qualified design inputs, never field-pressure qualification."""
+    app_source_sha: str
+    source_identity: str
+    composition_identity: str
+    shoe_md: float
+    shoe_tvd_m: float | None
+    mud_density_source: str | int | float | None
+    bhsp_target_psi: float | None
+    # label, source fluid, intake identity, literal 10-sec/min values, native Pa
+    gels: tuple
+    issues: tuple[tuple[str, str], ...]
+    projection_identity: str
+    schema: str = field(default='CFW128_SOURCE_DESIGN_INPUTS_V1', init=False)
+    pressure_datum: str = field(default='SURFACE_REFERENCE_PSI', init=False)
+    bhsp_semantics: str = field(default='TARGET_NOT_INCREMENT', init=False)
+    evidence_class: str = field(default='SYNTHETIC_TEST_ONLY', init=False)
+    currentness: str = field(default='NOT_CURRENTNESS_PROOF', init=False)
+    qualification: str = field(default='NOT_GRANTED', init=False)
+    holds: tuple[str, ...] = field(default=('FIELD_PRESSURE_DATUM_NOT_CERTIFIED',
+        'PHYSICAL_INSTRUMENT_UNVERIFIED', 'INV014_FAIL_WITH_OWNER_EXCEPTION',
+        'FINAL_POST_PULL_TOC_NOT_EVALUATED'), init=False)
+    enabled: bool = field(default=False, init=False)
+    ready_to_run: bool = field(default=False, init=False)
+    hb_admissible: bool = field(default=False, init=False)
+    hydraulic_admissible: bool = field(default=False, init=False)
+    chart_admissible: bool = field(default=False, init=False)
+    scientifically_qualified: bool = field(default=False, init=False)
+
+    @property
+    def status(self):
+        return 'HOLD' if self.issues else 'DISABLED_SOURCE_DESIGN_INPUTS'
+
+    def bind_boundary(self, state, *, expected_app_source_sha, boundary):
+        if type(self) is not SourceDesignInputs or self != capture_design_inputs(state, expected_app_source_sha=expected_app_source_sha):
+            raise ValueError('Stale, forged or mixed design inputs.')
+        _primitive(self)
+        if self.issues:raise ValueError('CFW128 design input HOLD: '+repr(self.issues))
+        if type(boundary) is not NumericBoundary:raise TypeError('Typed synthetic boundary required.')
+        if (boundary.evidence_class!='SYNTHETIC_TEST_ONLY' or boundary.pressure_datum!=self.pressure_datum
+                or boundary.bhsp_semantics!=self.bhsp_semantics):
+            raise ValueError('Design target requires the approved surface-reference target semantics.')
+        gels=tuple((row[0],row[5]) for row in self.gels)
+        if boundary.bhsp_target_psi is not None and boundary.bhsp_target_psi!=self.bhsp_target_psi:
+            raise ValueError('Caller target differs from actual Active Shoe source.')
+        if boundary.gel_pa_by_fluid and boundary.gel_pa_by_fluid!=gels:
+            raise ValueError('Caller Gel differs from actual measured source.')
+        return replace(boundary,bhsp_target_psi=self.bhsp_target_psi,gel_pa_by_fluid=gels)
+
+
+def capture_design_inputs(state, *, expected_app_source_sha):
+    """Read existing authorities only: no fit, simulation, persistence or defaults.
+
+    Mud aliases the recorded Displacement context only when no distinct initial
+    Mud source is present. A separate source requires explicit supported intake.
+    """
+    if type(state) is not dict:raise TypeError('Canonical project dictionary required.')
+    source=deepcopy(state)
+    composition=compose_nominal_tracking(source,expected_app_source_sha=expected_app_source_sha)
+    identity=fingerprint(['cfw128-b2-design-source/1',expected_app_source_sha,_positional_source(source)])
+    shoe=composition.captured_geometry.shoe_md
+    density=source.get('mud_density');tvd=None;target=None;issues=[];gels=[]
+    try:
+        tvd=tvd_at_md(source['well_geometry'],[shoe])[0]
+        target=tvd*require_bhsp_density(density)*0.02278
+        _number(tvd,True);_number(target,True)
+    except (ValueError,TypeError,KeyError,OverflowError) as exc:
+        issues.append(('BHSP_ACTIVE_SHOE_SOURCE_INVALID',str(exc)))
+        tvd=None;target=None
+    lab=source.get('lab_qc_params',{})
+    if 'Mud' in lab:issues.append(('INITIAL_MUD_SEPARATE_SOURCE_UNSUPPORTED','Distinct initial Mud is not replaced by Displacement measurements.'))
+    for name in (v.name for v in composition.schedule.stages):
+        intake=_stage_lab_intake(source,name,expected_app_source_sha)
+        if intake.status!='CAPTURED_FOR_FUTURE_REVIEW':
+            issues.append((name+':LAB_SOURCE_HOLD',','.join(intake.reason_codes)))
+            continue
+        row=lab.get(name,{}).get('rheology',{}).get('bhct_down',{})
+        try:
+            if row.get('selected') is not True:raise ValueError('Select the actual measured Gel row.')
+            raw=tuple(row.get(k) for k in ('gel_10_sec','gel_10_min'))
+            for value in raw:
+                if type(value) not in (str,int,float):raise ValueError('Actual measured Gel required.')
+                _number(_gel(value))
+            pa=_gel(raw[1])*vertical.LBF100FT2_TO_PA
+            gels.append((name,name,intake.source_identity,*raw,pa))
+            if name=='Displacement Fluid' and 'Mud' not in lab:
+                gels.append(('Mud',name,intake.source_identity,*raw,pa))
+        except (ValueError,TypeError,OverflowError) as exc:
+            issues.append((name+':MEASURED_GEL_REQUIRED',str(exc)))
+    if fingerprint(['cfw128-b2-design-source/1',expected_app_source_sha,_positional_source(state)])!=identity:
+        raise ValueError('Source changed during design capture.')
+    values=(expected_app_source_sha,identity,composition.projection_identity,shoe,tvd,density,target,tuple(gels),tuple(issues))
+    return SourceDesignInputs(*values,fingerprint(['CFW128_SOURCE_DESIGN_INPUTS_V1',_primitive(values)]))
 
 
 @dataclass(frozen=True,slots=True)
@@ -196,15 +293,15 @@ def _stage_lab_intake(state, name, sha):
     row=data.get('bhct_down') if type(data) is dict else None
     legacy=name=='Pre Flush' and not current
     aux={}
-    if auxiliary or legacy:
+    if legacy:
         config_ix=state.get('centralizer_config',{})
         if type(config_ix) is not dict or type(config_ix.get('aux_rheology',{})) is not dict:raise ValueError('Canonical auxiliary record required.')
         aux=config_ix.get('aux_rheology',{})
-    raw=aux.get(name) if (auxiliary or legacy) and type(aux) is dict else row.get('readings') if type(row) is dict else None
+    raw=aux.get(name) if legacy and type(aux) is dict else row.get('readings') if type(row) is dict else None
     # Only this exact stage's source enters its identity. A present current Lab
     # record excludes historical auxiliary data even when empty or unselected.
-    projection={'fluid':name,'selected_count':active.count(name),'origin':'PHASE_IX' if auxiliary or legacy else 'PHASE_VII',
-                'qc':None if auxiliary or legacy else qc,'readings':raw}
+    projection={'fluid':name,'selected_count':active.count(name),'origin':'PHASE_IX' if legacy else 'PHASE_VII',
+                'qc':None if legacy else qc,'readings':raw}
     if name=='Spacer':
         for key in ('lab_grid_dfs','lab_source_signatures','well_data','fluid_data'):
             if type(state.get(key,{})) is not dict:raise ValueError('Canonical Spacer source records required.')
@@ -221,10 +318,10 @@ def _stage_lab_intake(state, name, sha):
     if active.count(name)==0:return hold('NOT_APPLICABLE','FLUID_NOT_ACTIVE','An actual selected stage is required.')
     if active.count(name)!=1:return hold('INVALID_INPUT','ACTIVE_FLUIDS_INVALID','Duplicate selection is ambiguous.')
     if name not in available_fluid_types(state):return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Existing job/Mud eligibility is required.')
-    if not auxiliary and name not in phase7_lab_fluids(state):
+    if name not in phase7_lab_fluids(state):
         return hold('NOT_APPLICABLE','FLUID_NOT_ELIGIBLE','Current job/Mud selection does not admit this Phase VII fluid.')
     if _duplicate_columns(projection):return hold('INVALID_INPUT','DUPLICATE_SOURCE_COLUMNS','Ambiguous positional values retained in invalid identity.')
-    if not auxiliary and not legacy:
+    if not legacy:
         if qc is None:return hold('INCOMPLETE_INPUT','LAB_SOURCE_MISSING','Actual measured Phase VII record is missing.')
         if type(qc) is not dict or type(data) is not dict:return hold('INVALID_INPUT','RHEOLOGY_RECORD_INVALID','Canonical lab/ramp records required.')
         if set(data)-{key for key,label in RHEOLOGY_DATASETS}:return hold('INVALID_INPUT','RHEOLOGY_KEYS_INVALID','Unknown ramp keys are not source authority.')
@@ -247,7 +344,7 @@ def _stage_lab_intake(state, name, sha):
         if problem:return hold('INVALID_INPUT',problem,'Finite nonnegative integer dial required without rounding.')
         readings.append(DialReading(rpm,value,type(value).__name__,dial))
     if auxiliary or legacy or name in ('Pre Flush','Diesel'):
-        assumed=auxiliary or legacy
+        assumed=legacy
         # Validation is reused, never PV/YP reconstruction or a review ceremony.
         if not assumed and set(qc)-{'rheology'}:
             return hold('INVALID_INPUT','UNSUPPORTED_REVIEW_OR_PROVENANCE_METADATA','Foreign review/instrument claims cannot grant authority.')
@@ -377,7 +474,8 @@ def _validate_native_observation(o, source, hashes, channels, events, stages, na
 
 
 def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary: NumericBoundary,
-                          engine: str='vertical', stepping: str='frozen', composition: CompositionReceipt | None=None) -> NumericEvidence:
+                          engine: str='vertical', stepping: str='frozen', composition: CompositionReceipt | None=None,
+                          source_design_inputs: SourceDesignInputs | None=None) -> NumericEvidence:
     """Run original simulate only for admitted, explicitly synthetic inputs.
 
     PSIA conversion/field pressure qualification is unsupported. BHSP is a total
@@ -385,6 +483,9 @@ def run_numeric_test_case(state: dict, *, expected_app_source_sha: str, boundary
     App station TVD is an explicit geometric input exception; research interior
     interpolation remains piecewise linear, never App-interior parity.
     """
+    if source_design_inputs is not None:
+        if type(source_design_inputs) is not SourceDesignInputs:raise TypeError('Typed source design inputs required.')
+        boundary=source_design_inputs.bind_boundary(state,expected_app_source_sha=expected_app_source_sha,boundary=boundary)
     if type(boundary) is not NumericBoundary or type(state) is not dict:raise TypeError('Typed synthetic boundary/project required.')
     if any(type(getattr(boundary,n)) is not str for n in ('evidence_class','pressure_datum','bhsp_semantics','instrument_declaration')):
         raise TypeError('Literal string model declarations required.')

@@ -267,6 +267,7 @@ def test_sibling_operations_remain_without_formulation_tables(source, siblings, 
             "Chemical": "Hematite", "Weighting Agent Type": "-", "User Input (% or gal)": 1.25}])
         state["centralizer_config"].setdefault("aux_rheology", {})[fluid] = dict(zip(
             ("300", "200", "100", "60", "30", "6", "3"), (168., 116., 64., 41., 24., 8., 6.)))
+        state["lab_qc_params"][fluid] = {"rheology": audit.valid_export_rheology_fixture()}
     ps.refresh_fluids(state)
     ensure_current_centralizer(state)
     ctx = context(state)

@@ -14,6 +14,8 @@ from project_state import fingerprint
 
 
 AUX_FLUIDS = ("Pre Flush", "Spacer", "Spacer Ahead", "Spacer Behind")
+
+
 DENSITIES = tuple(f"{p}/{q}" for p, q in adapter.centralizer_engine._DENSITY_LADDER)
 PHYSICS_HELP = (
     "Static Parity: Uses the final displacement fluid columns with hydrostatic/buoyancy effects. "
@@ -174,7 +176,7 @@ def source_signature(state, products=None):
             "aux": {name: ({key: rheology._numeric(value) for key, value in adapter.preflush_readings(state).items()}
                            if isinstance(adapter.preflush_readings(state), dict) else adapter.preflush_readings(state))
                     if name == "Pre Flush" else config["aux_rheology"].get(name)
-                    for name in active if name in AUX_FLUIDS and name != "Spacer"},
+                    for name in active if name == "Pre Flush"},
         }
     return fingerprint(body)
 
@@ -381,21 +383,7 @@ def render():
     _render_zones(config, candidates)
     if config["physics_mode"] == "dynamic":
         st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
-        for fluid in AUX_FLUIDS:
-            if fluid in ("Spacer", "Pre Flush") or fluid not in st.session_state.get("fluids_config", {}).get("active", []):
-                continue
-            st.markdown(f"**{fluid} Bingham rheology**")
-            readings = config["aux_rheology"].get(fluid, {})
-            for column, rpm in zip(st.columns(7), rheology.RPM_ORDER):
-                key = f"_centralizer_aux_{fluid}_{rpm}"
-                st.session_state[key] = readings.get(str(rpm))
-                column.number_input(f"{rpm} RPM — {fluid}", min_value=0., value=None, key=key,
-                                    on_change=_commit, args=("readings", key, None, fluid, rpm))
-            try:
-                fit = adapter._dynamic_fann(readings, fluid)
-                st.caption(f"PV = {fit['pv_cp']:g} cP; Ty = {fit['ty_lbf_100ft2']:g} lbf/100ft²; IOD = {fit['iod']:g}")
-            except ValueError:
-                st.caption("Complete all seven RPM readings; derived PV/Ty/IOD will appear here.")
+        st.caption("Selected Spacer Ahead/Behind RPM and Gel are entered once in Phase VII Lab Report.")
     if st.button("Execute Centralizer", type="primary", key="_centralizer_execute"):
         try:
             with st.spinner("Calculating Centralizer..."):

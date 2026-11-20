@@ -69,7 +69,7 @@ def test_original_short_optional_source_stays_valid_but_blocks_word_and_old_down
         "cached_word_retired": True, "build_disabled": True, "no_download": True}, indent=2))
 
 
-@pytest.mark.parametrize("source", ["phase2", "phase4", "phase7", "phase9"])
+@pytest.mark.parametrize("source", ["phase2", "phase4", "phase7", "phase7_aux"])
 def test_valid_source_edits_retire_download_without_implicit_simulation(built_state, source):
     state = deepcopy(built_state)
     old = pumping.source_signature(state)
@@ -83,12 +83,20 @@ def test_valid_source_edits_retire_download_without_implicit_simulation(built_st
         with patch.object(phase7.st, "session_state", state):
             phase7._commit_rheology("Main", "bhct_down", "readings", "_edit", rpm=300)
     else:
-        # Spacer Behind is excluded from Static Centralizer, not from Pumping.
+        # A legacy Phase IX edit cannot replace the measured Phase VII source.
         assert phase9.result_is_current(state)
-        old = pumping.source_signature(state)
+        canonical = deepcopy(state["lab_qc_params"]["Spacer Behind"])
         state["_edit"] = 169.
         with patch.object(phase9.st, "session_state", state):
             phase9._commit("aux", "_edit", fluid="Spacer Behind", rpm=300)
+        assert state["centralizer_config"]["aux_rheology"]["Spacer Behind"]["300"] == 169.
+        assert state["lab_qc_params"]["Spacer Behind"] == canonical
+        assert pumping.source_signature(state) == old
+        assert phase9.result_is_current(state)
+        assert "_compiled_doc_bytes" in state
+        state["_edit"] = "170"
+        with patch.object(phase7.st, "session_state", state):
+            phase7._commit_rheology("Spacer Behind", "bhct_down", "readings", "_edit", rpm=300)
     assert phase9.result_is_current(state)
     assert pumping.source_signature(state) != old
     with patch.object(pumping.fcm, "build_three_charts", side_effect=AssertionError("Rerun executed solver")):
@@ -96,7 +104,7 @@ def test_valid_source_edits_retire_download_without_implicit_simulation(built_st
         audit.AuditRegressions().phase(app, "phase10")
         app.run()
     assert not app.exception
-    if source == "phase9":
+    if source == "phase7_aux":
         assert not app.error
         assert not next(b for b in app.button if b.label == "Build Word Document").disabled
     assert "_compiled_doc_bytes" not in app.session_state
@@ -116,6 +124,11 @@ def test_auxiliary_activation_failure_repair_cycle_never_uses_stale_rheology(flu
                 reviewed_spacer(state)
                 sources = state["lab_qc_params"]
                 missing = "Phase VII Spacer.*bhct_down"
+            elif fluid in ("Spacer Ahead", "Spacer Behind"):
+                assert state["centralizer_config"]["aux_rheology"][fluid]
+                sources = state["lab_qc_params"]
+                sources[fluid] = {"rheology": audit.valid_export_rheology_fixture()}
+                missing = f"Phase VII {fluid}.*seven-RPM.*bhct_down"
             else:
                 sources = state["centralizer_config"]["aux_rheology"]
                 missing = f"Phase IX {fluid}.*seven-RPM"
