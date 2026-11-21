@@ -268,12 +268,16 @@ def test_saved_unfinished_active_sources_mount_only_verified_empty_defaults(down
     exec(compile(ast.Module(body=[node], type_ignores=[]), 'main.py', 'exec'), namespace)
     signature = namespace['_project_comparison_signature']
     saved = save_project(app); current = json.loads(saved)
-    blank = current['lab_qc_params']['Displacement Fluid']
+    assert 'Displacement Fluid' not in current.get('lab_qc_params', {})
+    hydraulic = CASE.app({'job_type': 'CSG 9 5/8"'})
+    for phase in ('phase4', 'phase7', 'phase1'):
+        CASE.phase(hydraulic, phase)
+    blank = json.loads(save_project(hydraulic))['lab_qc_params']['Displacement Fluid']
     assert blank['rheology']['bhct_down']['selected'] is False
     assert set(blank['rheology']['bhct_down']['readings'].values()) == {''}
     baseline = signature(saved)
-    absent = deepcopy(current); del absent['lab_qc_params']['Displacement Fluid']
-    assert signature(json.dumps(absent)) == baseline
+    current.setdefault('lab_qc_params', {})['Displacement Fluid'] = blank
+    assert signature(json.dumps(current)) == baseline
     mutations = []
     for value in (None, {}, [], '', 0, False):
         changed = deepcopy(current); changed['lab_qc_params']['Displacement Fluid'] = value

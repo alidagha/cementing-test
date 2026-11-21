@@ -467,7 +467,11 @@ def test_no_diesel_report_signatures_match_exact_a42(projects, job, mud):
     assert 'Diesel' not in specs['procedure_text']['generated']
     ctx = context(state)
     assert ctx['has_spacer'] and ctx['standalone_spacer']['lab_rows']
-    assert ctx['standalone_spacer']['lab']['rheology']['bhct_down']['is_valid_bingham']
+    measurements = ctx['standalone_spacer']['lab']['rheology']
+    if job in ('CMT PLUG', 'CMT SQUEEZE'):
+        assert measurements == {}
+    else:
+        assert measurements['bhct_down']['is_valid_bingham']
 
 
 @pytest.mark.parametrize('change', ['md', 'id', 'size', 'volume', 'placement', 'metadata', 'missing', 'duplicate'])

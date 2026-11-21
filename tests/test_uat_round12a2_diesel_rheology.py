@@ -64,23 +64,33 @@ def test_phase7_composition_does_not_widen_downstream_taxonomy():
 def test_active_diesel_tab_reuses_renderer_without_any_cement_lab_path(job):
     state = project()
     state["job_type"] = job
+    cement_only = job in ("CMT PLUG", "CMT SQUEEZE")
+    readings_before = deepcopy(state["lab_qc_params"]["Diesel"])
     with patch.object(lab, "_render_rheology", wraps=lab._render_rheology) as render:
         app = CASE.app(state)
         CASE.phase(app, "phase7")
         assert "Displacement Fluid" in state["fluids_config"]["active"]
-        assert [tab.label for tab in app.tabs] == ["Diesel", "Displacement Fluid (Mud)"]
-        assert [call.args[0] for call in render.call_args_list] == ["Diesel"]
+        expected_tabs = [] if cement_only else ["Diesel", "Displacement Fluid (Mud)"]
+        assert [tab.label for tab in app.tabs] == expected_tabs
+        assert [call.args[0] for call in render.call_args_list] == ([] if cement_only else ["Diesel"])
     assert not app.error and not app.exception
     labels = [item.label for group in (app.checkbox, app.number_input, app.text_input, app.selectbox, app.button)
               for item in group]
     forbidden = ("Cement SG", "Base Cement", "Mix Water", "Filtrate", "Free Water", "Thickening",
                  "UCA", "Crush", "Sync with Phase V", "Keep reviewed lab entries", "Confirm measured lab results")
     assert not any(word in label for label in labels for word in forbidden)
-    assert not any(word in item.value for item in app.markdown
-                   for word in ("Blend & Additives", "600 mL", "cement lab"))
     assert not app.dataframe
     assert_no_cement_diesel(app.session_state.to_dict())
-    assert status(app.session_state)["level"] == "ok"
+    if cement_only:
+        assert any("No cement slurries were selected in Phase IV." in warning.value for warning in app.warning)
+        assert not any(word in item.value for item in app.markdown
+                       for word in ("Blend & Additives", "Rheology Test"))
+        assert app.session_state["lab_qc_params"]["Diesel"] == readings_before
+        assert status(app.session_state)["level"] == "empty"
+    else:
+        assert not any(word in item.value for item in app.markdown
+                       for word in ("Blend & Additives", "600 mL", "cement lab"))
+        assert status(app.session_state)["level"] == "ok"
 
 
 def test_existing_renderer_and_fresh_bingham_authority_are_working_controls():

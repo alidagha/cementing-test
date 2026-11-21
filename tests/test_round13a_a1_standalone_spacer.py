@@ -447,6 +447,9 @@ def test_invalid_volume_message_precedes_formulation_admission():
 def test_incomplete_phase10_has_no_legacy_download_or_review_loss():
     app = CASE.app(state())
     CASE.phase(app, "phase6")
+    app.session_state[sp.CONFIG_KEY] = {
+        **app.session_state[sp.CONFIG_KEY], "tank_name": "Invented Tank",
+    }
     app.session_state["_compiled_doc_bytes"] = b"old"
     app.session_state["procedure_text"] = "Owner reviewed operational instruction."
     app.session_state["report_text_state"] = {"procedure_text": {
@@ -455,7 +458,7 @@ def test_incomplete_phase10_has_no_legacy_download_or_review_loss():
     before = deepcopy(app.session_state["report_text_state"])
     CASE.phase(app, "phase10")
     assert widget(app, "button", "Build Word Document").disabled
-    assert any("Spacer" in error.value for error in app.error)
+    assert any("Standalone Spacer" in error.value and "Mixing Tank" in error.value for error in app.error)
     assert "_compiled_doc_bytes" not in app.session_state
     assert not app.get("download_button")
     assert app.session_state["procedure_text"] == "Owner reviewed operational instruction."
