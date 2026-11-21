@@ -26,6 +26,9 @@ from test_uat_round9h_integration import (
     test_real_phase_x_build_and_section_ix_contract as verify_word,
     word_projects,
 )
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.fixture(scope="module")

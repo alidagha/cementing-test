@@ -17,6 +17,10 @@ from placement import (hardware_choices, hardware_context_label, target_row_meta
                        summary_config_for_job)
 from project_state import accept_report_text, restore_previous_text, fingerprint
 from engineering_tools import compute_phase_status, BBL_TO_CUFT
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 JOB = 'CSG 9 5/8"'
 P1 = ('Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention '

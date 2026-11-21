@@ -576,6 +576,9 @@ def test_spacing_cardinality_mismatch_stops_before_render(project, count):
 
 # Existing reviewed Spacer fixture; no new state field, note input or module.
 from test_round13a_a4_spacer_word import source as r15cd_spacer_project
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def r15cd_section(doc, first="VI. Pre-flush Program", last="VII. Laboratory Report"):

@@ -8,6 +8,10 @@ import engineering_tools as eng
 import test_audit_regressions as audit
 from phase_5_cement import build_components, calculate_base_results, refresh_cement_calculations
 from project_state import refresh_fluids
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 SACK = 110.0
 WATER = 62.4

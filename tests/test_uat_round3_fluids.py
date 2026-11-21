@@ -14,6 +14,10 @@ import phase_10_procedure as report
 import test_audit_regressions as audit
 from engineering_tools import compute_phase_status
 from project_state import prepare_calculations, refresh_fluids
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 NAME_OPTIONS = ["Fresh Water", "Salt Saturated Water", "Fresh Water Mix with Chemical Wash",

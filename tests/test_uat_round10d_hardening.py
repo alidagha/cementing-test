@@ -17,6 +17,7 @@ import pumping_simulation as pumping
 from project_io import content_signature, decode_project, replace_project_state
 from project_state import fingerprint
 import test_audit_regressions as audit
+from test_audit_regressions import legacy_word_fixture
 from centralizer_fixtures import execute_centralizer
 from test_uat_round10a_pumping_simulation import program_state
 from test_uat_round9e_dynamic_solver import reviewed_spacer
@@ -25,7 +26,7 @@ from test_uat_round10c_integration import inspect_word, save_project
 
 
 @pytest.fixture(scope="module")
-def built_state(tmp_path_factory):
+def built_state(tmp_path_factory, legacy_word_fixture):
     case = audit.AuditRegressions()
     app = case.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
     case.phase(app, "phase4")

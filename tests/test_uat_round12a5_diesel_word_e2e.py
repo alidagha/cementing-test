@@ -19,6 +19,9 @@ import pumping_simulation as pumping
 import phase_9_centralizer as phase9
 import test_audit_regressions as audit
 from centralizer_fixtures import execute_centralizer
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 JOBS = ('CSG 9 5/8"', 'LNR 7"', 'TIE BACK LNR 7"', 'CMT PLUG', 'CMT SQUEEZE')

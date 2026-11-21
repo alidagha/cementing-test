@@ -19,6 +19,9 @@ import phase_10_procedure as report
 import project_state as ps
 from placement import EXCESS_FIELDS
 import test_audit_regressions as audit
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 CASE = audit.AuditRegressions()
 DOC_KEYS = ('_compiled_doc_bytes', '_compiled_doc_filename', '_compiled_doc_signature')

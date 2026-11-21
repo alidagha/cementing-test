@@ -20,6 +20,9 @@ import phase_10_procedure as report
 import project_state as ps
 from centralizer_fixtures import ensure_current_centralizer
 from test_uat_round10c_integration import save_project, restore_project
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 NAME = "Sodium Silicate"

@@ -238,6 +238,9 @@ def test_primary_grid_preserves_nonstandard_and_precise_md_without_display_coerc
 
 
 from test_pre14_sh_batch_e import reviewed_main
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.mark.parametrize("md,expected", [("1500.25000001", "1500.3"), ("1000.0-1500.25", "1000.0-1500.25")])

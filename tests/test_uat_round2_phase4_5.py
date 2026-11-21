@@ -9,6 +9,10 @@ from engineering_tools import compute_phase_status, validate_cement_parameters
 from project_state import refresh_fluids
 from phase_5_cement import build_cement_tables, build_components, calculate_base_results
 import pandas as pd
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 SLURRIES = ('Main', 'Lead', 'Lead #1', 'Lead #2', 'Tail')
 # These existing WBM scenarios retain their original fluid train.

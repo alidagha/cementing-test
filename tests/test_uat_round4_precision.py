@@ -14,6 +14,10 @@ from phase_5_cement import (_normalize_additive_rows, build_components, calculat
                             refresh_cement_calculations)
 from project_state import prepare_calculations
 from test_uat_round4_mass_balance import formulation
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 METRICS = ('base_fluid_gal_sk', 'mix_water_gal_sk', 'mix_fluid_gal_sk')

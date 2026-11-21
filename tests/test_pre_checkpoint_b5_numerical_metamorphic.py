@@ -26,6 +26,7 @@ import centralizer_adapter as centralizer
 import pumping_simulation as pumping
 import well_schematic_adapter as schematic
 import test_audit_regressions as audit
+from test_audit_regressions import legacy_word_fixture
 from centralizer_fixtures import execute_centralizer
 from test_uat_round8a_chart_model import balanced_state
 from test_uat_round9e_dynamic_solver import readings
@@ -443,7 +444,7 @@ def test_small_depth_edits_change_capacity_by_area_times_changed_length(edit):
 
 
 @pytest.fixture(scope="module")
-def projects():
+def projects(legacy_word_fixture):
     return integrated_projects.__wrapped__()
 
 

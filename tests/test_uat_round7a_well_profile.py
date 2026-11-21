@@ -54,6 +54,9 @@ from well_profile import (integrate_survey, resolve_well_profile, validate_well_
                           geometry_defaults, geothermal_defaults)
 from project_state import lab_source_signature, prepare_calculations, restore_canonical_fields
 from engineering_tools import compute_phase_status
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def survey(md, inc, azi):

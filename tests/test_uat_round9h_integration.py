@@ -26,6 +26,9 @@ from centralizer_fixtures import execute_centralizer
 from test_uat_round9e_dynamic_solver import readings
 from test_uat_round9f_phase9 import configured
 from test_uat_round9g_centralizer_word import ix_region
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.fixture(scope="module")

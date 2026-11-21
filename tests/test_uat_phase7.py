@@ -12,6 +12,10 @@ from engineering_tools import (compute_phase_status, lab_review_signature,
 from bhct_helper import suggest_bhct, M_TO_FT
 import phase_10_procedure as report
 from project_state import lab_source_signature
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 class Phase7UAT(unittest.TestCase):
