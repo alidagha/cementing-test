@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
 import re
+import pandas as pd
 import pytest
 from docx import Document
 from docxtpl import DocxTemplate
@@ -15,7 +16,7 @@ import well_report
 import well_schematic_adapter as schematic
 from ct_stages import ct_stage_projection, stage_note
 import test_audit_regressions as audit
-from test_round13b_b3_ct_schematic import state, PLACEHOLDER
+from test_round13b_b3_ct_schematic import state, row, PLACEHOLDER
 
 CASE=audit.AuditRegressions()
 
@@ -46,6 +47,195 @@ def valid_ct():
 def context(s,prepared=False):
     with patch.object(report.st,'session_state',s):
         return report.build_master_context(calculations_prepared=prepared)
+
+
+def homa_summary_source(valid_ct):
+    """Representative of the Owner-supplied dimensions, using the admitted CT fixture."""
+    source = deepcopy(valid_ct)
+    hardware = source['hardware_table']
+    ct = hardware.loc[hardware['Description'].eq('CT')].iloc[0].to_dict()
+    ct['MD (m)'] = '2987'
+    hole = row('Open Hole Size', '2799.5-2987', '6 1/5', 6.125)
+    # Correct the fixture's Hardware size only. The document-control draft is not geometry.
+    hole['Size (in)'] = '6 1/8'
+    source['hardware_table'] = pd.DataFrame([
+        row('Previous Casing', '2400', '13 3/8', 12.415),
+        row('Previous Liner Shoe', '2200-2799.5', '7', 6.276),
+        hole,
+        ct,
+    ], columns=hardware.columns)
+    source['doc_control'] = {**source.get('doc_control', {}), 'hole_size': '6 1/5'}
+    source['fluids_config']['params']['Main'].update(volume=24.1, density='118')
+    source['cement_params']['Main']['top_depth'] = 2785.
+    source['ct_stage_config'].update(main_volume='24.1', count=3)
+    return source
+
+
+def test_uat21_ct_summary_homa_uses_verified_crossing_and_current_stages(valid_ct):
+    source = homa_summary_source(valid_ct)
+    source['executive_summary_config'] = {
+        'version': 1, 'job_type': db.CT_JOB, 'volume_basis': 'client_request',
+    }
+    assert ps.prepare_calculations(source) == []
+    plug = schematic.prepare_schematic(source)['payload']['cement_plugs'][0]
+    assert plug == {'top_md': 2785., 'bottom_md': 2987.}
+    before = ps.fingerprint([source['hardware_table'], source['fluids_config'],
+                             source['cement_params'], ct_stage_projection(source)])
+    paragraphs = context(source)['executive_summary'].split('\n\n')
+    assert paragraphs[2] == (
+        'Cement plug will be set at 2987.0 m MD. Neat cement design will be used to cement '
+        '6 1/8" open hole and 7" liner; 118 pcf Main cement slurry will be cemented '
+        'from 2987.0 m to 2785.0 m. The calculated cement volume is 24.1 bbl based on client request.'
+    )
+    assert paragraphs[3:] == [
+        'Important: Due to the anticipated cement slurry volume, as well as the requirement to perform '
+        'the cementing operation through Coiled Tubing (CT), the operation shall be conducted in three stages.'
+    ]
+    assert ps.fingerprint([source['hardware_table'], source['fluids_config'],
+                           source['cement_params'], ct_stage_projection(source)]) == before
+
+
+@pytest.mark.parametrize('geometry,volume,count,ending,wall', [
+    ('complete', 12, None, 'one stage.', '7" liner'),
+    ('casing', 24, 2, 'a minimum of two stages.', '7" casing'),
+    ('hole', 24, 2, 'a minimum of two stages.', '12 1/4" open hole'),
+    ('partial', 24, 2, 'a minimum of two stages.', None),
+])
+def test_uat21_ct_summary_other_walls_and_stage_counts(valid_ct, geometry, volume, count, ending, wall):
+    source = deepcopy(valid_ct)
+    source['hardware_table'] = state(geometry)['hardware_table']
+    source['fluids_config']['params']['Main']['volume'] = volume
+    source.pop('ct_stage_config')
+    if count is not None:
+        source['ct_stage_config'] = {'job_type': db.CT_JOB, 'main_volume': str(volume), 'count': count}
+    summary = context(source)['executive_summary']
+    paragraphs = summary.split('\n\n')
+    assert summary.count('Important:') == 1 and len(paragraphs) == 4
+    assert paragraphs[3] == (
+        'Important: Due to the anticipated cement slurry volume, as well as the requirement to perform '
+        'the cementing operation through Coiled Tubing (CT), the operation shall be conducted in ' + ending
+    )
+    assert 'Cement plug will be set at 3527.0 m MD.' in paragraphs[2]
+    assert 'from 3527.0 m to 3470.0 m.' in paragraphs[2]
+    assert f'The calculated cement volume is {volume:.1f} bbl.' in paragraphs[2]
+    if wall:
+        assert f'cement design will be used to cement {wall};' in paragraphs[2]
+    else:
+        assert not schematic.prepare_schematic(source)['available']
+        assert 'cement design will be used. 118 pcf Main' in paragraphs[2]
+    assert 'configured Main plug interval' not in summary
+
+
+def test_uat21_ct_summary_geometry_and_review_are_source_bound(valid_ct):
+    source = homa_summary_source(valid_ct)
+    # A top exactly at the shoe occupies no positive interval inside the liner.
+    source['cement_params']['Main']['top_depth'] = 2799.5
+    assert '6 1/8" open hole;' in context(source)['executive_summary']
+    hole = source['hardware_table']['Description'].eq('Open Hole Size')
+    source['hardware_table'].loc[hole, ['Size (in)', 'ID (in)']] = ['6.147', 6.147]
+    assert '6.147" open hole;' in context(source)['executive_summary']
+    source['hardware_table'].loc[hole, 'Size (in)'] = '6 1/5'
+    source['_compiled_doc_bytes'] = b'stale'
+    with pytest.raises(ValueError, match='Size and ID/Bit Size must match'):
+        context(source, prepared=True)
+    assert '_compiled_doc_bytes' not in source
+
+
+def test_uat21_ct_summary_only_claims_explicit_current_client_basis(valid_ct):
+    source = deepcopy(valid_ct)
+    source['executive_summary_config'] = {
+        'version': 1, 'job_type': db.CT_JOB,
+        'per_slurry': {'Main': {'volume_basis': 'client_request', 'excess_csg_oh_pct': 9.0,
+                                'wet_stands': 3.0, 'liner_lap_m': 2.0}},
+    }
+    summary = context(source)['executive_summary']
+    assert 'client request' not in summary
+    assert 'stands wet' not in summary and 'liner lap' not in summary
+    assert 'based on 9% excess for OH-CSG, giving 20.0 bbl for main slurry.' in summary
+    source['executive_summary_config']['volume_basis'] = 'client_request'
+    assert 'The calculated cement volume is 20.0 bbl based on client request.' in context(source)['executive_summary']
+
+
+@pytest.mark.parametrize('fault', ['missing', 'stale', 'invalid'])
+def test_uat21_ct_summary_rejects_unusable_stage_selection(valid_ct, fault):
+    source = deepcopy(valid_ct)
+    if fault == 'missing':
+        source.pop('ct_stage_config')
+    elif fault == 'stale':
+        source['ct_stage_config']['main_volume'] = '21'
+    else:
+        source['ct_stage_config']['count'] = 4
+    with patch.object(report.st, 'session_state', source):
+        with pytest.raises(ValueError, match='Phase V CT stages'):
+            report.synchronize_report_texts()
+    assert not source.get('exec_summary_text')
+
+
+def test_uat21_ct_summary_stage_and_geometry_edits_preserve_manual_review(valid_ct):
+    source = deepcopy(valid_ct)
+    source['ct_stage_config']['count'] = 2
+    before = context(source)
+    first = source['report_text_state']['exec_summary_text']['source_signature']
+    source['ct_stage_config']['count'] = 3
+    after = context(source)
+    assert 'a minimum of two stages.' in before['executive_summary']
+    assert 'three stages.' in after['executive_summary']
+    assert source['report_text_state']['exec_summary_text']['source_signature'] != first
+    assert report.document_signature(before, report.TEMPLATE_PATH) != report.document_signature(after, report.TEMPLATE_PATH)
+
+    liner = source['hardware_table']['Description'].eq('Previous Liner Shoe')
+    source['hardware_table'].loc[liner, 'Size (in)'] = '7 5/8'
+    geometry_edit = context(source)
+    assert '7 5/8" liner' in geometry_edit['executive_summary']
+    assert report.document_signature(after, report.TEMPLATE_PATH) != report.document_signature(geometry_edit, report.TEMPLATE_PATH)
+
+    manual = 'Operator-reviewed CT Executive Summary.'
+    source['exec_summary_text'] = manual
+    with patch.object(report.st, 'session_state', source):
+        spec = report.synchronize_report_texts()['exec_summary_text']
+        ps.accept_report_text(source, 'exec_summary_text', spec['generated'], spec['signature'])
+        source['ct_stage_config']['count'] = 2
+        updated = report.synchronize_report_texts()['exec_summary_text']
+        assert updated['pending'] and updated['signature'] != spec['signature']
+        assert source['exec_summary_text'] == manual
+        with pytest.raises(ValueError, match='preserved manual'):
+            report.build_master_context()
+    restored = audit.round_trip(source)
+    assert restored['exec_summary_text'] == manual
+    with patch.object(report.st, 'session_state', restored):
+        assert report.synchronize_report_texts()['exec_summary_text']['pending']
+
+
+def test_uat21_ct_summary_word_has_same_text_as_editor_and_keeps_template_style(valid_ct, tmp_path):
+    source = homa_summary_source(valid_ct)
+    app = CASE.app(audit.round_trip(source))
+    CASE.phase(app, 'phase10')
+    editor = next(w for w in app.text_area if w.label == 'Executive Summary Text (Official NIDC Format):')
+    build = next(w for w in app.button if w.label == 'Build Word Document')
+    assert not build.disabled, [w.value for w in app.error]
+    build.click().run(timeout=90)
+    CASE.healthy(app)
+    data = app.session_state['_compiled_doc_bytes']
+    word = Document(BytesIO(data))
+    body = next(p for p in word.paragraphs if p.text.startswith('Enclosed are our recommendations'))
+    template = next(p for p in Document(report.TEMPLATE_PATH).paragraphs if '{{ executive_summary }}' in p.text)
+    assert body.text == editor.value
+    assert body.style.style_id == template.style.style_id
+    assert body.alignment == template.alignment
+    assert body.paragraph_format.line_spacing == template.paragraph_format.line_spacing
+    preamble, safety, placement, important = body.text.split('\n\n')
+    assert preamble == ('Enclosed are our recommendations for NIDC Cement Engineering and Planning Department '
+                        'intervention on the referenced well. The proposal includes well data, materials and '
+                        'resources requirements.')
+    assert safety == ('NIDC has established a safety policy to which all NIDC personnel must adhere. A pre-job '
+                      'safety meeting will be held with client representatives and other on location personnel '
+                      'to familiarize everyone with existing hazards and safety procedures. We would appreciate '
+                      'close cooperation between the client representative and the NIDC representative to ensure '
+                      'a safe operation.')
+    assert '6 1/8" open hole and 7" liner;' in placement and '6 1/5' not in placement
+    assert important.startswith('Important:') and important.endswith('three stages.')
+    assert sum(p.text.count('Important:') for p in word.paragraphs) == 1
+    (tmp_path / 'uat21-a-ct-summary.docx').write_bytes(data)
 
 
 def test_current_ct_is_admitted_and_dedicated_procedure_uses_sources(valid_ct):
