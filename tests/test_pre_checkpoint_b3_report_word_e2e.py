@@ -290,11 +290,20 @@ def r17_filename_source():
      "Cementing Program - CSG 9.625 - SP-101.docx"),
 ])
 def test_r17_download_filename_real_build_and_navigation(r17_filename_source, fields, expected, tmp_path):
+    import json
+
     from streamlit.elements.widgets import button as buttons
     app = CASE.app(deepcopy(r17_filename_source))
     CASE.phase(app, "phase1")
     for field, value in fields.items():
         app.text_input(key="_w_" + field).set_value(value).run()
+    with patch.object(buttons, "marshall_file", wraps=buttons.marshall_file) as served_project:
+        next(b for b in app.button if b.label == "Prepare project download").click().run()
+    project = [call.args for call in served_project.call_args_list
+               if call.args[2].label == "Download Project (.json)"]
+    assert project and project[-1][4] == expected.removesuffix(".docx") + ".json"
+    assert json.loads(project[-1][1])["doc_control"] == app.session_state["doc_control"]
+    assert "_compiled_doc_bytes" not in app.session_state
     CASE.phase(app, "phase10")
     raw = deepcopy(app.session_state["doc_control"])
     qc = deepcopy(app.session_state["lab_qc_params"])

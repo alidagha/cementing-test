@@ -10,7 +10,7 @@ import materials_db
 from engineering_tools import (DEFAULT_LIQUID_PROPERTIES, DEFAULT_POWDER_DENSITIES_PCF,
     resolve_additive_density, compute_phase_status,
     calculate_slurry_from_components)
-from phase_5_cement import (_normalize_additive_rows, REQUIRED_ADDITIVE_COLUMNS,
+from phase_5_cement import (_commit_custom_identity, _normalize_additive_rows, REQUIRED_ADDITIVE_COLUMNS,
     build_components, calculate_base_results)
 from phase_7_lab import build_lab_df_from_phase5
 from project_state import lab_source_signature
@@ -145,6 +145,23 @@ class Round2DensityUAT(unittest.TestCase):
         self.assertEqual(saved['Name'].tolist(), ['Hidense', 'O-GAS BLOCK'])
         self.assertEqual(saved['Density'].tolist(), [5.2, 1.05])
         pd.testing.assert_frame_equal(state['source'], source)
+
+    def test_stale_custom_name_cannot_clear_a_committed_brand(self):
+        selected = _normalize_additive_rows(pd.DataFrame([row('Hidense'), row('O-GAS BLOCK')]))
+        state = {'cement_additives_dfs': {'Main': selected.copy(deep=True)},
+                 'old_custom_name': '', 'revision': 1}
+        with patch.object(editor_state.st, 'session_state', state):
+            _commit_custom_identity('Main', 1, 'Name', 'old_custom_name', 'revision')
+            pd.testing.assert_frame_equal(state['cement_additives_dfs']['Main'], selected)
+            self.assertEqual(state['revision'], 1)
+
+            state['cement_additives_dfs']['Main'].at[1, 'Name'] = 'Other (Custom)'
+            state['old_custom_name'] = 'Local liquid'
+            _commit_custom_identity('Main', 1, 'Name', 'old_custom_name', 'revision')
+        saved = state['cement_additives_dfs']['Main']
+        self.assertEqual(saved['Name'].tolist(), ['Hidense', 'Local liquid'])
+        self.assertEqual(saved['Density'].tolist(), [5.2, 1.05])
+        self.assertEqual(state['revision'], 2)
 
     def test_density_column_is_last_editable_gcm3_two_decimals(self):
         app = self.configured_app(audit.BATCH1_JOBS[0], additives=True)

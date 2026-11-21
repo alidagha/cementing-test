@@ -994,7 +994,7 @@ def _collect_labels(data: dict, open_holes: List[dict]) -> List[dict]:
 
     for p in data.get("cement_plugs", []):
         top, bot = float(p["top_md"]), float(p["bottom_md"])
-        reqs.append({"depth": 0.5 * (top + bot),
+        reqs.append({"depth": 0.5 * (top + bot), "is_operation": True,
                      "text": f"CMT PLUG @ {_fmt_depth(top)}–{_fmt_depth(bot)} m"})
 
     for bore in data.get("plug_bores", []):
@@ -1019,7 +1019,7 @@ def _collect_labels(data: dict, open_holes: List[dict]) -> List[dict]:
                 text = f"{size} {prefix} Shoe Squeeze @ {_fmt_depth(d)} m"
             else:
                 text = f"{size} {prefix} Squeeze @ {_fmt_depth(d)} m"
-        reqs.append({"depth": d, "text": text})
+        reqs.append({"depth": d, "text": text, "is_operation": True})
 
     reqs.sort(key=lambda r: r["depth"])
     return reqs
@@ -1437,7 +1437,7 @@ def render_well_schematic(schematic_data: dict,
             ax.text(c1 * 0.5, yd(m) + off, f"{m:g}", ha="center", va=va,
                     fontsize=DEPTH_LABEL_PT, color="black", family=FONT_FAMILY, zorder=3.6)
 
-        # 8. Column 3 (or Column 2 in schematic_right): operation-neutral labels.
+        # 8. Column 3 (or Column 2 in schematic_right): well schematic labels.
         # Collision shifts are visual only. No leader lines are drawn.
         reqs = _collect_labels(data, open_holes)
         pos = _stack_label_positions(reqs, y_max, fig_h * th * body_h, body_h)
@@ -1448,7 +1448,7 @@ def render_well_schematic(schematic_data: dict,
 
         for r, y in zip(reqs, pos):
             t = ax.text(lbl_center_x, y, r["text"], ha="center", va="center", fontsize=LABEL_PT,
-                        color="black", family=FONT_FAMILY, zorder=3.6)
+                        color="#008000" if r.get("is_operation") else "black", family=FONT_FAMILY, zorder=3.6)
             w_px = t.get_window_extent(renderer=renderer).width
             if w_px > max_w_px:
                 scaled = LABEL_PT * max_w_px / w_px
