@@ -152,7 +152,7 @@ def test_nonapplicable_jobs_acquire_no_preflush_hydraulic_blocker(job):
     state['lab_qc_params']['Pre Flush'] = {'rheology': {}}
     assert pumping.prepare_pumping_simulation(state)['applicable'] is False
     assert centralizer(state) is None
-    assert et.compute_phase_status(state)['phase7']['level'] == 'ok'
+    assert et.compute_phase_status(state)['phase7']['level'] == 'empty'
 
 
 @pytest.mark.parametrize('physics', ['static', 'dynamic'])

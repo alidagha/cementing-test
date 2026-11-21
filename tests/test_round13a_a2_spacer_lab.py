@@ -18,13 +18,17 @@ from test_uat_round10c_integration import save_project, restore_project
 CASE = audit.AuditRegressions()
 
 
-def state(mode="Limestone + Barite", dead=0.):
-    result = a1_state(mode, dead)
+def state(mode="Limestone + Barite", dead=0., *, job="CMT PLUG"):
+    result = a1_state(mode, dead, job=job)
     result.update(audit.well_profile_fixture(100., bhst=200.))
     result["bhct"] = 150.
     result["well_data"] = {"bhct": 150., "bhst": 200.}
     ps.refresh_fluids(result)
     return result
+
+
+def hydraulic_lab_state(mode="Limestone + Barite"):
+    return state(mode, job='CSG 9 5/8"')
 
 
 def test_mix_a_finished_cup_benchmark():
@@ -38,7 +42,7 @@ def test_mix_a_finished_cup_benchmark():
 
 
 def test_spacer_tab_and_only_applicable_sections():
-    app = CASE.app(state())
+    app = CASE.app(hydraulic_lab_state())
     CASE.phase(app, "phase7")
     assert [tab.label for tab in app.tabs] == ["Spacer"]
     text = "\n".join(item.value for item in app.markdown)
@@ -50,7 +54,7 @@ def test_spacer_tab_and_only_applicable_sections():
 
 
 def test_unreviewed_spacer_is_not_ready():
-    result = et.compute_phase_status(state())["phase7"]
+    result = et.compute_phase_status(hydraulic_lab_state())["phase7"]
     assert result["level"] == "warning" and "Spacer" in result["message"]
 
 
@@ -130,7 +134,7 @@ def test_solo_independent_sources_do_not_drift_lab_or_erase_review(change):
 
 @pytest.mark.parametrize("change", ["density", "mode", "mix_dead", "inventory", "mix_volume", "bhct", "bhst"])
 def test_consumed_changes_rebuild_masses_preserve_manual_data_and_retire_review(change):
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     source["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] = "FW lot 01"
     source["lab_qc_params"]["Spacer"]["review_signature"] = et.lab_review_signature(
         source["lab_qc_params"]["Spacer"], source["lab_grid_dfs"]["Spacer"])
@@ -162,14 +166,14 @@ def test_consumed_changes_rebuild_masses_preserve_manual_data_and_retire_review(
 
 
 def test_readiness_is_pure_and_repeated_rebuild_is_stable():
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     before = ps.fingerprint(source)
     for _ in range(3):
         assert et.compute_phase_status(source)["phase7"]["level"] == "ok"
         assert ps.fingerprint(source) == before
         ps.spacer_lab_payload(source)
         assert ps.fingerprint(source) == before
-    blank = state()
+    blank = hydraulic_lab_state()
     before = ps.fingerprint(blank)
     et.compute_phase_status(blank)
     assert ps.fingerprint(blank) == before
@@ -177,7 +181,7 @@ def test_readiness_is_pure_and_repeated_rebuild_is_stable():
 
 @pytest.mark.parametrize("defect", ["empty", "one_point", "gel", "invalid_fit", "selected_incomplete", "bhct", "review"])
 def test_incomplete_or_invalid_measurements_never_ready(defect):
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     qc = source["lab_qc_params"]["Spacer"]
     if defect == "empty":
         qc["rheology"] = {}
@@ -199,7 +203,7 @@ def test_incomplete_or_invalid_measurements_never_ready(defect):
 
 
 def test_bingham_authority_unchanged_with_no_cement_qc_requirement():
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     actual = ps.spacer_lab_payload(source)
     expected, issues = rheology.build_rheology(source["lab_qc_params"]["Spacer"])
     assert not issues and actual["rheology"] == expected
@@ -224,7 +228,7 @@ def edit_lot_with_navigation(app, index, value):
 
 
 def test_first_manual_edits_navigation_confirmation_and_actual_project_restore():
-    app = CASE.app(state())
+    app = CASE.app(hydraulic_lab_state())
     CASE.phase(app, "phase7")
     editor = next(item for item in app.dataframe if "_editor_lab_tbl_spacer_" in item.proto.id)
     columns = json.loads(editor.proto.columns)
@@ -264,7 +268,7 @@ def test_first_manual_edits_navigation_confirmation_and_actual_project_restore()
 
 
 def test_inactive_manual_draft_cannot_satisfy_reactivation_review():
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     app = CASE.app(source)
     CASE.phase(app, "phase7")
     manual = deepcopy(app.session_state["lab_qc_params"]["Spacer"]["rheology"])
@@ -289,7 +293,7 @@ def test_inactive_manual_draft_cannot_satisfy_reactivation_review():
 
 @pytest.mark.parametrize("change", ["mass", "unit", "concentration", "material", "source"])
 def test_saved_computed_cache_cannot_override_canonical_recipe(change):
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     source["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] = "keep"
     if change == "source":
         source[sp.CONFIG_KEY]["dead_vol"] = 1.
@@ -328,7 +332,7 @@ def test_malformed_lab_import_rejected_before_publication(bad):
 
 
 def test_compiled_document_retires_on_lot_edit_and_unreviewed_word_stays_blocked():
-    app = CASE.app(measured(state()))
+    app = CASE.app(measured(hydraulic_lab_state()))
     CASE.phase(app, "phase7")
     app.session_state["_compiled_doc_bytes"] = b"old"
     edit_lot_with_navigation(app, 1, "Salt lot updated")
@@ -340,7 +344,7 @@ def test_compiled_document_retires_on_lot_edit_and_unreviewed_word_stays_blocked
 
 
 def test_real_phase_iv_order_tabs_and_manual_sources_stay_independent():
-    source = state()
+    source = hydraulic_lab_state()
     cfg = source["fluids_config"]
     cfg["active"] = ["Diesel", "Spacer", "Spacer Ahead", "Main", "Spacer Behind"]
     for fluid, density in (("Diesel", "51"), ("Spacer Ahead", "90"), ("Main", "118"), ("Spacer Behind", "90")):
@@ -367,7 +371,7 @@ def test_real_phase_iv_order_tabs_and_manual_sources_stay_independent():
 
 
 def test_mode_and_inventory_ui_changes_rebuild_current_cup_with_metadata():
-    app = CASE.app(measured(state()))
+    app = CASE.app(measured(hydraulic_lab_state()))
     CASE.phase(app, "phase7")
     manual = deepcopy(app.session_state["lab_qc_params"]["Spacer"]["rheology"])
     edit_lot_with_navigation(app, 0, "Water retained")
@@ -390,7 +394,7 @@ def test_mode_and_inventory_ui_changes_rebuild_current_cup_with_metadata():
 
 @pytest.mark.parametrize("defect", ["mode", "density", "volume", "inventory"])
 def test_invalid_formulation_retires_payload_and_cannot_recover_old_review(defect):
-    source = measured(state())
+    source = measured(hydraulic_lab_state())
     source["lab_payload_Spacer"] = ps.spacer_lab_payload(source)
     source["_compiled_doc_bytes"] = b"stale"
     original = deepcopy(source)
@@ -431,7 +435,7 @@ def test_publication_failure_rolls_back_spacer_manual_data():
 @pytest.mark.parametrize("mode,density", [("Limestone", 95), ("Barite", 110),
                                         ("Ferro Bar", 140), ("Limestone + Barite", 110)])
 def test_superseded_defoamer_review_cannot_authorize_new_composition(mode, density):
-    source = state(mode)
+    source = hydraulic_lab_state(mode)
     source["fluids_config"]["params"]["Spacer"]["density"] = str(density)
     measured(source)
     source["lab_grid_dfs"]["Spacer"].loc[0, "Lot No"] = "retain lot"

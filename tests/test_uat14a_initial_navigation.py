@@ -82,6 +82,13 @@ def test_default_navigation_keeps_neutral_captions_and_selection(tmp_path):
     pristine = namespace["_navigation_sources_not_started"]
     state = {k: deepcopy(v) for k, v in app.session_state.to_dict().items() if ps.is_project_key(k)}
     assert pristine(state)
+    assert "Displacement Fluid" not in state.get("lab_qc_params", {})
+    hydraulic = CASE.app({"job_type": 'CSG 9 5/8"'})
+    for phase in ("phase4", "phase7"):
+        CASE.phase(hydraulic, phase)
+    blank = deepcopy(hydraulic.session_state["lab_qc_params"]["Displacement Fluid"])
+    state.setdefault("lab_qc_params", {})["Displacement Fluid"] = blank
+    assert pristine(state)
     mutations = []
     for field, value in (("selected", True), ("selected", 0), ("gel_10_sec", ""), ("unknown", None)):
         changed = deepcopy(state)

@@ -82,8 +82,8 @@ def test_new_water_lot_only_and_explicit_clear_roundtrip():
 
 
 def test_water_lot_actual_editor_clear_and_review_retirement():
-    from test_round13a_a2_spacer_lab import measured, edit_lot_with_navigation
-    state = measured(spacer_state())
+    from test_round13a_a2_spacer_lab import measured, edit_lot_with_navigation, hydraulic_lab_state
+    state = measured(hydraulic_lab_state())
     app = CASE.app(state)
     CASE.phase(app, 'phase7')
     editor = next(w for w in app.dataframe if '_editor_lab_tbl_spacer_' in w.proto.id)

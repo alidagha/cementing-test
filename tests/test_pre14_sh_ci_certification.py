@@ -53,6 +53,12 @@ def test_valid_job_preflush_status_keeps_existing_applicability(job, measured):
     state['job_type'] = job
     before = deepcopy(state)
     status = tools.compute_phase_status(state)
-    not_applicable = job in ('CMT PLUG', 'CMT SQUEEZE', materials_db.CT_JOB)
-    assert status['phase7']['level'] == ('ok' if measured or not_applicable else 'warning')
+    cement_only_jobs = {
+        'CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"',
+        'CMT PLUG', 'CMT SQUEEZE', 'CMT PLUG WITH CT',
+    }
+    if job in cement_only_jobs:
+        assert status['phase7']['level'] == 'empty'
+    else:
+        assert status['phase7']['level'] == ('ok' if measured else 'warning')
     assert state == before

@@ -134,7 +134,8 @@ class TrueCustomUAT(unittest.TestCase):
         self.assertEqual([(r['Name'],r['Material Type']) for r in conv if r['Name']],
                          [('CEMENT G DELIJAN','Cement'), ('DUP-X','Type A')])
         self.assertEqual([(r['Name'],r['Material Type']) for r in adds if r['Name']],
-                         [('DUP-X','Type B'),('Local cement liquid','Type C'),('Base Water','Base Water')])
+                         [('DUP-X','Type B'),('Local cement liquid','Type C'),('Base Water','Water')])
+        self.assertEqual(adds[2]['Code'], 'Fresh Water')
         for expected, actual in zip(lab.iloc[1:4].to_dict('records'), [conv[1],adds[0],adds[1]]):
             self.assertEqual(actual['Mass'],expected['Mass'])
             self.assertEqual(actual['Concentration'],expected['Concentration'])
