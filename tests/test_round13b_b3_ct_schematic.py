@@ -544,7 +544,7 @@ def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
             continue
         if name == 'phase_5_cement.py':
             import hashlib
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3a30e2a0d42316b34d0c15b88ef7f2c539e8c1b38b48bd8a0ed614e6704469de'
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14'
             continue
         reference='184cc888552f54df6a1d02fd0bdca16b77e358a4'
         source = Path(name).read_bytes()

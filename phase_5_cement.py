@@ -59,7 +59,11 @@ def _normalize_additive_rows(data: pd.DataFrame, previous=None) -> pd.DataFrame:
 
 def _commit_custom_identity(slurry: str, row_index: int, field: str, widget_key: str,
                             revision_key: str) -> None:
-    table = st.session_state["cement_additives_dfs"][slurry].copy(deep=True)
+    table = st.session_state["cement_additives_dfs"][slurry]
+    # A retired Custom input can still fire when a dropdown edit takes over its row.
+    if row_index not in table.index or materials_db.resolve_known_material(table.at[row_index, "Name"]):
+        return
+    table = table.copy(deep=True)
     table.at[row_index, field] = st.session_state[widget_key].strip()
     st.session_state["cement_additives_dfs"][slurry] = _normalize_additive_rows(table)
     # Reuse the editor revision so its old source/deltas cannot undo this edit.
