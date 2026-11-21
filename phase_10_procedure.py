@@ -383,7 +383,7 @@ def build_ordered_notes(
             elif len(set(water)) == 1:
                 detail = f"{stage_label} and each stage {water[0]} bbl. fresh water."
             else:
-                detail = f"{stage_label}: {_summary_join(water)} bbl. fresh water, respectively."
+                detail = f"{stage_label}: {_summary_join(water)} bbl. fresh water."
             mix_note = (f"Mix above Additives in {projection['display_water_bbl']:.1f} bbl. fresh water "
                         f"at {projection['tank_name']}. ({detail})")
         else:
@@ -885,10 +885,23 @@ def _ct_procedure(state):
     ]
     for name in state["fluids_config"]["active"]:
         record = state["fluid_data"][name]
-        planned = "Planned " if name == "Displacement Fluid" else ""
-        lines.append(sc.next(f"{planned}Pump {record['volume']:g} bbl {record['material_name']} as {name} "
-            f"({record['density']} pcf) at {_word_fluid_number(record['pump_rate'], 1)} bpm; "
-            f"calculated duration {record['duration_min']:.2f} min."))
+        volume = _word_fluid_number(record["volume"], 1)
+        material = record["material_name"] or name.lower()
+        if name == "Main":
+            count = projection["count"]
+            stages = {1: "One stage", 2: "Two stages", 3: "Three stages"}[count]
+            amounts = [_word_fluid_number(amount, 1) for amount in projection["cement_bbl"]]
+            if count > 1 and len(set(amounts)) == 1:
+                detail = f"{stages} and each stage {amounts[0]} bbl."
+            else:
+                detail = f"{stages}: {_summary_join(amounts)} bbl."
+            instruction = f"Mix and pump {volume} bbl Main cement slurry ({record['density']} pcf). ({detail})"
+        elif name == "Displacement Fluid":
+            instruction = f"Displace cement slurry with {volume} bbl {material} (planned; confirm final volume at rig site)."
+        else:
+            role = f" as {name.lower()}" if material.casefold() != name.casefold() else ""
+            instruction = f"Pump {volume} bbl {material}{role}."
+        lines.append(sc.next(instruction))
     lines += [
         sc.next("Displacement Volume: Calculate at rig site. The Phase IV Displacement Fluid volume and time are planning values; confirm the final field displacement at the rig."),
         sc.next(f"POOH Coiled Tubing to at least 30 m above Main TOC ({interval['top_depth']:.1f} m MD); confirm the withdrawal position at rig site."),
@@ -1336,7 +1349,8 @@ def synchronize_report_texts():
         from ct_stages import ct_stage_projection
         stage_projection = ct_stage_projection(state)
         summary_source += [stage_projection, {"ct_summary_presentation_revision": 1}]
-        procedure_source += [ct_setting_depth(hardware), stage_projection, {"ct_numeric_display_revision": 1}]
+        procedure_source += [ct_setting_depth(hardware), stage_projection,
+                             {"ct_numeric_display_revision": 1, "ct_pumping_presentation_revision": 1}]
     specs = {
         "exec_summary_text": {
             "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement, summary_config or None),

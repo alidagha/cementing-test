@@ -693,11 +693,23 @@ def test_wnf02_actual_ct_word_rate_only_procedure_change(wnf02_ct,wnf02_previous
     assert ps.prepare_calculations(s)==[]
     before=pickle.dumps((s['fluids_config'],s['fluid_data'],s['cement_params'],s['lab_qc_params']))
     old=wnf02_previous['_ct_procedure'](s);new=report._ct_procedure(s)
-    assert old.replace(f'at {rate} bpm',f'at {display} bpm')==new
-    for r in s['fluid_data'].values():assert f"calculated duration {r['duration_min']:.2f} min." in new
+    old_lines, new_lines = old.splitlines(), new.splitlines()
+    pumping = [i for i, line in enumerate(old_lines) if 'calculated duration' in line]
+    assert len(pumping) == len(s['fluid_data']) == 2
+    assert [new_lines[i] for i in pumping] == [
+        '8. Mix and pump 20.0 bbl Main cement slurry (118 pcf). (Three stages: 7.0, 7.0 and 6.0 bbl.)',
+        '9. Displace cement slurry with 10.0 bbl Mud (planned; confirm final volume at rig site).',
+    ]
+    assert len(old_lines) == len(new_lines)
+    assert all(old_lines[i] == line for i, line in enumerate(new_lines) if i not in pumping)
     with patch.object(report.st,'session_state',s):ctx=report.build_master_context()
     data=wnf_word(ctx);doc=Document(BytesIO(data));text='\n'.join(p.text for p in doc.paragraphs)
-    assert f'at {display} bpm' in text and old!=new
+    assert all(new_lines[i] in text and old_lines[i] not in text for i in pumping)
+    rows = [tuple(cell.text for cell in row.cells) for table in doc.tables for row in table.rows]
+    for name, record in s['fluid_data'].items():
+        assert record['duration_min'] == record['volume'] / eng.require_positive_pump_rate(rate)
+        row = next(row for row in rows if row[0] == name)
+        assert row[4] == display and row[5] != '00:00' and row[6] == record['cumul_time_str']
     assert pickle.dumps((s['fluids_config'],s['fluid_data'],s['cement_params'],s['lab_qc_params']))==before
     (tmp_path/'ct-rate.docx').write_bytes(data)
 
@@ -727,13 +739,28 @@ def test_wnf02_temperature_missing_invalid_markers_and_other_fields(value):
     assert ctx==before
 
 
+@pytest.fixture(scope='module')
+def uat21_b_text_sync():
+    # Fixed accepted CT parent. Keep the U21-A summary identity in the ownership control.
+    source = subprocess.check_output([
+        'git', 'show', '66952a074e6116fd1b933c56f570ba52e9ad21b9:phase_10_procedure.py',
+    ])
+    names = {'_ct_procedure', 'generate_official_procedure', 'synchronize_report_texts'}
+    nodes = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name in names]
+    assert {node.name for node in nodes} == names
+    namespace = dict(vars(report))
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<U21-B text ownership>', 'exec'), namespace)
+    return namespace['synchronize_report_texts']
+
+
 @pytest.mark.parametrize('kind',['auto','manual','reviewed','legacy','legacy_equal','partial'])
 @pytest.mark.parametrize('job',['CSG 9 5/8"','CMT PLUG WITH CT'])
-def test_wnf02_prior_auto_and_unknown_ownership(wnf02_projects,wnf02_ct,wnf02_previous,kind,job):
+def test_wnf02_prior_auto_and_unknown_ownership(wnf02_projects,wnf02_ct,wnf02_previous,uat21_b_text_sync,kind,job):
     s=deepcopy(wnf02_ct) if job=='CMT PLUG WITH CT' else wnf02_projects(job)
     for name in s['fluids_config']['active']:s['fluids_config']['params'][name]['pump_rate']='5.00'
     ps.refresh_fluids(s);s.pop('procedure_text',None);s.get('report_text_state',{}).pop('procedure_text',None)
-    old=wnf_sync(s,wnf02_previous['synchronize_report_texts'])
+    previous = uat21_b_text_sync if job == 'CMT PLUG WITH CT' else wnf02_previous['synchronize_report_texts']
+    old=wnf_sync(s,previous)
     if kind in ('manual','reviewed'):
         s['procedure_text']+='\nOwner reviewed operational instruction, preserve 0.70 literally.'
         if kind=='reviewed':ps.accept_report_text(s,'procedure_text',old['procedure_text']['generated'],old['procedure_text']['signature'])
