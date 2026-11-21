@@ -666,7 +666,9 @@ import math
 import os
 import sys
 from collections import OrderedDict
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -2413,12 +2415,52 @@ def _hb_q_pipe(G, R, n, K, ty, N=800):
                           + up * rp ** 2 / 2.0)
 
 
-def _hb_solve_G(kind, q, dims, n, K, ty, N=120):
+_HB_QUADRATURE_SCOPE = ContextVar('vertical_hb_quadrature', default=None)
+_HB_QUADRATURE_CACHE_MAX = 16384
+
+
+def _hb_quadrature(fluid_id, kernel, inputs, gradient):
+    # fluid_id isolates equal parameters on distinct native fluids.
+    return kernel(gradient, *inputs)
+
+
+def _hb_quadrature_evaluator(original, kind, dims, n, K, ty, N, fluid):
+    cache = _HB_QUADRATURE_SCOPE.get()
+    if cache is None or fluid is None:
+        return original
+    # Reuse only finite binary64 keys. The bounds certify that the frozen
+    # kernels cannot overflow or divide by zero (largest power <= 9,
+    # geometry/gradient exponents <= 16/32, and viscosity power <= 128).
+    # Underflow remains possible; preserve any requested underflow handling.
+    if (kind not in ('pipe', 'slot') or len(dims) != (1 if kind == 'pipe' else 2)
+            or type(N) is not int or not 2 <= N <= 1024
+            or any(type(value) is not float for value in (*dims, n, K, ty))
+            or not all(2.0**-16 <= value <= 2.0**16 for value in (*dims, K))
+            or not 0.125 <= n <= 4.0
+            or not (ty == 0.0 and math.copysign(1.0, ty) > 0.0 or 2.0**-16 <= ty <= 2.0**16)
+            or np.geterr()['under'] != 'ignore'):
+        return original
+    kernel = _hb_q_slot if kind == 'slot' else _hb_q_pipe
+    inputs = (*dims, n, K, ty, N)
+    fluid_id = id(fluid)
+
+    def evaluate(gradient):
+        # For positive finite built-in floats, equality also implies bit
+        # equality. Zeroes, nonfinite values and alternate dtypes bypass.
+        if type(gradient) is float and 2.0**-32 <= gradient <= 2.0**32:
+            return cache(fluid_id, kernel, inputs, gradient)
+        return original(gradient)
+
+    return evaluate
+
+
+def _hb_solve_G(kind, q, dims, n, K, ty, N=120, *, fluid=None):
     """Invert q(G) by bisection (TEST-1 schedule, N=120)."""
     glo = (2.0 * ty / (dims[0] if kind == 'slot' else 2.0 * dims[0])) \
         if ty > 0 else 1e-9
     f = (lambda G: _hb_q_slot(G, dims[0], dims[1], n, K, ty, N)) \
         if kind == 'slot' else (lambda G: _hb_q_pipe(G, dims[0], n, K, ty, N))
+    f = _hb_quadrature_evaluator(f, kind, dims, n, K, ty, N, fluid)
     ghi = max(glo * 2.0 + 1.0, 1.0)
     for _ in range(80):
         if f(ghi) > q:
@@ -2462,7 +2504,7 @@ def _hb_G_cached(fl, kind, dims, q, n, K, ty):
         except Exception:
             pass
         return G
-    G = _hb_solve_G(kind, q, dims, n, K, ty)
+    G = _hb_solve_G(kind, q, dims, n, K, ty, fluid=fl)
     try:
         cache[key] = G
         if len(cache) > _HB_CACHE_MAX:
@@ -3195,14 +3237,20 @@ def simulate(job: JobDesign) -> SimResult:
     def state_heads():
         return head_pa(pipe, chan_pipe, fluids), head_pa(ann, chan_ann, fluids)
 
+    quadrature_cache = lru_cache(maxsize=_HB_QUADRATURE_CACHE_MAX)(_hb_quadrature)
+
     def fric_pair(q_bpm):
         if frictionless:
             return 0.0, 0.0
         q = q_bpm * BBL_TO_M3 / 60.0
-        return (fric_col_pa(pipe, chan_pipe, q, fluids, geo, True),
-                fric_col_pa(ann, chan_ann, q, fluids, geo, False))
+        cache_token = _HB_QUADRATURE_SCOPE.set(quadrature_cache)
+        try:
+            return (fric_col_pa(pipe, chan_pipe, q, fluids, geo, True),
+                    fric_col_pa(ann, chan_ann, q, fluids, geo, False))
+        finally:
+            _HB_QUADRATURE_SCOPE.reset(cache_token)
 
-    def solve_freefall(yield_pa=0.0):
+    def solve_freefall(yield_pa=0.0, *, normal_below=None, slew_bounds=None):
         """Pipe-heavy branch: Q with Hp - Fp(Q) - BP - Ha - Fa(Q) - Y = 0.
         yield_pa > 0 only in the post-job tail (D13 static gel)."""
         Hp, Ha = state_heads()
@@ -3221,9 +3269,19 @@ def simulate(job: JobDesign) -> SimResult:
                 lo = mid
             else:
                 hi = mid
+            # The remaining search stays inside this bracket. A certified
+            # normal pumping branch does not use the root at all.
+            if normal_below is not None and hi < normal_below:
+                return None
+            if slew_bounds is not None:
+                lower, upper = slew_bounds
+                if lo > upper:
+                    return upper
+                if hi < lower:
+                    return lower
         return 0.5 * (lo + hi)
 
-    def solve_reverse(yield_pa=0.0):
+    def solve_reverse(yield_pa=0.0, *, slew_bounds=None, stop_at_fixed_midpoint=False):
         """Annulus-heavy branch: Q with Ha - Fa(Q) - Hp - Fp(Q) - Y = 0."""
         Hp, Ha = state_heads()
 
@@ -3237,10 +3295,22 @@ def simulate(job: JobDesign) -> SimResult:
             return 0.0
         for _ in range(80):
             mid = 0.5 * (lo + hi)
+            fixed_midpoint = stop_at_fixed_midpoint and (mid == lo or mid == hi)
             if psi(mid) > 0.0:
                 lo = mid
             else:
                 hi = mid
+            if slew_bounds is not None:
+                lower, upper = slew_bounds
+                if lo > upper:
+                    return upper
+                if hi < lower:
+                    return lower
+            # Once rounded to an endpoint, an update either leaves the
+            # bracket unchanged or collapses it to mid. The first evaluation
+            # and the slew checks still run in their original order.
+            if fixed_midpoint:
+                return mid
         return 0.5 * (lo + hi)
 
     # Observation-only native tokens; never consulted by simulation decisions.
@@ -3332,7 +3402,9 @@ def simulate(job: JobDesign) -> SimResult:
                 q_net, q_out = r_in, r_in
                 whp = max(0.0, (BP + Ha - Hp) * KPSI_PER_PA)
             elif static > 1e-6:                       # pipe side heavier
-                q_ff = solve_freefall()
+                threshold = r_in + 1e-9
+                normal_below = threshold if not float_on or gap <= 1e-9 else None
+                q_ff = solve_freefall(normal_below=normal_below)
                 # ---- DOC55 (F4): closed-form free-fall/void equilibrium --
                 # Void volume gap* at which the fall drive exactly equals
                 # the pump rate: Hp(gap*) - Fp(r_in) - BP - Ha - Fa(r_in)
@@ -3354,7 +3426,7 @@ def simulate(job: JobDesign) -> SimResult:
                               / _eps)
                     if _kappa > 0.0:
                         _gap_star = max(gap + _drive / _kappa, 0.0)
-                if q_ff > r_in + 1e-9:
+                if q_ff is not None and q_ff > threshold:
                     branch = 'freefall'
                     exc = q_ff - r_in
                     # DOC55 (F4): the void may not step past equilibrium
@@ -3509,9 +3581,10 @@ def simulate(job: JobDesign) -> SimResult:
             elif static > 0.0:
                 branch = 'tail_ff'
                 tail_active = True
-                q_ff = solve_freefall(yield_pa=Y)
-                q_ff = min(max(q_ff, q_ff_state[0] - SLEW_Q * step_dt),
-                           q_ff_state[0] + SLEW_Q * step_dt)
+                lower = q_ff_state[0] - SLEW_Q * step_dt
+                upper = q_ff_state[0] + SLEW_Q * step_dt
+                q_ff = solve_freefall(yield_pa=Y, slew_bounds=(lower, upper))
+                q_ff = min(max(q_ff, lower), upper)
                 q_ff_state[0] = max(q_ff, 0.0)
                 q_net = 0.0
                 q_out = q_ff
@@ -3524,9 +3597,11 @@ def simulate(job: JobDesign) -> SimResult:
             else:
                 branch = 'tail_rev'
                 tail_active = True
-                q_rev = solve_reverse(yield_pa=Y)
-                q_rev = min(max(q_rev, q_rev_state[0] - SLEW_Q * step_dt),
-                            q_rev_state[0] + SLEW_Q * step_dt)
+                lower = q_rev_state[0] - SLEW_Q * step_dt
+                upper = q_rev_state[0] + SLEW_Q * step_dt
+                q_rev = solve_reverse(yield_pa=Y, slew_bounds=(lower, upper),
+                                      stop_at_fixed_midpoint=True)
+                q_rev = min(max(q_rev, lower), upper)
                 q_rev_state[0] = max(q_rev, 0.0)
                 q_net = 0.0
                 q_out = 0.0
