@@ -373,11 +373,23 @@ def build_ordered_notes(
 
     # --- One "Mix Additives" note per active slurry, in slurry order ---
     for s in slurries_payload:
-        tank = s.get("mixing_tank") or "Mud Reserve Tanks"
-        total_water = s.get("total_water_bbl", 0.0)
-        mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         if job_type == materials_db.CT_JOB and s.get("name") == "Main":
-            mix_note += " " + s["ct_stage_note"]
+            projection = s["ct_mixing_water"]
+            count = projection["count"]
+            stage_label = {1: "One stage", 2: "Two stages", 3: "Three stages"}[count]
+            water = [f"{volume:.1f}" for volume in projection["water_bbl"]]
+            if count == 1:
+                detail = f"{stage_label}: {water[0]} bbl. fresh water."
+            elif len(set(water)) == 1:
+                detail = f"{stage_label} and each stage {water[0]} bbl. fresh water."
+            else:
+                detail = f"{stage_label}: {_summary_join(water)} bbl. fresh water, respectively."
+            mix_note = (f"Mix above Additives in {projection['display_water_bbl']:.1f} bbl. fresh water "
+                        f"at {projection['tank_name']}. ({detail})")
+        else:
+            tank = s.get("mixing_tank") or "Mud Reserve Tanks"
+            total_water = s.get("total_water_bbl", 0.0)
+            mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         s["note_mix"] = counter.next(mix_note)
 
     if spacer_payload is not None:
@@ -1688,8 +1700,11 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             }
         })
         if job_type == materials_db.CT_JOB:
-            from ct_stages import ct_stage_projection, stage_note
-            slurries_payload[-1]["ct_stage_note"] = stage_note(ct_stage_projection(st.session_state))
+            from ct_stages import ct_stage_projection
+            projection = ct_stage_projection(st.session_state)
+            slurries_payload[-1]["ct_mixing_water"] = {
+                key: projection[key] for key in ("count", "water_bbl", "display_water_bbl", "tank_name")
+            }
         # BUG-04: populate the four placement keys the template's per-slurry
         # placement block consumes (top/bottom/excess_oh/excess_csg).
         _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,
