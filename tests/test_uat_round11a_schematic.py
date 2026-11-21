@@ -485,6 +485,12 @@ def test_real_word_build_consumes_explicit_drawing_authority_and_rebuilds_fresh(
     assert "Well schematic: Not provided." not in [p.text for p in document.paragraphs]
     (tmp_path / (case_name + ".docx")).write_bytes(app.session_state["_compiled_doc_bytes"])
     (tmp_path / (case_name + ".png")).write_bytes(images[0])
+    from PIL import Image
+    _, embedded_png = schematic_picture(document)
+    assert embedded_png == images[0]
+    with Image.open(BytesIO(embedded_png)) as image:
+        colors = dict((rgb, count) for count, rgb in image.convert("RGB").getcolors(image.width * image.height))
+        assert colors[(0, 128, 0)] > 0
     from project_state import is_project_key
     saved = {key: audit.namespace["serialize_item"](value) for key, value in app.session_state.to_dict().items()
              if is_project_key(key)}
@@ -1346,3 +1352,67 @@ def test_r15a_axis_literal_boundaries_and_rendered_extents(depth,axis,ticks,tmp_
 def test_r15a_axis_preserves_invalid_depth_rejection(value):
     import well_schematic_engine as engine
     with pytest.raises(ValueError):engine.calculate_dynamic_depth_axis(value)
+
+
+def assert_operation_green_pixels_only(before, after):
+    """Preserve every previous red/blue/alpha pixel and isolate the green increase."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(before) as baseline, Image.open(after) as current:
+        assert current.size == baseline.size and current.info["dpi"] == baseline.info["dpi"]
+        old = np.asarray(baseline.convert("RGBA"))
+        new = np.asarray(current.convert("RGBA"))
+    assert np.array_equal(old[:, :, [0, 2, 3]], new[:, :, [0, 2, 3]])
+    changed = new[:, :, 1] != old[:, :, 1]
+    assert changed.any()
+    assert np.all(new[:, :, 1][changed] > old[:, :, 1][changed])
+    assert np.any(np.all(new[:, :, :3][changed] == (0, 128, 0), axis=1))
+
+
+@pytest.mark.parametrize("variant,operations", [
+    ("plug", {"CMT PLUG @ 2800–3350 m"}),
+    ("ct", {"CMT PLUG @ 3470–3527 m"}),
+    ("lap", {'7" LNR Lap Squeeze @ 2140 m'}),
+    ("shoe", {'7" LNR Shoe Squeeze @ 3128 m'}),
+    ("point", {'7" LNR Squeeze @ 2500 m'}),
+    ("wall", {"CMT SQUEEZE @ 150 m"}),
+    ("hole", {"CMT SQUEEZE @ 3000 m"}),
+    ("complex", {"CMT PLUG @ 3650–3800 m", '3 1/2" LNR Lap Squeeze @ 4280 m'}),
+    ("casing", set()),
+])
+def test_uat20_labels_color_only_actual_operations(variant, operations, tmp_path, monkeypatch):
+    import well_schematic_adapter as schematic
+    import well_schematic_engine as engine
+
+    if variant == "ct":
+        from test_round13b_b3_ct_schematic import state
+        projection = schematic.prepare_schematic(state())
+        assert projection["available"] is True
+        payload = projection["payload"]
+        missing = schematic.prepare_schematic(state("partial"))
+        assert missing["available"] is False and missing["payload"] is None
+    elif variant in ("lap", "shoe", "point"):
+        payload = engine.get_preset_schematic_data("squeeze_7in")
+        payload["squeezes"][0].update(depth_m={"lap": 2140., "shoe": 3128., "point": 2500.}[variant],
+                                     target_kind=variant)
+    elif variant == "wall":
+        payload = radial_reference_payload()
+        payload["squeezes"] = [{"depth_m": 150., "wall_diameter_in": 20., "target_kind": "point"}]
+    elif variant == "hole":
+        source = remaining_case("CMT SQUEEZE", "add_hole")
+        options = schematic.additional_drawing_inputs(source)["squeeze_targets"]
+        source["schematic_config"] = {"version": 1, "squeeze_target_id": next(
+            key for key, value in options.items() if value["target_id"] == "open-hole")}
+        payload = schematic.prepare_schematic(source)
+    elif variant == "casing":
+        payload = radial_reference_payload()
+    else:
+        payload = engine.get_preset_schematic_data("cmt_plug_lap" if variant == "plug" else "full_master_well")
+
+    artists = rendered_radial_artists(payload, tmp_path / f"{variant}.png", monkeypatch)
+    colors = {artist.get_text(): artist.get_color() for artist in artists["texts"] if artist.get_zorder() == 3.6}
+    print(variant, colors)
+    assert operations <= colors.keys()
+    assert {label for label, color in colors.items() if color == "#008000"} == operations
+    assert all(colors[label] == "black" for label in colors.keys() - operations)

@@ -10,6 +10,7 @@ from engineering_tools import compute_phase_status, WORD_ADVISORY_PHASES
 from project_state import (is_project_key, invalidate_document, restore_canonical_fields,
                            DOC_CONTROL_DEFAULTS, WELL_DATA_DEFAULTS, migrate_material_properties)
 from project_io import content_signature, decode_project, replace_project_state
+from project_filenames import cementing_program_basename
 from placement import EXCESS_FIELDS
 
 restore_canonical_fields(st.session_state)
@@ -279,9 +280,7 @@ st.markdown("---")
 _project_manager_slot.title("Project Manager")
 
 # 1. Export / Download Project
-well_label = str(st.session_state.get("well_name", "")).strip()
-safe_well_name = "".join(c for c in well_label if c.isalnum() or c in ("-", "_")).strip()
-project_filename = f"Cementing_Project_{safe_well_name or 'Untitled'}.json"
+project_filename = cementing_program_basename(st.session_state.get("doc_control", {})) + ".json"
 
 # sort_keys=True makes this deterministic across reruns regardless of any
 # incidental dict-ordering differences, which matters here specifically

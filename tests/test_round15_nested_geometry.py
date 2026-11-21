@@ -575,7 +575,7 @@ def test_r18c_section_guards_do_not_reinterpret_unrelated_scalar_admission(r18c_
 
 @pytest.mark.parametrize('job',['CSG 13 3/8"','CSG 9 5/8"','LNR 7"','LNR 5"','LNR 4 1/2"',
     'TIE BACK LNR 7"','TIE BACK LNR 5"','TIE BACK LNR 4 1/2"','CMT PLUG','CMT SQUEEZE','CMT PLUG WITH CT'])
-def test_r18c_nontapered_job_png_bytes_equal_the_independent_merged_renderer(job,r18c_reference_renderer,tmp_path):
+def test_r18c_nontapered_job_png_matches_archived_renderer_except_operation_color(job,r18c_reference_renderer,tmp_path):
     import well_schematic_adapter as schematic
     import well_schematic_engine as engine
     if job=='CMT PLUG WITH CT':
@@ -594,7 +594,11 @@ def test_r18c_nontapered_job_png_bytes_equal_the_independent_merged_renderer(job
     assert not any('sections' in c for c in drawing['casings'])
     r18c_reference_renderer(drawing,str(tmp_path/'original.png'),dpi=90,strict=True)
     engine.render_well_schematic(drawing,str(tmp_path/'current.png'),dpi=90,strict=True)
-    assert (tmp_path/'current.png').read_bytes()==(tmp_path/'original.png').read_bytes()
+    if job in ('CMT PLUG', 'CMT PLUG WITH CT', 'CMT SQUEEZE'):
+        from test_uat_round11a_schematic import assert_operation_green_pixels_only
+        assert_operation_green_pixels_only(tmp_path/'original.png', tmp_path/'current.png')
+    else:
+        assert (tmp_path/'current.png').read_bytes()==(tmp_path/'original.png').read_bytes()
     assert pickle.dumps(source)==before
 
 

@@ -34,6 +34,7 @@ except ModuleNotFoundError as exc:
     # A deployment without the root requirements.txt must still let the
     # operator open Phase X and read the missing-dependency instruction.
     DocxTemplate = None
+from project_filenames import cementing_program_basename
 from project_state import (fingerprint, prepare_calculations, sync_report_text,
                            accept_report_text, restore_previous_text, invalidate_document)
 
@@ -43,27 +44,7 @@ SLURRY_ARCHETYPES = materials_db.PLACEMENT_SLURRIES
 REPORT_SLURRY_ORDER = ["Lead", "Lead #1", "Lead #2", "Main", "Tail"]
 
 def _word_download_filename(doc_control):
-    """Filename-only view of Phase I metadata; never edit the report or sources."""
-    parts = ["Cementing Program"]
-    for field in ("job_type", "well_location", "well_name", "rig_name", "proposal_number", "revision_no"):
-        value = doc_control.get(field)
-        text = "" if value is None else str(value).strip()
-        if field == "job_type":
-            size = re.fullmatch(r'(CSG|LNR|TIE BACK LNR)\s+(\d{1,3}(?:\.\d{1,6})?)'
-                                r'(?:\s+(\d{1,2})/(2|4|8|16|32|64))?\s*["″”]?', text)
-            if size and (size[3] is None or int(size[3]) < int(size[4])):
-                inches = Decimal(size[2])
-                if size[3] is not None:
-                    inches += Decimal(size[3]) / Decimal(size[4])
-                text = f"{size[1]} {format(inches.normalize(), 'f')}"
-        marker = {"proposal_number": "PR", "revision_no": "R"}.get(field)
-        if marker:
-            text = re.sub(rf"^(?:{marker}\s*#\s*)+", "", text, flags=re.IGNORECASE)
-        text = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', " ", text)
-        text = " ".join(text.split()).rstrip(". ")
-        if text:
-            parts.append(f"{marker} #{text}" if marker else text)
-    return " - ".join(parts) + ".docx"
+    return cementing_program_basename(doc_control) + ".docx"
 
 
 def _word_program_quantities(row):

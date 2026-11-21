@@ -353,8 +353,44 @@ def test_incomplete_schematic_is_advisory_but_procedure_gate_remains():
     assert not any(isinstance(v,bytes) for k,v in s.items() if k.startswith('_well_schematic'))
 
 
+UAT20_OPERATION_COLOR_CHANGES = (
+    (
+        '        top, bot = float(p["top_md"]), float(p["bottom_md"])\n'
+        '        reqs.append({"depth": 0.5 * (top + bot),\n'
+        '                     "text": f"CMT PLUG @ {_fmt_depth(top)}–{_fmt_depth(bot)} m"})\n',
+        '        top, bot = float(p["top_md"]), float(p["bottom_md"])\n'
+        '        reqs.append({"depth": 0.5 * (top + bot), "is_operation": True,\n'
+        '                     "text": f"CMT PLUG @ {_fmt_depth(top)}–{_fmt_depth(bot)} m"})\n',
+    ),
+    (
+        '                text = f"{size} {prefix} Squeeze @ {_fmt_depth(d)} m"\n'
+        '        reqs.append({"depth": d, "text": text})\n'
+        '\n',
+        '                text = f"{size} {prefix} Squeeze @ {_fmt_depth(d)} m"\n'
+        '        reqs.append({"depth": d, "text": text, "is_operation": True})\n'
+        '\n',
+    ),
+    (
+        '\n'
+        '        # 8. Column 3 (or Column 2 in schematic_right): operation-neutral labels.\n'
+        '        # Collision shifts are visual only. No leader lines are drawn.\n',
+        '\n'
+        '        # 8. Column 3 (or Column 2 in schematic_right): well schematic labels.\n'
+        '        # Collision shifts are visual only. No leader lines are drawn.\n',
+    ),
+    (
+        '            t = ax.text(lbl_center_x, y, r["text"], ha="center", va="center", fontsize=LABEL_PT,\n'
+        '                        color="black", family=FONT_FAMILY, zorder=3.6)\n'
+        '            w_px = t.get_window_extent(renderer=renderer).width\n',
+        '            t = ax.text(lbl_center_x, y, r["text"], ha="center", va="center", fontsize=LABEL_PT,\n'
+        '                        color="#008000" if r.get("is_operation") else "black", family=FONT_FAMILY, zorder=3.6)\n'
+        '            w_px = t.get_window_extent(renderer=renderer).width\n',
+    ),
+)
+
+
 def r18c_original_renderer_source(source):
-    """Invert only the exact approved section-rendering delta; fixed golds stay intact."""
+    """Invert only exact approved section and label changes against the fixed reference."""
     reference = subprocess.check_output(['git','show','cdb58925886d4ee649d583052ea138286f1e6f79:well_schematic_engine.py'])
     edits = [['def validate_schematic_data(data: dict) -> dict:\n',
       'def _pipe_at(pipe: dict, depth: float) -> dict:\n'
@@ -459,12 +495,12 @@ def r18c_original_renderer_source(source):
      ['            target_hw = hw_pipe(float(target["size_in"]))\n',
       '            target_hw = hw_pipe(float(_pipe_at(target, d)["size_in"]))\n']]
     expected = reference
-    for old, new in edits:
+    for old, new in [*edits, *UAT20_OPERATION_COLOR_CHANGES]:
         old, new = old.encode(), new.encode()
         assert expected.count(old) == 1
         expected = expected.replace(old, new)
     exact_source_match = source == expected
-    assert exact_source_match, "Unapproved schematic source change outside the exact R18-C section delta"
+    assert exact_source_match, "Unapproved schematic source change outside the exact R18-C and UAT20 deltas"
     return reference
 
 
@@ -530,6 +566,23 @@ def test_r18c_section_identity_rejects_unapproved_geometry_and_rendering_mutatio
     assert source.count(old)==1
     assert_authorized_radial_renderer(source)
     with pytest.raises(AssertionError):assert_authorized_radial_renderer(source.replace(old,new))
+
+
+@pytest.mark.parametrize("mutation", ("wrong green", "all labels", "missing plug flag", "relocated squeeze flag"))
+def test_uat20_exact_renderer_lock_rejects_label_overlay_mutations(mutation):
+    source = Path("well_schematic_engine.py").read_bytes()
+    assert_authorized_radial_renderer(source)
+    old, new = UAT20_OPERATION_COLOR_CHANGES[1]
+    old, new = old.encode(), new.encode()
+    bad = {
+        "wrong green": source.replace(b"#008000", b"#00FF00", 1),
+        "all labels": source.replace(b' if r.get("is_operation") else "black"', b"", 1),
+        "missing plug flag": source.replace(b', "is_operation": True', b"", 1),
+        "relocated squeeze flag": source.replace(new, old, 1) + b"\n" + new,
+    }[mutation]
+    assert bad != source
+    with pytest.raises(AssertionError):
+        assert_authorized_radial_renderer(bad)
 
 
 def test_r18c_section_identity_rejects_complete_feature_reversion():
