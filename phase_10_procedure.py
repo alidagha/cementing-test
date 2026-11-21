@@ -543,10 +543,11 @@ def separate_lab_tables(lab_grid_df: pd.DataFrame, phase5_df: pd.DataFrame = Non
         elif material_type != "Cement" and mat_lower != "base water":
             material_type = str(source["Material Type"]).strip() if source is not None else (known[1] if known else mat)
 
+        is_cup_water = mat == "Base Water" and unit == "BWOW"
         row_dict = {
-            "Material Type": material_type,
+            "Material Type": "Water" if is_cup_water else material_type,
             "Name": mat,
-            "Code": mat,
+            "Code": "Fresh Water" if is_cup_water else mat,
             "Lot Number": lot if lot and lot != "-" else "-",
             "Concentration": conc,
             "Design Unit": unit,

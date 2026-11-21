@@ -468,6 +468,26 @@ def build_lab_df_from_phase5(
     
     return pd.DataFrame(lab_rows)
 
+def _cement_lab_display(grid):
+    view = grid.copy()
+    water = pd.Series(False, index=view.index, dtype="boolean")
+    if {"Material", "Unit"}.issubset(view.columns):
+        water = (view["Material"].eq("Base Water") & view["Unit"].eq("BWOW")).astype("boolean")
+        view.loc[water, "Material"] = "Fresh Water"
+    view["_cement_base_water"] = water
+    return view
+
+
+def _canonical_cement_lab_grid(edited, previous):
+    # Only the original water row has a presentation alias. New rows and
+    # edits to other materials keep the exact names entered by the operator.
+    water = previous["_cement_base_water"].reindex(edited.index).fillna(False)
+    grid = edited.drop(columns="_cement_base_water")
+    if water.any():
+        grid.loc[water & grid["Material"].eq("Fresh Water"), "Material"] = "Base Water"
+    return grid
+
+
 def _spacer_lab_display(grid):
     """A view only: Cement lab precision, with the original Spacer units."""
     view = grid.copy(deep=True)
@@ -714,9 +734,11 @@ def render():
             editor_key = f"_editor_lab_{get_slurry_key(slurry, 'tbl')}_{load_sig}_{st.session_state.get(f'_lab_grid_revision_{slurry}', 0)}"
             
             edited_lab_df = persistent_data_editor(
-                current_lab_df,
+                _cement_lab_display(current_lab_df) if full_lab else current_lab_df,
                 persist_to=("lab_grid_dfs", slurry),
+                normalize=_canonical_cement_lab_grid if full_lab else None,
                 column_config={
+                    "_cement_base_water": None,
                     # Allow an unfinished row to reach session state as soon as
                     # its first cell is edited. Completeness is checked by the
                     # phase status and export guard when the user is done.
@@ -731,6 +753,9 @@ def render():
                 width='stretch'
             )
             
+            if full_lab:
+                edited_lab_df = st.session_state["lab_grid_dfs"][slurry]
+
             # Defensive validation against deleted rows
             if edited_lab_df is None:
                 edited_lab_df = pd.DataFrame(columns=LAB_GRID_COLUMNS)

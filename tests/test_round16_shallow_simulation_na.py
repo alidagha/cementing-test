@@ -18,6 +18,7 @@ import phase_10_procedure as report
 import pumping_simulation as pumping
 from project_state import fingerprint
 import test_audit_regressions as audit
+from test_round13b_b4_ct_report import valid_ct
 from test_uat_round9g_centralizer_word import BODY, IX, X, ix_region
 
 # Independent approved identities: do not derive the expectation from production.
@@ -32,6 +33,125 @@ def applicable_state():
     # Existing explicitly synthetic measured prerequisites, genuine UI lab review
     # and real Centralizer execution; never mock a successful solver/review.
     return audit.AuditRegressions().configured_app('CSG 9 5/8"').session_state.to_dict()
+
+
+@pytest.mark.parametrize('job', (*TARGETS, 'CMT PLUG', materials_db.CT_JOB, 'CMT SQUEEZE'))
+def test_uat20_nonhydraulic_lab_only_requires_cement(job, request, tmp_path):
+    from project_state import prepare_calculations
+    from standalone_spacer import CONFIG_KEY
+
+    case = audit.AuditRegressions()
+    source = (deepcopy(request.getfixturevalue('valid_ct')) if job == materials_db.CT_JOB else
+              case.configured_app(job, optional_fluids=True, include_standalone_spacer=False).session_state.to_dict())
+    cfg = source['fluids_config']
+    cfg['active'].append('Spacer')
+    cfg['params']['Spacer'] = dict(volume=20., density='110', pump_rate='4', material_name='Spacer')
+    source[CONFIG_KEY] = dict(mode='Barite', dead_vol=5., tank_name=materials_db.get_available_tanks(job)[0])
+    for fluid in set(cfg['active']) - {'Main'}:
+        source['lab_qc_params'].pop(fluid, None)
+    app = case.app(audit.round_trip(source))
+    case.phase(app, 'phase7')
+    tabs = [tab.label for tab in app.tabs]
+    status = tools.compute_phase_status(app.session_state)['phase7']
+    issues = prepare_calculations(app.session_state.to_dict())
+    if job == 'CSG 24"':
+        invalid = deepcopy(app.session_state.to_dict())
+        invalid[CONFIG_KEY]['tank_name'] = 'Not a project tank'
+        assert any(issue.startswith('Phase VI:') and 'tank' in issue.lower()
+                   for issue in prepare_calculations(invalid))
+    case.phase(app, 'phase10')
+    build = next((button for button in app.button if button.label == 'Build Word Document'), None)
+    blocked = build is None or build.disabled
+    print(job, tabs, status, issues, 'Build blocked', blocked)
+    assert tabs == ['Main'] and status['level'] == 'ok' and not issues and not blocked
+    build.click().run(timeout=90)
+    case.healthy(app)
+    doc = app.session_state['_compiled_doc_bytes']
+    (tmp_path / 'nonhydraulic.docx').write_bytes(doc)
+    assert 'Pumping simulation charts: Not applicable.' in '\n'.join(p.text for p in Document(BytesIO(doc)).paragraphs)
+
+
+def test_uat20_cement_water_display_and_actual_word(applicable_state, tmp_path, monkeypatch):
+    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '0')
+    case = audit.AuditRegressions()
+    before = applicable_state['lab_grid_dfs']['Main'].copy(deep=True)
+    expected = before.loc[before['Material'] == 'Base Water'].iloc[0]
+    app = case.app(audit.round_trip(deepcopy(applicable_state)))
+    case.phase(app, 'phase7')
+    editor = next(grid for grid in app.dataframe if '_editor_lab_tbl_main_' in grid.proto.id)
+    visible = editor.value
+    assert app.session_state['lab_grid_dfs']['Main'].equals(before)
+    assert app.session_state['lab_qc_params']['Main']['review_signature'] == applicable_state['lab_qc_params']['Main']['review_signature']
+    assert audit.round_trip(app.session_state.to_dict())['lab_grid_dfs']['Main'].equals(before)
+    case.export(app)
+    doc = Document(BytesIO(app.session_state['_compiled_doc_bytes']))
+    observed = [[cell.text for cell in row.cells] for table in doc.tables for row in table.rows
+                if len(row.cells) == 6 and row.cells[1].text in ('Base Water', 'Fresh Water')]
+    (tmp_path / 'water-label.docx').write_bytes(app.session_state['_compiled_doc_bytes'])
+    print('Visible:', visible['Material'].tolist(), 'Word:', observed)
+    assert visible['Material'].tolist().count('Fresh Water') == 1
+    assert 'Base Water' not in visible['Material'].tolist()
+    assert observed == [['Water', 'Fresh Water', expected['Lot No'], '1.0', 'BWOW', expected['Mass']]]
+
+
+def test_uat20_water_lot_first_edit_and_distinct_manual_fresh_water(applicable_state):
+    case = audit.AuditRegressions()
+    app = case.app(audit.round_trip(deepcopy(applicable_state)))
+    case.phase(app, 'phase7')
+    editor = next(grid for grid in app.dataframe if '_editor_lab_tbl_main_' in grid.proto.id)
+    water = next(i for i, material in enumerate(editor.value['Material']) if material == 'Fresh Water')
+    widget_states = app._tree.get_widget_states()
+    event = widget_states.widgets.add()
+    event.id = editor.proto.id
+    event.string_value = json.dumps({
+        'edited_rows': {water: {'Lot No': 'UAT20-LAB-LOT'}},
+        'added_rows': [{'Material': 'Fresh Water', 'Unit': '% BWOC', 'Concentration': '1', 'Mass': '1', 'Lot No': 'USER-ROW'}],
+        'deleted_rows': [],
+    })
+    app._run(widget_states)
+    case.healthy(app)
+    case.phase(app, 'phase5')
+    saved = audit.round_trip(app.session_state.to_dict())
+    rows = saved['lab_grid_dfs']['Main'].set_index('Lot No')
+    assert rows.loc['UAT20-LAB-LOT', 'Material'] == 'Base Water'
+    original = applicable_state['lab_grid_dfs']['Main'].query("Material == 'Base Water'").iloc[0]
+    assert rows.loc['UAT20-LAB-LOT', ['Concentration', 'Unit', 'Mass']].tolist() == original[['Concentration', 'Unit', 'Mass']].tolist()
+    assert rows.loc['USER-ROW', 'Material'] == 'Fresh Water'
+    qc = saved['lab_qc_params']['Main']
+    assert tools.lab_review_signature(qc, saved['lab_grid_dfs']['Main']) != qc['review_signature']
+    assert '_cement_base_water' not in rows.columns
+    restored = case.app(saved)
+    case.phase(restored, 'phase7')
+    assert tools.compute_phase_status(restored.session_state)['phase7']['level'] != 'ok'
+    assert any(button.label == 'Confirm measured lab results' for button in restored.button)
+
+
+def test_uat20_job_switch_keeps_hidden_drafts_and_restores_hydraulic_tabs():
+    case = audit.AuditRegressions()
+    app = case.configured_app('CSG 9 5/8"', optional_fluids=True, include_standalone_spacer=False)
+    before = deepcopy(app.session_state['lab_qc_params']['Spacer Ahead'])
+    case.phase(app, 'phase7')
+    original_tabs = [tab.label for tab in app.tabs]
+    assert {'Main', 'Spacer Ahead', 'Spacer Behind', 'Displacement Fluid (Mud)'}.issubset(original_tabs)
+    for job, expected in (('CSG 24"', ['Main']), ('CSG 9 5/8"', original_tabs)):
+        case.phase(app, 'phase1')
+        app.selectbox(key='_w_job_type').set_value(job).run()
+        case.phase(app, 'phase7')
+        assert [tab.label for tab in app.tabs] == expected
+        assert app.session_state['lab_qc_params']['Spacer Ahead'] == before
+
+
+@pytest.mark.parametrize('job,lab_needed', [
+    ('CSG 24"', False), ('CSG 9 5/8"', True), ('LNR 7"', True), ('TIE BACK LNR 7"', True),
+])
+def test_uat20_scavenger_is_exempt_only_for_nonhydraulic_jobs(job, lab_needed):
+    from project_state import phase7_lab_fluids, refresh_lab_payloads
+
+    source = {'job_type': job, 'fluids_config': {'active': ['Main', 'Scavenger']}}
+    assert ('Scavenger' in phase7_lab_fluids(source)) is lab_needed
+    issues = refresh_lab_payloads(source)
+    assert any(issue.startswith('Scavenger:') for issue in issues) is lab_needed
+    assert any(issue.startswith('Main:') for issue in issues)
 
 
 @pytest.mark.parametrize('job', TARGETS)

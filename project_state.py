@@ -603,11 +603,18 @@ def refresh_preflush(state):
     return []
 
 
+def _cement_lab_only(job):
+    from centralizer_adapter import centralizer_applicable
+
+    return job in materials_db.JOB_TYPES and not centralizer_applicable(job)
+
+
 def phase7_lab_fluids(state, *, include_mud=False):
-    """Phase-VII admission only; A3 hydraulic source routing remains unchanged."""
+    """Phase VII selection shares the existing hydraulic applicability rule."""
+    allowed = materials_db.PHASE7_VISIBLE_LAB_FLUIDS if include_mud else materials_db.PHASE7_LAB_FLUIDS
+    candidates = materials_db.PLACEMENT_SLURRIES if _cement_lab_only(state.get("job_type")) else (*allowed, "Spacer")
     return [fluid for fluid in state.get("fluids_config", {}).get("active", [])
-            if fluid in (*(materials_db.PHASE7_VISIBLE_LAB_FLUIDS if include_mud else materials_db.PHASE7_LAB_FLUIDS), "Spacer")
-            and fluid in available_fluid_types(state)]
+            if fluid in candidates and fluid in available_fluid_types(state)]
 
 
 def mud_lab_source(state):
@@ -743,7 +750,15 @@ def refresh_spacer_lab(state):
 
 
 def spacer_lab_payload(state, *, rebuild=True):
-    """Only a current cup and explicitly confirmed measured rheology are ready."""
+    """Keep the operational cup in Word even when hydraulic lab work is not applicable."""
+    if rebuild and _cement_lab_only(state.get("job_type")):
+        grid = spacer_lab_grid(state)
+        well = state.get("well_data", {})
+        bhct, bhst = well.get("bhct", state.get("bhct")), well.get("bhst", state.get("bhst"))
+        if not lab_temperature_valid(bhct, bhst):
+            raise ValueError("Review BHCT/BHST in Phase II & III")
+        return {"grid": grid, "rheology": {}, "bhct": bhct, "bhst": bhst}
+
     grid = refresh_spacer_lab(state) if rebuild else spacer_lab_grid(state)
     qc = state.get("lab_qc_params", {}).get("Spacer", {})
     if (state.get("lab_source_signatures", {}).get("Spacer") != _spacer_lab_source(state)
@@ -786,7 +801,10 @@ def lab_source_signature(state, slurry):
 
 def refresh_lab_payloads(state):
     issues = []
+    cement_only = _cement_lab_only(state.get("job_type"))
     for slurry in state.get("fluids_config", {}).get("active", []):
+        if cement_only and slurry not in materials_db.PLACEMENT_SLURRIES:
+            continue
         if slurry == "Spacer":
             try:
                 state["lab_payload_Spacer"] = spacer_lab_payload(state)

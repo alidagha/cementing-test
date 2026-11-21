@@ -174,9 +174,74 @@ B1M_PHASE7_CHANGES = ((b'from project_state import lab_source_signature, phase7_
 
 B1M_PHASE7_CHANGES += ((b'all(f in (*materials_db.RHEOLOGY_ONLY_FLUIDS, materials_db.MUD_LAB_FLUID) for f in active_slurries)', b'all(f in materials_db.RHEOLOGY_ONLY_FLUIDS for f in active_slurries)'),)
 
+UAT20_CEMENT_WATER_CHANGES = (
+    (
+        b'\n'
+        b'    return pd.DataFrame(lab_rows)\n'
+        b'\n'
+        b'def _cement_lab_display(grid):\n'
+        b'    view = grid.copy()\n'
+        b'    water = pd.Series(False, index=view.index, dtype="boolean")\n'
+        b'    if {"Material", "Unit"}.issubset(view.columns):\n'
+        b'        water = (view["Material"].eq("Base Water") & view["Unit"].eq("BWOW")).astype("boolean")\n'
+        b'        view.loc[water, "Material"] = "Fresh Water"\n'
+        b'    view["_cement_base_water"] = water\n'
+        b'    return view\n'
+        b'\n'
+        b'\n'
+        b'def _canonical_cement_lab_grid(edited, previous):\n'
+        b'    # Only the original water row has a presentation alias. New rows and\n'
+        b'    # edits to other materials keep the exact names entered by the operator.\n'
+        b'    water = previous["_cement_base_water"].reindex(edited.index).fillna(False)\n'
+        b'    grid = edited.drop(columns="_cement_base_water")\n'
+        b'    if water.any():\n'
+        b'        grid.loc[water & grid["Material"].eq("Fresh Water"), "Material"] = "Base Water"\n'
+        b'    return grid\n'
+        b'\n'
+        b'\n'
+        b'def _spacer_lab_display(grid):\n'
+        b'    """A view only: Cement lab precision, with the original Spacer units."""\n',
+        b'\n'
+        b'    return pd.DataFrame(lab_rows)\n'
+        b'\n'
+        b'def _spacer_lab_display(grid):\n'
+        b'    """A view only: Cement lab precision, with the original Spacer units."""\n',
+    ),
+    (
+        b'            edited_lab_df = persistent_data_editor(\n'
+        b'                _cement_lab_display(current_lab_df) if full_lab else current_lab_df,\n'
+        b'                persist_to=("lab_grid_dfs", slurry),\n'
+        b'                normalize=_canonical_cement_lab_grid if full_lab else None,\n'
+        b'                column_config={\n'
+        b'                    "_cement_base_water": None,\n'
+        b'                    # Allow an unfinished row',
+        b'            edited_lab_df = persistent_data_editor(\n'
+        b'                current_lab_df,\n'
+        b'                persist_to=("lab_grid_dfs", slurry),\n'
+        b'                column_config={\n'
+        b'                    # Allow an unfinished row',
+    ),
+    (
+        b"                width='stretch'\n"
+        b'            )\n'
+        b'            \n'
+        b'            if full_lab:\n'
+        b'                edited_lab_df = st.session_state["lab_grid_dfs"][slurry]\n'
+        b'\n'
+        b'            # Defensive validation against deleted rows\n'
+        b'            if edited_lab_df is None:\n',
+        b"                width='stretch'\n"
+        b'            )\n'
+        b'            \n'
+        b'            # Defensive validation against deleted rows\n'
+        b'            if edited_lab_df is None:\n',
+    ),
+)
+
+
 def r15cd_original_lab_source(source):
-    """Undo only exact approved Mud/caption/Diesel changes; preserve the ORIGINAL file pin."""
-    for after, before in B1M_PHASE7_CHANGES:
+    """Undo exact approved changes while preserving the original historical file pin."""
+    for after, before in UAT20_CEMENT_WATER_CHANGES + B1M_PHASE7_CHANGES:
         assert source.count(after) == 1
         source = source.replace(after, before, 1)
     helper = b'''def _bhsp_display(value):
@@ -221,6 +286,25 @@ def test_r15cd_caption_source_compatibility_rejects_other_changes(old,new):
     assert source.count(old)==1
     with pytest.raises(AssertionError):
         assert hashlib.sha256(r15cd_original_lab_source(source.replace(old,new))).hexdigest()==expected
+
+
+@pytest.mark.parametrize("after,before", UAT20_CEMENT_WATER_CHANGES, ids=("helpers", "projection", "canonical"))
+@pytest.mark.parametrize("mutation", ("changed", "missing", "duplicated", "relocated"))
+def test_uat20_water_inverse_preserves_the_historical_pin(after, before, mutation):
+    import hashlib
+
+    source = Path("phase_7_lab.py").read_bytes()
+    expected = "f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f"
+    assert source.count(after) == 1
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest() == expected
+    mutations = {
+        "changed": source.replace(after, after[:-1] + b"!", 1),
+        "missing": source.replace(after, before, 1),
+        "duplicated": source + after,
+        "relocated": source.replace(after, before, 1) + after,
+    }
+    with pytest.raises(AssertionError):
+        assert hashlib.sha256(r15cd_original_lab_source(mutations[mutation])).hexdigest() == expected
 
 
 @pytest.mark.parametrize('fragment', range(len(B1M_PHASE7_CHANGES)))

@@ -137,13 +137,18 @@ COMBINATIONS=[(),('Spacer Ahead',),('Spacer Behind',),('Spacer Ahead','Spacer Be
 
 
 @pytest.mark.parametrize('fluid',['Spacer Ahead','Spacer Behind'])
-def test_h07_ct_selected_auxiliary_without_phase7_source_still_blocks_report(valid_ct,fluid):
+def test_uat20_ct_selected_auxiliary_retains_program_without_phase7_source(valid_ct,fluid):
     s=deepcopy(valid_ct)
     s['fluids_config']['active'].insert(0,fluid)
     s['fluids_config']['params'][fluid]={'volume':7.5,'density':'80','pump_rate':'0.7-1.2','material_name':fluid}
     s['lab_qc_params'].pop(fluid)
     ps.refresh_fluids(s)
-    with pytest.raises(ValueError,match='Phase VII:.*'+fluid):
+    ctx = context(s)
+    assert fluid in [row['name'] for row in ctx['fluids_train']]
+    assert fluid not in s['lab_qc_params']
+
+    s['lab_qc_params']['Main']['reviewed'] = False
+    with pytest.raises(ValueError, match='Main: Phase VII internal lab results must be confirmed'):
         context(s)
 
 
