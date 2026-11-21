@@ -2018,7 +2018,9 @@ def bug01_reviewed_report_base():
 
 
 @pytest.mark.parametrize('job', BUG01_JOBS)
-def test_bug01_actual_ui_restore_pumping_schematic_and_current_word(bug01_reviewed_report_base, job, tmp_path):
+def test_bug01_actual_ui_restore_pumping_schematic_and_current_word(
+        bug01_reviewed_report_base, job, tmp_path, monkeypatch):
+    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '0')
     import test_audit_regressions as audit
     import project_state as ps
     import phase_9_centralizer as phase9
@@ -2763,7 +2765,7 @@ def test_cfw128_b1_snapshot_pickle_and_clone_cannot_enable_fitting(bug01_reviewe
         with pytest.raises(ValueError):replace(result,**{name:True})
 
 
-def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed_report_base,tmp_path):
+def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed_report_base,tmp_path,monkeypatch):
     import test_audit_regressions as audit
     import project_state as ps
     import materials_db as db
@@ -2805,7 +2807,7 @@ def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed
     assert snapshot_lab_intake(restored,'Displacement Fluid',app_source_sha='a'*40)==result
     second=case.app(restored);case.phase(second,'phase7')
     assert snapshot_lab_intake(second.session_state.to_dict(),'Displacement Fluid',app_source_sha='a'*40)==result
-    # Two real Build-button exports: measured Mud is deliberately outside cement Word.
+    # Compare the two real Legacy Word builds without changing Mud capture or review.
     from test_uat_round10c_integration import build
     from zipfile import ZipFile
     from io import BytesIO
@@ -2813,8 +2815,10 @@ def test_cfw128_b1m_real_mud_editor_confirm_restore_and_consumers(bug01_reviewed
     without_mud=deepcopy(restored)
     without_mud['lab_qc_params'].pop('Displacement Fluid')
     without_mud['lab_source_signatures'].pop('Displacement Fluid')
-    original_doc=build(case.app(without_mud))
-    measured_doc=build(second)
+    with monkeypatch.context() as legacy:
+        legacy.setenv('CFW128_DESIGN_PREDICTION', '0')
+        original_doc=build(case.app(without_mud))
+        measured_doc=build(second)
     (tmp_path/'before-mud.docx').write_bytes(original_doc)
     (tmp_path/'reviewed-mud.docx').write_bytes(measured_doc)
     with ZipFile(BytesIO(original_doc)) as old,ZipFile(BytesIO(measured_doc)) as new:
