@@ -6443,10 +6443,44 @@ def test_cfw128_gate4b_aligned_frozen_channels_and_terminal_observation():
     assert b.diag['event_intervals'][-1][2]==0
 
 
+def gate4b_remove_vertical_cache_additions(tree):
+    import ast
+
+    def same(left, right):
+        return ast.dump(left) == ast.dump(right)
+
+    def remove_exact(nodes, source):
+        expected, = ast.parse(source).body
+        match, = [node for node in nodes if same(node, expected)]
+        nodes.remove(match)
+
+    remove_exact(tree.body, 'from contextvars import ContextVar')
+    remove_exact(tree.body, 'from functools import lru_cache')
+    remove_exact(tree.body, "_HB_QUADRATURE_SCOPE = ContextVar('vertical_hb_quadrature', default=None)")
+    remove_exact(tree.body, '_HB_QUADRATURE_CACHE_MAX = 16384')
+    helpers = {'_hb_quadrature', '_hb_quadrature_evaluator'}
+    added = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in helpers]
+    assert len(added) == len(helpers) and {node.name for node in added} == helpers
+    for helper in added:
+        tree.body.remove(helper)
+    solve = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_hb_solve_G')
+    expected = ast.parse('def f(*, fluid=None): pass').body[0].args
+    actual, = solve.args.kwonlyargs
+    default, = solve.args.kw_defaults
+    assert same(actual, expected.kwonlyargs[0]) and same(default, expected.kw_defaults[0])
+    solve.args.kwonlyargs.clear()
+    solve.args.kw_defaults.clear()
+    remove_exact(solve.body, 'f = _hb_quadrature_evaluator(f, kind, dims, n, K, ty, N, fluid)')
+    lookup = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_hb_G_cached')
+    expected, = ast.parse('G = _hb_solve_G(kind, q, dims, n, K, ty, fluid=fl)').body
+    call, = [node for node in lookup.body if same(node, expected)]
+    call.value.keywords.clear()
+
+
 def gate4b_assert_sources_and_firewall():
     from pathlib import Path
     import ast,hashlib
-    pins={'cfw128_er03_event_aligned_vertical.py':'35452adbe71c0285baea95ea8e73464cfb47c721ec3a3c39cda7b48ee8230dbf',
+    pins={'cfw128_er03_event_aligned_vertical.py':'0c183eafd0b863bc863dfe80143673bc3da81a30603bbfc6cbeb13db9249b993',
           'cfw128_er03_event_aligned_directional.py':'d944f5c5daf1356564f40ac7d2efc3289c0ccdc5a80c8501af2147756df7d24f'}
     parents=('DOC58_SI_CANDIDATE_03_TF2R_ER03.py','DOC58_G2D1_DIR_SCRATCH_01_ER03.py')
     for (name,pin),parent in zip(pins.items(),parents):
@@ -6457,6 +6491,8 @@ def gate4b_assert_sources_and_firewall():
         if 'directional' in name:
             node=next(n for n in after.body if isinstance(n,ast.ImportFrom) and n.module=='cfw128_er03_event_aligned_vertical')
             node.module='DOC58_SI_CANDIDATE_03_TF2R_ER03'
+        else:
+            gate4b_remove_vertical_cache_additions(after)
         assert ast.dump(before)==ast.dump(after)
     permitted={'cfw128_er03_numeric_adapter.py':set(pins),'cfw128_er03_event_aligned_directional.py':{'cfw128_er03_event_aligned_vertical.py'}}
     for path in Path('.').glob('*.py'):
@@ -6479,6 +6515,253 @@ def test_cfw128_gate4b_source_law_and_import_mutation_negatives(monkeypatch):
         with monkeypatch.context() as m:
             m.setattr(Path,'read_text',lambda p,*a,**k:read(p,*a,**k)+added if p.name==target else read(p,*a,**k))
             with pytest.raises(AssertionError):gate4b_assert_sources_and_firewall()
+    # Keep a negative independent of the byte pin for the frozen inversion.
+    with monkeypatch.context() as m:
+        name = 'cfw128_er03_event_aligned_vertical.py'
+        m.setattr(Path, 'read_text', lambda p, *a, **k: read(p, *a, **k).replace(
+            'for _ in range(50):\n        gm', 'for _ in range(49):\n        gm', 1)
+            if p.name == name else read(p, *a, **k))
+        with pytest.raises(AssertionError):
+            gate4b_assert_sources_and_firewall()
+
+
+def quadrature_key_probe(cache):
+    import cfw128_er03_event_aligned_vertical as v
+
+    token = v._HB_QUADRATURE_SCOPE.set(cache)
+    try:
+        fluid = object()
+        for kind, kernel, dimensions in (
+            ('pipe', v._hb_q_pipe, (0.11,)), ('slot', v._hb_q_slot, (0.04, 0.6))):
+            for dims, n, k, ty, count, state in (
+                (dimensions, 0.7, 0.5, 0.0, 120, fluid),
+                (dimensions, 0.7, 0.5, 0.0, 121, fluid),
+                (dimensions, 0.7, 0.5, 0.0, 120, object()),
+                (dimensions, 0.7, 0.5, 0.1, 120, fluid),
+                (dimensions, 0.7, math.nextafter(0.5, 1.), 0.0, 120, fluid),
+                (dimensions, 0.71, 0.5, 0.0, 120, fluid),
+                ((0.12, *dimensions[1:]), 0.7, 0.5, 0.0, 120, fluid)):
+                args = (*dims, n, k, ty, count)
+                def original(gradient):
+                    return kernel(gradient, *args)
+
+                evaluate = v._hb_quadrature_evaluator(original, kind, dims, n, k, ty, count, state)
+                before = cache.cache_info()
+                for gradient in (73.125, math.nextafter(73.125, math.inf), 73.125):
+                    assert evaluate(gradient).hex() == original(gradient).hex()
+                after = cache.cache_info()
+                assert after.hits - before.hits == 1
+                assert after.misses - before.misses == 2
+                for gradient in (0., -0., 2.0**-33):
+                    assert evaluate(gradient).hex() == original(gradient).hex()
+                assert cache.cache_info() == after
+    finally:
+        v._HB_QUADRATURE_SCOPE.reset(token)
+
+
+def test_cfw128_quadrature_exact_keys_and_coarsening_negative():
+    from functools import lru_cache
+    import cfw128_er03_event_aligned_vertical as v
+
+    quadrature_key_probe(lru_cache(64)(v._hb_quadrature))
+
+    coarsened = lru_cache(64)(v._hb_quadrature)
+
+    def rounded(fluid, kernel, inputs, gradient):
+        return coarsened(fluid, kernel, inputs, round(gradient, 2))
+
+    rounded.cache_info = coarsened.cache_info
+    with pytest.raises(AssertionError):
+        quadrature_key_probe(rounded)
+
+
+def test_cfw128_quadrature_eviction_failure_and_numpy_context(monkeypatch):
+    from functools import lru_cache
+    import numpy as np
+    import cfw128_er03_event_aligned_vertical as v
+
+    cache = lru_cache(2)(v._hb_quadrature)
+    scope = v._HB_QUADRATURE_SCOPE
+    token = scope.set(cache)
+    dims = (0.11,)
+    fluid = object()
+    make = lambda original: v._hb_quadrature_evaluator(original, 'pipe', dims, .7, .5, 0., 120, fluid)
+    def original(gradient):
+        return v._hb_q_pipe(gradient, *dims, .7, .5, 0., 120)
+
+    try:
+        evaluate = make(original)
+        for gradient in (70., 71., 72., 70.):
+            assert evaluate(gradient).hex() == original(gradient).hex()
+        assert (cache.cache_info().currsize, cache.cache_info().misses) == (2, 4)
+        with np.errstate(under='raise'):
+            assert make(original) is original
+        for invalid in (math.nan, math.inf, -0.):
+            assert v._hb_quadrature_evaluator(
+                original, 'pipe', dims, .7, .5, invalid, 120, fluid) is original
+
+        def fail(*_args):
+            raise ArithmeticError('quadrature failure')
+
+        monkeypatch.setattr(v, '_hb_q_pipe', fail)
+        broken = make(original)
+        for _ in range(2):
+            with pytest.raises(ArithmeticError, match='quadrature failure'):
+                broken(70.)
+        assert (cache.cache_info().currsize, cache.cache_info().misses) == (2, 6)
+    finally:
+        scope.reset(token)
+    assert scope.get() is None
+
+
+@pytest.mark.parametrize('float_on', [False, True])
+def test_cfw128_quadrature_consecutive_simulations_start_cold(float_on, monkeypatch):
+    import cfw128_er03_event_aligned_vertical as v
+
+    def job():
+        source = gate4b_job(v, tail=.4, float_on=float_on, densities=(8., 18.),
+                           volumes=(12., 12.), rates=(1., 5.))
+        # Select the HB path with the fixture's actual n, K and yield point.
+        for fluid in source.fluids.values():
+            fluid.mu_p_cp = 0.
+        source.geo = v.GeometrySpec(td_m=120., track_depth_m=120., hole_id_in=8.5,
+                                   pipe_od_in=5., pipe_id_in=4., operation_identity='CSG')
+        return source
+
+    with monkeypatch.context() as m:
+        m.setattr(v, '_hb_quadrature_evaluator', lambda original, *_args: original)
+        uncached = pickle.dumps(v.simulate(job()))
+    misses = []
+    original = v._hb_quadrature
+
+    def traced(*args):
+        misses.append(args[-1])
+        return original(*args)
+
+    monkeypatch.setattr(v, '_hb_quadrature', traced)
+    assert pickle.dumps(v.simulate(job())) == uncached
+    first = tuple(misses)
+    assert first and v._HB_QUADRATURE_SCOPE.get() is None
+    misses.clear()
+    assert pickle.dumps(v.simulate(job())) == uncached
+    assert tuple(misses) == first and v._HB_QUADRATURE_SCOPE.get() is None
+
+
+def test_cfw128_quadrature_scope_is_restored_on_simulation_error(monkeypatch):
+    import cfw128_er03_event_aligned_vertical as v
+
+    def fail(*_args):
+        assert v._HB_QUADRATURE_SCOPE.get() is not None
+        raise ArithmeticError('friction failed')
+
+    monkeypatch.setattr(v, 'fric_col_pa', fail)
+    with pytest.raises(ArithmeticError, match='friction failed'):
+        v.simulate(gate4b_job(v))
+    assert v._HB_QUADRATURE_SCOPE.get() is None
+
+
+def freefall_search_probe(name, equilibrium, *, reject_rate=None, **bounds):
+    """Exercise the real nested search with a controlled threshold."""
+    import ast
+    import inspect
+    import cfw128_er03_event_aligned_vertical as engine
+
+    calls = []
+
+    def friction(rate):
+        calls.append(rate)
+        if rate == reject_rate:
+            raise ArithmeticError('friction evaluation failed')
+        return rate, 0.
+
+    namespace = {
+        'state_heads': lambda: (equilibrium, 0.) if name == 'solve_freefall' else (0., equilibrium),
+        'fric_pair': friction, 'BP': 0., 'frictionless': False,
+    }
+    tree = ast.parse(inspect.getsource(engine.simulate))
+    search = next(node for node in tree.body[0].body if isinstance(node, ast.FunctionDef) and node.name == name)
+    exec(compile(ast.Module(body=[search], type_ignores=[]), '<isolated search probe>', 'exec'), namespace)
+    result = namespace[name](**bounds)
+    return result, len(calls)
+
+
+@pytest.mark.parametrize('equilibrium,threshold,early', [
+    (4., 10., True),
+    (5., 5., False),
+    (math.nextafter(5., 0.), math.nextafter(5., 0.), False),
+    (math.nextafter(5., math.inf), 5., False),
+    (15., None, False),
+])
+def test_cfw128_freefall_exact_pumping_branch_proof(equilibrium, threshold, early):
+    original, count = freefall_search_probe('solve_freefall', equilibrium)
+    bounded, consumed = freefall_search_probe('solve_freefall', equilibrium, normal_below=threshold)
+    assert count == 81
+    if early:
+        assert original < threshold and bounded is None and consumed < count
+    else:
+        assert bounded.hex() == original.hex() and consumed == count
+
+
+@pytest.mark.parametrize('name', ['solve_freefall', 'solve_reverse'])
+@pytest.mark.parametrize('equilibrium,bounds,early', [
+    (1., (3., 8.), True),
+    (12., (3., 8.), True),
+    (5., (3., 8.), False),
+    (5., (5., 8.), False),
+    (5., (3., 5.), False),
+    (math.nextafter(5., 0.), (3., 5.), False),
+])
+def test_cfw128_freefall_exact_slew_proof(name, equilibrium, bounds, early):
+    original, count = freefall_search_probe(name, equilibrium)
+    bounded, consumed = freefall_search_probe(name, equilibrium, slew_bounds=bounds)
+    lo, hi = bounds
+    assert count == 81
+    assert min(max(bounded, lo), hi).hex() == min(max(original, lo), hi).hex()
+    if early:
+        assert consumed < count
+    else:
+        assert bounded.hex() == original.hex() and consumed == count
+
+
+@pytest.mark.parametrize('equilibrium,bounds,shorter', [
+    (5., (3., 8.), True),
+    (math.nextafter(5., 0.), (5., 8.), False),
+    (math.nextafter(5., math.inf), (3., 5.), True),
+    (1e-35, (0., 1.), False),
+    (160., (0., 80.), True),
+    (1., (3., 8.), False),
+    (12., (3., 8.), False),
+])
+def test_cfw128_freefall_exact_reverse_fixed_midpoint(equilibrium, bounds, shorter):
+    original, count = freefall_search_probe('solve_reverse', equilibrium, slew_bounds=bounds)
+    candidate, consumed = freefall_search_probe(
+        'solve_reverse', equilibrium, slew_bounds=bounds, stop_at_fixed_midpoint=True)
+    assert candidate.hex() == original.hex()
+    if shorter:
+        assert consumed < count
+    else:
+        assert consumed == count
+
+
+@pytest.mark.parametrize('stop_at_fixed_midpoint', [False, True])
+def test_cfw128_freefall_exact_reverse_evaluates_fixed_endpoint(stop_at_fixed_midpoint):
+    with pytest.raises(ArithmeticError, match='friction evaluation failed'):
+        freefall_search_probe('solve_reverse', 160., reject_rate=80.,
+                              slew_bounds=(0., 80.), stop_at_fixed_midpoint=stop_at_fixed_midpoint)
+
+
+@pytest.mark.parametrize('job', [
+    'CSG 30"', 'CSG 24"', 'CSG 20"', 'CSG 18 5/8"',
+    'CMT PLUG', 'CMT SQUEEZE', 'CMT PLUG WITH CT',
+])
+def test_cfw128_freefall_exact_does_not_extend_pumping_applicability(job, monkeypatch):
+    def unexpected(_state):
+        pytest.fail('An N/A operation reached engine selection.')
+
+    monkeypatch.setattr(pumping_simulation, '_prediction_enabled', unexpected)
+    report = pumping_simulation.run_pumping_simulation({'job_type': job})
+    assert report['applicable'] is False
+    assert report['figure'] is report['result'] is None
 
 
 # Gate 4C is source admission only; these fixtures reuse real source authorities.
