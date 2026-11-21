@@ -13,6 +13,10 @@ import phase_10_procedure as report
 from engineering_tools import compute_phase_status
 from placement import hardware_choices, target_descriptions, target_depth, host_label, slurry_intervals
 from project_state import fingerprint
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 FIELDS = ('excess_csg_oh_pct', 'excess_csg_csg_pct')
 LABELS = ('Excess CSG-OH %', 'Excess CSG-CSG %')

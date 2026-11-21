@@ -21,6 +21,9 @@ from test_uat_round10c_integration import save_project, restore_project, build
 from test_pre_checkpoint_b2_cross_module_integration import projects as integrated_projects, assert_advisory_context
 from test_pre_checkpoint_b3_report_word_e2e import review_main, blocked, sequence_table
 import cement_chart_model as chart
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 CASE = audit.AuditRegressions()

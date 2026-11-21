@@ -24,6 +24,9 @@ from test_uat_round8a_chart_model import chart_state, hardware
 from test_uat_round7b_report import rendered
 from project_state import prepare_calculations
 from centralizer_fixtures import ensure_current_centralizer
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 ANCHOR = 'Pressure and fluid sequence charts: Not provided.'
 PUMPING = 'Pumping simulation charts: Not provided.'

@@ -39,6 +39,9 @@ from project_state import prepare_calculations, purge_inactive_slurries, lab_sou
 from engineering_tools import lab_review_signature
 from rheology import (calculate_cemcade_bingham, build_rheology, validate_rheology_inputs,
                       RPM_ORDER, RHEOLOGY_DATASETS)
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 CORPUS = [
     ('A', [168,116,64,41,24,8,6], '159.218','9.47','0.960'),

@@ -16,6 +16,9 @@ import project_io as io
 import project_state as ps
 import test_audit_regressions as audit
 from phase_2_3_well_data import HARDWARE_COLUMNS
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 CASE = audit.AuditRegressions()

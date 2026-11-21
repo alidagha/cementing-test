@@ -14,6 +14,9 @@ from engineering_tools import compute_phase_status, lab_review_signature
 from engineering_tools import validate_thickening_test, thickening_time_valid
 from project_state import prepare_calculations, purge_inactive_slurries, lab_source_signature, refresh_fluids
 import phase_10_procedure as report
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 FIELDS = {

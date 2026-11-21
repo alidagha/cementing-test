@@ -911,7 +911,8 @@ def test_r18b_inside_active_two_ids_and_previous_host_selection_stay_blocked():
 
 
 @pytest.mark.parametrize('previous', [False, True, 'taper', 'expanding_taper'])
-def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base, previous, tmp_path):
+def test_r18b_actual_editor_json_currentness_and_word(bug01_reviewed_report_base, previous, tmp_path, monkeypatch):
+    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '0')
     import json
     from io import BytesIO
     from docx import Document
@@ -1388,7 +1389,8 @@ def test_scalar_representable_measured_paths_execute_real_frozen_solver(kind, ph
         assert phase9.result_is_current(state)
 
 
-def test_reference_real_word_roundtrip_and_stale_admission(tmp_path):
+def test_reference_real_word_roundtrip_and_stale_admission(tmp_path, monkeypatch):
+    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '0')
     from io import BytesIO
     from docx import Document
     import test_audit_regressions as audit
@@ -1759,7 +1761,8 @@ def r15a_report_source():
 
 @pytest.mark.parametrize('job,size,hole',R15A_INITIAL)
 @pytest.mark.parametrize('previous',[False,True])
-def test_r15a_actual_first_casing_word_and_json(r15a_report_source,job,size,hole,previous,tmp_path):
+def test_r15a_actual_first_casing_word_and_json(r15a_report_source,job,size,hole,previous,tmp_path,monkeypatch):
+    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '0')
     import json
     from io import BytesIO
     from docx import Document
@@ -6007,6 +6010,7 @@ def gate3_assert_numeric_imports(path):
     assert sorted(actual)==sorted([*expected.items(),('hmac',None),('math',None),('secrets',None)])
     wanted={'copy':('deepcopy',),'dataclasses':('dataclass','field','fields','replace'),'typing':('Literal',),'fractions':('Fraction',),
         'hashlib':('sha256',),'pathlib':('Path',),
+        'app_build_identity':('current_app_build_identity',),
         'cfw128_integration_abi':('compose_nominal_tracking','CompositionReceipt'),
         'cfw128_hb_intake':('snapshot_lab_intake','LabIntakeSnapshot','DialReading','_dial','_duplicate_columns','_positional_source'),
         'cfw128_hb03t_frozen':('fit_full_hb','to_engine_field','InstrumentConfig'),
@@ -9685,9 +9689,6 @@ def test_cfw128_b4_every_release_flag_rejects_forgery(b4_cases,flag):
             boundary=b,engine='vertical',conditions=PostPullConditions(True,True,True))
 
 
-STAGE3_MAIN = '74354fdfeb9193e3d0418e56e389cb80379b719b'
-
-
 def stage3_reviewed_app(base, job, *, directional=False, geometry=None):
     import test_audit_regressions as audit
     case = audit.AuditRegressions()
@@ -9733,11 +9734,12 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
     import json
     from io import BytesIO
     from docx import Document
+    from app_build_identity import current_app_build_identity
     import cfw128_er03_numeric_adapter as adapter
     import cfw128_c2e8_post_pull_review as placement
     import phase_10_procedure as phase_x
-    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '1')
-    monkeypatch.setenv('CFW128_APP_SOURCE_SHA', STAGE3_MAIN)
+    monkeypatch.delenv('CFW128_DESIGN_PREDICTION', raising=False)
+    monkeypatch.delenv('CFW128_APP_SOURCE_SHA', raising=False)
     geometry = cfw128_c1_uat19_state() if job == 'UAT19' else None
     if geometry:
         # UAT19 supplies only the hydraulic dimensions. Use the standard
@@ -9786,7 +9788,7 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
     numeric, end_state = one['result'], one['end_state']
     assert solver_receipts == [pickle.dumps(numeric)]
     assert type(numeric) is adapter.AppPrediction and type(end_state) is placement.AppEndStateAssessment
-    assert numeric.app_source_sha == STAGE3_MAIN
+    assert numeric.app_build_identity == scope['expected_app_source_sha'] == current_app_build_identity()
     assert end_state.review.numeric_identity == numeric.projection_identity
     assert end_state.qout_semantics == 'ANNULAR_MOUTH_PLUS_PIPE_HEAD'
     assert end_state.shoe_md - end_state.terminal_top_md == 25.
@@ -9859,7 +9861,7 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
     assert boundary.bhsp_target_psi == tvd_at_md(source['well_geometry'], [numeric.pressure_station_md])[0] * 118 * .02278
     if job == 'UAT19':
         from cfw128_integration_abi import compose_nominal_tracking
-        composition = compose_nominal_tracking(source, expected_app_source_sha=STAGE3_MAIN)
+        composition = compose_nominal_tracking(source, expected_app_source_sha=numeric.app_build_identity)
         assert [(s.top_md, s.bottom_md) for s in composition.captured_geometry.active_sections] == [
             (0., 2800.), (2800., 3885.)]
         assert composition.geometry.pumping_return[0].top_md == 0.
@@ -9900,6 +9902,8 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
         assert image_bytes(doc, drawing_paragraph(doc, one['prediction_description'])) == png.getvalue()
         with pytest.raises(ValueError, match='source/session'):
             adapter.validate_app_prediction(source, numeric, **{**scope, 'session_scope': 'other'})
+        with pytest.raises(ValueError, match='Current CFW128 App build identity required'):
+            adapter.validate_app_prediction(source, numeric, **{**scope, 'expected_app_source_sha': 'a' * 40})
         with pytest.raises(ValueError, match='solver output identity'):
             adapter.validate_app_prediction(source, replace(numeric, q_out_bpm=(999., *numeric.q_out_bpm[1:])), **scope)
         with pytest.raises(TypeError):
@@ -9908,7 +9912,7 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
             boundary.bhsp_target_psi, boundary.surface_line_kpsi_at_8bpm, boundary.float_equipment,
             boundary.dt_min, boundary.tail_cap_min, boundary.shutin_ramp_min, 'SURFACE_REFERENCE_PSI',
             'TARGET_NOT_INCREMENT', 'FANN35_R1B1_SPRING1_SOFTWARE_CONVENTION_ONLY', boundary.gel_pa_by_fluid)
-        research = adapter.run_numeric_test_case(source, expected_app_source_sha=STAGE3_MAIN,
+        research = adapter.run_numeric_test_case(source, expected_app_source_sha=numeric.app_build_identity,
             boundary=research_boundary, stepping='event_aligned_test_only')
         for name in ('time_min', 'pump_kpsi', 'whp_kpsi', 'hydrostatic_kpsi', 'total_pressure_kpsi',
                      'q_in_bpm', 'q_out_bpm', 'events'):
@@ -9929,7 +9933,7 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
         next(b for b in app.button if b.label == 'Build Word Document').click().run(timeout=120)
         assert not app.error and '_compiled_doc_bytes' in app.session_state
         assert len(reports) == 2 and not reports[-1].get('prediction') and len(launches) == 1
-        monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '1')
+        monkeypatch.delenv('CFW128_DESIGN_PREDICTION')
         case.phase(restored, 'phase10')
         assert not next(b for b in restored.button if b.label == 'Build Word Document').disabled
 
@@ -9944,24 +9948,27 @@ def test_stage3_phase_x_prediction_word(bug01_reviewed_report_base, job, monkeyp
         assert '_compiled_doc_bytes' not in app.session_state and len(launches) == 1
 
 
-def test_stage3_app_inputs_and_word_fail_closed(bug01_reviewed_report_base, monkeypatch):
+def test_stage3_app_inputs_and_word_fail_closed(bug01_reviewed_report_base, monkeypatch, tmp_path):
     import cfw128_er03_numeric_adapter as numeric
     import phase_10_procedure as phase_x
+    import app_build_identity as build
 
-    monkeypatch.setenv('CFW128_DESIGN_PREDICTION', '1')
-    monkeypatch.setenv('CFW128_APP_SOURCE_SHA', STAGE3_MAIN)
+    monkeypatch.delenv('CFW128_DESIGN_PREDICTION', raising=False)
+    monkeypatch.delenv('CFW128_APP_SOURCE_SHA', raising=False)
     case, app = stage3_reviewed_app(bug01_reviewed_report_base, 'CSG 9 5/8"')
     original = app.session_state.to_dict()
     with monkeypatch.context() as invalid:
         def forbidden(*args, **kwargs):
             pytest.fail('Held source reached a numerical fit or solver')
         invalid.setattr(numeric, 'fit_full_hb', forbidden)
-        for bad in ('unreviewed', 'gel', 'survey', 'schedule', 'mud_density'):
+        for bad in ('unreviewed', 'gel', 'rpm', 'survey', 'schedule', 'mud_density'):
             state = deepcopy(original)
             if bad == 'unreviewed':
                 state['lab_qc_params']['Main']['reviewed'] = False
             elif bad == 'gel':
                 state['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['gel_10_min'] = '-'
+            elif bad == 'rpm':
+                state['lab_qc_params']['Displacement Fluid']['rheology']['bhct_down']['readings']['300'] = 0
             elif bad == 'survey':
                 state['well_geometry'] = {'type': 'Directional', 'survey': pd.DataFrame(
                     [[0., 0., 0.], [0., 60., 0.]], columns=['MD', 'Deviation', 'Azimuth'])}
@@ -9973,6 +9980,33 @@ def test_stage3_app_inputs_and_word_fail_closed(bug01_reviewed_report_base, monk
             case.phase(held, 'phase10')
             assert next(b for b in held.button if b.label == 'Build Word Document').disabled, bad
             assert '_compiled_doc_bytes' not in held.session_state
+
+    # Verify the same bytes identify a moved extraction, then reject a
+    # changed protected source in the actual live report admission path.
+    from shutil import copyfile
+    extracted = tmp_path / 'Cementing App moved'
+    extracted.mkdir()
+    for path in build._APP_ROOT.iterdir():
+        if path.is_file() and (path.suffix == '.py' or path.name in (
+                'ds_cent_products.json', 'master_template.docx', 'requirements.txt')):
+            copyfile(path, extracted / path.name)
+    identity = build.current_app_build_identity()
+    with monkeypatch.context() as moved:
+        moved.setattr(build, '_APP_ROOT', extracted)
+        assert build.current_app_build_identity() == identity
+        source = extracted / 'cfw128_er03_event_aligned_vertical.py'
+        source.write_bytes(source.read_bytes() + b'\n# Tampered source\n')
+        assert build._build_identity(extracted) != identity
+        case.phase(app, 'phase10')
+        assert any('App build files changed' in error.value for error in app.error)
+        assert next(b for b in app.button if b.label == 'Build Word Document').disabled
+        assert '_compiled_doc_bytes' not in app.session_state
+
+    with monkeypatch.context() as mode:
+        mode.setenv('CFW128_DESIGN_PREDICTION', 'invalid')
+        case.phase(app, 'phase10')
+        assert any('must be 0 or 1' in error.value for error in app.error)
+        assert next(b for b in app.button if b.label == 'Build Word Document').disabled
 
     def word_failure(*args, **kwargs):
         assert kwargs['pumping_report']['prediction'] is True
@@ -9995,6 +10029,7 @@ def test_stage3_app_inputs_and_word_fail_closed(bug01_reviewed_report_base, monk
 
 
 def test_stage3_admits_only_current_phase_vii_auxiliary_sources(bug01_reviewed_report_base):
+    from app_build_identity import current_app_build_identity
     from cfw128_er03_numeric_adapter import prepare_app_prediction, vertical
 
     names = ('Pre Flush', 'Spacer Ahead', 'Spacer Behind')
@@ -10002,7 +10037,7 @@ def test_stage3_admits_only_current_phase_vii_auxiliary_sources(bug01_reviewed_r
     for index, name in enumerate(names):
         state['lab_qc_params'][name]['rheology']['bhct_down'].update(
             gel_10_sec='4.50', gel_10_min=str(8.25 + index))
-    scope = dict(expected_app_source_sha=STAGE3_MAIN, session_scope='phase-vii-source-control')
+    scope = dict(expected_app_source_sha=current_app_build_identity(), session_scope='phase-vii-source-control')
     before = pickle.dumps(state)
     signature, boundary, engine = prepare_app_prediction(state, **scope)
     assert engine == 'vertical'

@@ -9,6 +9,10 @@ import engineering_tools as eng
 import materials_db as db
 import project_state as ps
 import test_audit_regressions as audit
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 EXACT = {**{n:84.90203857 for n in db.MATERIAL_TAXONOMY['F.L. Controller']['names']},
          **{n:89.27199554 for n in db.MATERIAL_TAXONOMY['Dispersant']['names']},

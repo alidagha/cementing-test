@@ -13,6 +13,10 @@ from engineering_tools import compute_phase_status, validate_cement_parameters, 
 from phase_5_cement import build_cement_tables, build_components, calculate_base_results
 from project_io import decode_project
 import phase_10_procedure as report
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 class Phase45UAT(unittest.TestCase):

@@ -23,6 +23,9 @@ from project_io import decode_project
 from project_state import (refresh_well_derived, lab_source_signature, refresh_fluids,
                            refresh_lab_payloads, prepare_calculations, purge_inactive_slurries)
 import test_audit_regressions as audit
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 PLACEMENT = ("Main", "Lead", "Lead #1", "Lead #2", "Tail")
 ORDER = ("Pre Flush", "Spacer", "Spacer Ahead", "Scavenger", *PLACEMENT,

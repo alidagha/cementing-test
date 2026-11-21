@@ -14,6 +14,10 @@ from phase_5_cement import (_normalize_additive_rows, REQUIRED_ADDITIVE_COLUMNS,
     build_components, calculate_base_results)
 from phase_7_lab import build_lab_df_from_phase5
 from project_state import lab_source_signature
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def row(name, method='In Mix Water', density=None):

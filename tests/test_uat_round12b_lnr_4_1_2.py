@@ -25,6 +25,9 @@ from project_io import decode_project
 import test_audit_regressions as audit
 from test_uat_round9b_geometry import hardware
 from test_uat_round10a_pumping_simulation import program_state
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 JOB = 'LNR 4 1/2"'

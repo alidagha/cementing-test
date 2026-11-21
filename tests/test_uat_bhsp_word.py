@@ -10,6 +10,9 @@ import test_audit_regressions as audit
 from engineering_tools import lab_review_signature
 from phase_10_procedure import _word_quantity_context
 from project_state import prepare_calculations
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.mark.parametrize("raw,expected", [

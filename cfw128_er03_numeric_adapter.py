@@ -14,6 +14,7 @@ import hmac
 import math
 import secrets
 
+from app_build_identity import current_app_build_identity
 import DOC58_SI_CANDIDATE_03_TF2R_ER03 as vertical
 import DOC58_G2D1_DIR_SCRATCH_01_ER03 as directional
 import cfw128_er03_event_aligned_vertical as event_vertical
@@ -261,6 +262,11 @@ class AppPrediction(NumericEvidence):
     seal: str = field(kw_only=True, repr=False, default='')
     evidence_class: str = field(default=APP_PREDICTION, init=False)
 
+    @property
+    def app_build_identity(self):
+        """Local build fingerprint stored in the historical source slot."""
+        return self.app_source_sha
+
 
 @dataclass(frozen=True, slots=True)
 class _AppBoundary:
@@ -278,9 +284,8 @@ class _AppBoundary:
 def app_prediction_signature(state, *, expected_app_source_sha, session_scope):
     if type(session_scope) is not str or not session_scope:
         raise ValueError('Live App session required for CFW128 Design/Prediction.')
-    if (type(expected_app_source_sha) is not str or len(expected_app_source_sha) != 40
-            or any(c not in '0123456789abcdef' for c in expected_app_source_sha)):
-        raise ValueError('Verified CFW128 App build SHA required.')
+    if type(expected_app_source_sha) is not str or expected_app_source_sha != current_app_build_identity():
+        raise ValueError('Current CFW128 App build identity required.')
     return fingerprint([APP_PREDICTION, expected_app_source_sha, session_scope, _positional_source(state)])
 
 

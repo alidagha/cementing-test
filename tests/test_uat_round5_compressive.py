@@ -75,6 +75,9 @@ import phase_10_procedure as report
 import re
 import subprocess
 import zipfile
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.fixture(scope='module')

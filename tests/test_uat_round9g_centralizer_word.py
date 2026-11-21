@@ -23,6 +23,9 @@ import well_report
 import test_audit_regressions as audit
 from test_uat_round9f_phase9 import configured
 from centralizer_fixtures import execute_centralizer
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 BODY = "Recommended Centralizer Performance Data is Based on API 10D Specifications."
 IX = "IX. Centralizer Placement Recommendation"

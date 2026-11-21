@@ -26,6 +26,9 @@ from test_uat_round12a5_diesel_word_e2e import numbered_steps
 from test_pre_checkpoint_b2_cross_module_integration import (
     projects as integrated_projects, JOBS, CSG, LNR, select_target, signatures, assert_advisory_section, assert_advisory_payload,
 )
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 CASE = audit.AuditRegressions()

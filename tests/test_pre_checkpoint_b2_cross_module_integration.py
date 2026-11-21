@@ -27,6 +27,9 @@ from centralizer_fixtures import execute_centralizer
 from test_uat_round10c_integration import save_project, restore_project
 from test_uat_round12a5_diesel_word_e2e import projects as diesel_projects, word, sequence_table
 from test_uat_round12b_lnr_4_1_2 import word_project as fractional_project
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 CASE = audit.AuditRegressions()

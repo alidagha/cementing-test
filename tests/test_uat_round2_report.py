@@ -584,6 +584,9 @@ def test_r17_bug03_five_slurry_word_uses_planned_tops_only(r17_lab_context,tmp_p
 
 
 from test_round13b_b4_ct_report import valid_ct as r17_bug03_valid_ct
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.mark.parametrize('top',[3470.,3500.])

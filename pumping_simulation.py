@@ -5,6 +5,7 @@ import os
 
 import pandas as pd
 
+from app_build_identity import current_app_build_identity
 import cement_chart_model as chart_model
 import fluids_charts_module_v1_4_2 as fcm
 import materials_db
@@ -27,15 +28,16 @@ _PREDICTION_SOURCE_KEYS = (
 
 
 def _prediction_enabled(state):
-    # Server-side deployment control; saved projects cannot select an engine.
-    flag = os.environ.get('CFW128_DESIGN_PREDICTION', '0')
+    # Live App default with an explicit internal rollback.
+    flag = os.environ.get('CFW128_DESIGN_PREDICTION', '1')
     if flag not in ('0', '1'):
         raise ValueError('CFW128_DESIGN_PREDICTION must be 0 or 1.')
     if flag != '1':
         return False
     # Detached calculation and research snapshots retain their existing lane.
     import streamlit as st
-    return state is st.session_state
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    return state is st.session_state and get_script_run_ctx(suppress_warning=True) is not None
 
 
 def _prediction_request(state):
@@ -43,7 +45,7 @@ def _prediction_request(state):
     context = get_script_run_ctx(suppress_warning=True)
     if context is None:
         raise ValueError('Live App session required for CFW128 Design/Prediction.')
-    scope = dict(expected_app_source_sha=os.environ.get('CFW128_APP_SOURCE_SHA'),
+    scope = dict(expected_app_source_sha=current_app_build_identity(),
                  session_scope=context.session_id)
     return {key: state[key] for key in _PREDICTION_SOURCE_KEYS if key in state}, scope
 

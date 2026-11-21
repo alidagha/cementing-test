@@ -681,6 +681,9 @@ def test_wnf02_operational_procedure_tokens_preserve_sources(job,rate,display,wn
 
 from test_round13b_b4_ct_report import valid_ct as wnf02_ct
 from test_uat_round12a5_diesel_word_e2e import projects as wnf02_projects, r18_historical_procedure_text
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.mark.parametrize('rate,display',[('5.00','5.0'),('0.0050','0.005'),('+.5-+1.250','+0.5–+1.25')])

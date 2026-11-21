@@ -11,6 +11,10 @@ import project_state as ps
 import test_audit_regressions as audit
 from phase_5_cement import build_components
 from phase_7_lab import build_lab_df_from_phase5
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 V1_NODES = ((2., .0360), (4., .0366), (6., .0371), (8., .0377), (10., .0383),
          (12., .0388), (14., .0392), (15., .03946), (16., .0397), (18., .04013),

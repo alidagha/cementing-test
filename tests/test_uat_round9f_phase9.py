@@ -16,6 +16,9 @@ from project_state import is_project_key
 import test_audit_regressions as audit
 from test_uat_round9d_static_solver import zones_for
 from test_uat_round9e_dynamic_solver import dynamic_state, auxiliary
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def phase9():

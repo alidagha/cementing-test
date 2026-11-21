@@ -22,6 +22,9 @@ from test_uat_round9g_centralizer_word import ix_region
 from test_uat_round10b_pumping_word import (
     ANCHOR, NA, DESCRIPTION, JOBS, drawing_paragraph, image_bytes,
 )
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.fixture(scope="module")

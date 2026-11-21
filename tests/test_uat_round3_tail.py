@@ -7,6 +7,10 @@ from docx import Document
 import test_audit_regressions as audit
 from engineering_tools import compute_phase_status
 from placement import hardware_choices, target_descriptions, slurry_intervals
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 class TailPlacementUAT(unittest.TestCase):

@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 from docx import Document
 from streamlit.testing.v1 import AppTest
 
@@ -161,6 +162,14 @@ def configure_standalone_spacer(app, mode="Limestone", dead_vol=0.):
     assert not app.exception, [e.message for e in app.exception]
 
 
+@pytest.fixture(scope="module")
+def legacy_word_fixture():
+    """Run historical Word assertions on their explicit Legacy lane."""
+    with patch.dict("os.environ", {"CFW128_DESIGN_PREDICTION": "0"}):
+        yield
+
+
+@patch.dict("os.environ", {"CFW128_DESIGN_PREDICTION": "0"})
 class AuditRegressions(unittest.TestCase):
     def app(self, project=None):
         app = AppTest.from_file(str(ROOT / "main.py"), default_timeout=30)

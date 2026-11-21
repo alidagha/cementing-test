@@ -9,6 +9,10 @@ import test_audit_regressions as audit
 from engineering_tools import compute_phase_status
 from phase_2_3_well_data import HARDWARE_COLUMNS
 from project_io import decode_project
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 class Phase23UAT(unittest.TestCase):

@@ -15,9 +15,12 @@ import phase_10_procedure as report
 import project_state
 import well_report
 import test_audit_regressions as audit
+from test_audit_regressions import legacy_word_fixture
 from centralizer_fixtures import execute_centralizer
 from test_uat_round10a_pumping_simulation import program_state
 from test_uat_round9e_dynamic_solver import auxiliary
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 ANCHOR = "Pumping simulation charts: Not provided."
 NA = "Pumping simulation charts: Not applicable."

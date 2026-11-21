@@ -15,6 +15,9 @@ import project_state as ps
 import test_audit_regressions as audit
 from test_round13a_a2_spacer_lab import state as spacer_state
 from test_uat_round5_thickening import FIELDS
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 CASE = audit.AuditRegressions()
 BASE = 'b21d1fc94bcc5e1853800b802c48f77026fefd6c'

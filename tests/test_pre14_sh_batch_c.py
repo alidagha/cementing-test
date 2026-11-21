@@ -12,6 +12,9 @@ import rheology
 import test_audit_regressions as audit
 from test_round13a_a3_spacer_dynamic import project, centralizer
 from test_uat_round10c_integration import save_project, restore_project
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 CASE = audit.AuditRegressions()
 

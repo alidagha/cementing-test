@@ -20,6 +20,9 @@ from well_schematic_adapter import prepare_schematic
 import test_audit_regressions as audit
 from centralizer_fixtures import ensure_current_centralizer
 from test_round13a_a2_spacer_lab import measured
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 @pytest.fixture(scope="module")

@@ -14,6 +14,10 @@ from phase_5_cement import (build_components, _normalize_additive_rows, build_ce
 from phase_7_lab import build_lab_df_from_phase5
 from phase_10_procedure import separate_lab_tables
 from project_state import lab_source_signature
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def custom(name='EXT-X', kind='Local Extender', state='Powder', mix='In Mix Water', sg=2.2):

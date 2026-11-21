@@ -16,6 +16,9 @@ import cement_chart_model as model
 import cement_chart_report as report
 from project_state import fingerprint, is_project_key, prepare_calculations
 from test_uat_round8a_chart_model import balanced_state
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 def case_state(kind='safe', mode='advanced', state=None):

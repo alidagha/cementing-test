@@ -14,6 +14,10 @@ from docx import Document
 import materials_db
 import phase_10_procedure as report
 from project_state import request_description_for_job
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 DATES = ("request_date", "prepared_date", "checked_date", "approved_date", "revision_date")
 TEXT_LABELS = {"request_description": "Request Description",

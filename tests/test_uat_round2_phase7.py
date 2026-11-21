@@ -11,6 +11,10 @@ import phase_10_procedure as report
 from engineering_tools import compute_phase_status, lab_review_signature, thickening_time_valid
 from project_state import prepare_calculations, lab_source_signature
 from phase_2_3_well_data import _bhct_suggestion
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 SLURRIES = ['Lead', 'Lead #1', 'Lead #2', 'Main', 'Tail']
 

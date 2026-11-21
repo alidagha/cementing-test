@@ -6,6 +6,10 @@ import materials_db
 import engineering_tools as engineering
 import test_audit_regressions as audit
 from project_state import refresh_well_derived, refresh_fluids
+import pytest
+from test_audit_regressions import legacy_word_fixture
+
+pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
 
 
 class Round3WellUAT(unittest.TestCase):
