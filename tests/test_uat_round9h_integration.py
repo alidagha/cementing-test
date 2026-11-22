@@ -237,7 +237,8 @@ def test_auto_populated_zones_remain_explicit_editable_and_reportable(catalog, k
     assert all(zone["product_nr"] is None and zone["custom_product_id"] is None for zone in generated)
     product = state["centralizer_config"]["zones"][0]["product_nr"]
     for zone in generated:
-        zone["product_nr"] = product
+        assert zone["target_standoff_pct"] is None
+        zone.update(product_nr=product, target_standoff_pct=70.)
     generated[0]["target_standoff_pct"] = 68.
     state["centralizer_config"]["zones"] = generated
     assert phase9.execute(state, catalog)["mode"] == "optimize"

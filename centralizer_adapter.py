@@ -441,12 +441,11 @@ def build_fluid_snapshot(state, *, override=None):
     return result
 
 
-def build_static_payload(state, zones, products, *, override=None, custom_products=()):
+def build_static_payload(state, zones, products, *, mode="optimize", override=None, custom_products=()):
     """Fresh v1.2.9 Static payload, or None for a Centralizer N/A job.
 
-    Explicit zone records require top_md, bottom_md, density (certified p/q),
-    target_standoff_pct and product_nr. Products are caller-provided official
-    catalog records; this path never loads/selects a product automatically.
+    Zones require measured bounds, certified density and a selected product.
+    A missing target is supported only for an explicit Direct Check.
     """
     geometry = to_engine_geometry(state)
     if geometry is None:
@@ -476,16 +475,22 @@ def build_static_payload(state, zones, products, *, override=None, custom_produc
         density = zone.get("density")
         if density not in ladder:
             raise ValueError(f"Zone {index + 1} Design Density must use the certified density ladder.")
-        percent = _number(zone.get("target_standoff_pct"), f"Zone {index + 1} Target Standoff %")
-        if not 0 < percent <= 100:
-            raise ValueError(f"Zone {index + 1} Target Standoff must be > 0 and <= 100%.")
-        target = percent / 100.
-        if target == 0:
-            raise ValueError("Target Standoff cannot be represented as a positive engine fraction.")
+        percent = zone.get("target_standoff_pct")
+        if percent is None and mode != "direct":
+            raise ValueError(f"Zone {index + 1} Target Standoff is required for Optimize.")
+        target_field = {}
+        if percent is not None:
+            percent = _number(percent, f"Zone {index + 1} Target Standoff %")
+            if not 0 < percent <= 100:
+                raise ValueError(f"Zone {index + 1} Target Standoff must be > 0 and <= 100%.")
+            target = percent / 100.
+            if target == 0:
+                raise ValueError("Target Standoff cannot be represented as a positive engine fraction.")
+            target_field["target_standoff"] = target
         product = resolve_zone_product(zone, products, custom_products)
         mapped_products[product["name"]] = product
         mapped_zones.append({"top_md": top, "bottom_md": bottom, "density": density,
-                             "target_standoff": target, "product_name": product["name"]})
+                             **target_field, "product_name": product["name"]})
         previous_bottom = bottom
     snapshot = build_fluid_snapshot(state, override=override)
     return deepcopy({**geometry, "fluids": snapshot["fluids"], "zones": mapped_zones,
@@ -502,7 +507,7 @@ def solve_static(state, zones, products, *, mode, override=None, custom_products
     """
     if mode not in ("direct", "optimize"):
         raise ValueError("Static placement mode must be 'direct' or 'optimize'.")
-    payload = build_static_payload(state, zones, products, override=override, custom_products=custom_products)
+    payload = build_static_payload(state, zones, products, mode=mode, override=override, custom_products=custom_products)
     if payload is None:
         return None
     profile = (centralizer_engine.compute_standoff_profile(payload) if mode == "direct"
@@ -511,37 +516,46 @@ def solve_static(state, zones, products, *, mode, override=None, custom_products
 
 
 def _normalized_solver_result(payload, profile, mode, *, zone_sources=None):
-    """Read-only projection shared by Static/Dynamic; preserve the raw profile."""
+    """Project engine placement, final-profile minimum and design assessment separately."""
     products_by_name = {product["name"]: product for product in payload["products"]}
     normalized = []
     for index, zone in enumerate(payload["zones"]):
         product = products_by_name[zone["product_name"]]
+        target = zone.get("target_standoff")
+        final_minimum = profile["zones_min"][index]
+        # The frozen scan starts at 2.0 and leaves it there if the zone has no samples.
+        achieved = final_minimum["min_stdf"] if final_minimum["min_stdf"] != 2.0 else None
         row = {"top_md": zone["top_md"], "bottom_md": zone["bottom_md"],
-               "density_design": zone["density"], "target": zone["target_standoff"],
+               "density_design": zone["density"], "target": target,
                "product_nr": (zone_sources[index].get("product_nr") if zone_sources is not None
                               else int(product["code"])), "product_name": product["name"],
                "product_kind": product["kind"]}
         if zone_sources is not None and zone_sources[index].get("custom_product_id") is not None:
             row["custom_product_id"] = zone_sources[index]["custom_product_id"]
         if mode == "direct":
-            minimum = profile["zones_min"][index]
-            row.update(density_computed=zone["density"], min_stdf=minimum["min_stdf"],
-                       min_depth=minimum["min_depth"],
-                       count=_direct_zone_count(payload, index),
-                       meets_target=minimum["min_stdf"] >= zone["target_standoff"])
+            placement = _direct_zone_placement(payload, index)
+            row.update(density_computed=zone["density"],
+                       min_stdf=final_minimum["min_stdf"] if target is not None else achieved,
+                       min_depth=final_minimum["min_depth"] if target is not None or achieved is not None else None,
+                       count=placement["count"],
+                       meets_target=final_minimum["min_stdf"] >= target if target is not None else None)
+            mds, spacing = placement["mds"], placement["spacing_m"]
         else:
             optimized = profile["zones"][index]
             row.update({field: optimized[field] for field in
                         ("density_computed", "count", "min_stdf", "meets_target")}, min_depth=None)
+            mds, spacing = optimized["centralizer_md"], optimized["spacing_m"]
+        # Match the exact MD precision of the frozen final whole-string profile.
+        row.update(centralizer_md=[round(md, 6) for md in mds], spacing_m=spacing, achieved_min_stdf=achieved)
         normalized.append(row)
     return {"mode": mode, "zones": normalized, "profile": profile}
 
 
-def _direct_zone_count(payload, index):
+def _direct_zone_placement(payload, index):
     """Exact frozen placement/anchor calls from compute_standoff_profile, not MD inference."""
     settings = payload["settings"]
     defaults = centralizer_engine.OptimizationSettings()
-    placed = centralizer_engine.place_zone_centralizers(
+    return centralizer_engine.place_zone_centralizers(
         payload["zones"][index], float(payload["casing"]["joint_length"]),
         anchor=centralizer_engine._zone_anchor(payload["job_type"], payload["zones"], index, []),
         joint_position=float(settings.get("joint_position", .5)),
@@ -549,7 +563,6 @@ def _direct_zone_count(payload, index):
         min_zone_joints=int(settings.get("min_zone_joints", defaults.min_zone_joints)),
         shoe_buffer_m=float(settings.get("shoe_buffer_m", defaults.shoe_buffer_m) or 0.),
         collar_mds=payload["wellbore"].get("collar_mds") or None)
-    return placed["count"]
 
 
 def _dynamic_fann(readings, fluid):
@@ -613,7 +626,7 @@ def spacer_bhct_down(state):
                                                     for rpm in rheology.RPM_ORDER}}, "fit": fit}
 
 
-def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override=None, custom_products=()):
+def build_dynamic_payload(state, zones, products, *, mode="optimize", aux_rheology=None, override=None, custom_products=()):
     """Return fresh engine payload and transient diagnostics, or None for N/A.
 
     Completeness follows all active Phase-IV fluids, including inside-only or
@@ -622,7 +635,7 @@ def build_dynamic_payload(state, zones, products, *, aux_rheology=None, override
     """
     if override is not None:
         raise ValueError("Dynamic Tier-2 fluid columns are unsupported: they do not carry fluid identity.")
-    payload = build_static_payload(state, zones, products, custom_products=custom_products)
+    payload = build_static_payload(state, zones, products, mode=mode, custom_products=custom_products)
     if payload is None:
         return None
     require_dynamic_geometry(state)
@@ -685,7 +698,7 @@ def solve_dynamic(state, zones, products, *, mode, aux_rheology=None, override=N
     """Execute the chosen frozen Dynamic API; target misses remain valid."""
     if mode not in ("direct", "optimize"):
         raise ValueError("Dynamic placement mode must be 'direct' or 'optimize'.")
-    prepared = build_dynamic_payload(state, zones, products, aux_rheology=aux_rheology, override=override,
+    prepared = build_dynamic_payload(state, zones, products, mode=mode, aux_rheology=aux_rheology, override=override,
                                      custom_products=custom_products)
     if prepared is None:
         return None

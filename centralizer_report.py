@@ -48,17 +48,31 @@ def prepare_report(state):
     config = state["centralizer_config"]
     catalog = adapter.load_official_catalog()
     products = {}
-    for zone in result["zones"]:
+    if len(result["zones"]) != len(config["zones"]):
+        raise ValueError("Phase IX: Current zone diagnostics do not match the saved design.")
+    unassessed = []
+    for index, (zone, source) in enumerate(zip(result["zones"], config["zones"])):
         mapped = adapter.resolve_zone_product(zone, catalog, config["custom_products"])
         if zone.get("product_name") != mapped["name"] or type(zone.get("count")) is not int or zone["count"] < 0:
             raise ValueError("Phase IX: Current zone product/count diagnostics are incomplete.")
-        if type(zone.get("meets_target")) is not bool:
+        if result["mode"] == "direct" and source.get("target_standoff_pct") is None:
+            if "meets_target" not in zone or zone["meets_target"] is not None or zone.get("target") is not None:
+                raise ValueError("Phase IX: A Direct Check without a target cannot report a target comparison.")
+            if zone.get("min_stdf") is None:
+                raise ValueError("Phase IX: Word requires an evaluated minimum standoff for each zone.")
+            unassessed.append(index)
+        elif type(zone.get("meets_target")) is not bool:
             raise ValueError("Phase IX: Current zone target diagnostics are incomplete.")
         products[mapped["name"]] = mapped
     analysis = deepcopy(result["profile"])
     if not analysis.get("centralizer_md") or not analysis.get("zones_min"):
         raise ValueError("Phase IX: The current result carries no completed Pipe Standoff profile.")
-    analysis.update(zones=deepcopy(result["zones"]), products=list(products.values()),
+    for index in unassessed:
+        analysis["zones_min"][index]["target"] = None
+    report_zones = [{key: value for key, value in zone.items()
+                     if key not in {"centralizer_md", "spacing_m", "achieved_min_stdf"}}
+                    for zone in result["zones"]]
+    analysis.update(zones=deepcopy(report_zones), products=list(products.values()),
                     wellbore=geometry["wellbore"], job_type=geometry["job_type"],
                     well_name=state.get("well_name", ""))
     view = _companion().build_view(analysis)
@@ -66,7 +80,7 @@ def prepare_report(state):
         raise ValueError("Phase IX: Exact Rigid/Spring zone counts must account for all current Centralizers.")
     return {"applicable": True, "analysis": analysis, "view": view,
             "source": state["_centralizer_signature"],
-            "warning": any(not zone["meets_target"] for zone in result["zones"])}
+            "warning": any(zone["meets_target"] is False for zone in result["zones"])}
 
 
 def render_chart_png(prepared):

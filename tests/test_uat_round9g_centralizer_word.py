@@ -572,3 +572,30 @@ def test_r16b_current_renderer_and_noncurrent_outside_ix_are_unchanged(word_stat
     assert outside(Document(BytesIO(raw))) == outside(placeholder)
     placeholder.save(tmp_path/'placeholder-comparison.docx')
     new.save(tmp_path/'current-comparison.docx')
+
+
+def test_uat22b_direct_without_target_exports_the_same_actual_placement(word_state):
+    from project_state import prepare_calculations
+
+    state = deepcopy(word_state)
+    assert prepare_calculations(state) == []
+    execute_centralizer(state, mode='direct', target=65.)
+    previous = context(state)
+    previous_docx = render(previous)
+    saved = state['centralizer_config']['zones'][0]
+    saved['target_standoff_pct'] = None
+    assert bridge().prepare_report(state)['current'] is False
+    phase9.execute(state)
+    prepared = context(state)
+    assert prepared['centralizer_report']['warning'] is False
+    assert prepared['centralizer_report']['view'] == previous['centralizer_report']['view']
+    analysis = prepared['centralizer_report']['analysis']
+    assert analysis['zones'][0]['target'] is analysis['zones'][0]['meets_target'] is None
+    assert analysis['zones_min'][0]['target'] is None
+    rendered = render(prepared)
+    with ZipFile(BytesIO(previous_docx)) as before, ZipFile(BytesIO(rendered)) as after:
+        assert before.namelist() == after.namelist()
+        assert all(before.read(name) == after.read(name) for name in before.namelist())
+    state['_centralizer_result']['zones'][0]['meets_target'] = True
+    with pytest.raises(ValueError, match='without a target cannot report a target comparison'):
+        bridge().prepare_report(state)

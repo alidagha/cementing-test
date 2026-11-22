@@ -127,9 +127,8 @@ def auto_populate(state):
         if identity == previous and zones[-1]["bottom_md"] == start:
             zones[-1]["bottom_md"] = end
         else:
-            density, target = ("1/1", 75.) if open_hole else ("1/4", 67.)
-            zones.append({"top_md": start, "bottom_md": end, "density": density,
-                          "target_standoff_pct": target, "product_nr": None, "custom_product_id": None})
+            zones.append({"top_md": start, "bottom_md": end, "density": DENSITIES[0],
+                          "target_standoff_pct": None, "product_nr": None, "custom_product_id": None})
         previous = identity
     return zones
 
@@ -240,14 +239,17 @@ def _zones_action(action, index=None):
     config = st.session_state["centralizer_config"]
     try:
         if action == "auto":
+            if config["placement_mode"] != "optimize":
+                raise ValueError("Auto-Populate Zones requires Optimize.")
             zones = auto_populate(st.session_state)
             if zones == config["zones"]:
                 st.session_state.pop("_centralizer_error", None)
                 return
             config["zones"] = zones
         elif action == "add":
-            config["zones"].append({"top_md": None, "bottom_md": None, "density": "1/4",
-                                    "target_standoff_pct": 67., "product_nr": None, "custom_product_id": None})
+            seed = DENSITIES[0] if config["placement_mode"] == "optimize" else None
+            config["zones"].append({"top_md": None, "bottom_md": None, "density": seed,
+                                    "target_standoff_pct": None, "product_nr": None, "custom_product_id": None})
         elif action == "delete":
             del config["zones"][index]
         st.session_state["_centralizer_zone_epoch"] = st.session_state.get("_centralizer_zone_epoch", 0) + 1
@@ -302,6 +304,7 @@ def _render_zones(config, candidates, geometry_ready):
         options[token] = (f"{view['Identification']} | {view['Hole Size (in)']} in | {view['Kind']} | "
                           f"{view['Restoring Force (lbf)']} lbf [{token}]")
     epoch = st.session_state.get("_centralizer_zone_epoch", 0)
+    direct = config["placement_mode"] == "direct"
     for index, zone in enumerate(config["zones"]):
         st.markdown(f"**Zone {index + 1}**")
         prefix = f"_centralizer_zone_{epoch}_{index}"
@@ -314,11 +317,17 @@ def _render_zones(config, candidates, geometry_ready):
                 **({"max_value":100.} if field == "target_standoff_pct" else {}),
                 value=None, key=key, on_change=_commit, args=(field, key, index),
                 kwargs={"epoch":epoch},
-                help="Target must be greater than zero and at most 100%." if field == "target_standoff_pct" else None)
-        key = f"{prefix}_density"
-        st.session_state[key] = zone.get("density")
-        columns[2].selectbox(f"Design Density — Zone {index + 1}", DENSITIES, index=None, key=key,
-                            on_change=_commit, args=("density", key, index), kwargs={"epoch":epoch})
+                help=(("Optional for Direct Check. " if direct else "Required for Optimize. ")
+                      + "Enter a target greater than zero and at most 100%.") if field == "target_standoff_pct" else None)
+        if direct:
+            key = f"{prefix}_density"
+            st.session_state[key] = zone.get("density")
+            columns[2].selectbox(f"Design Density — Zone {index + 1}", DENSITIES, index=None, key=key,
+                                on_change=_commit, args=("density", key, index), kwargs={"epoch":epoch})
+        else:
+            seed = zone.get("density")
+            label = "Saved starting density" if seed != DENSITIES[0] else "Starting density"
+            columns[2].caption(f"{label} — Zone {index + 1}: {seed or 'Not set'}")
         selected = (f"official:{zone['product_nr']}" if zone.get("product_nr") is not None
                     else f"custom:{zone['custom_product_id']}" if zone.get("custom_product_id") is not None else None)
         choices = dict(options)
@@ -395,12 +404,24 @@ def render():
         st.error(st.session_state["_centralizer_error"])
     if result_is_current(st.session_state, products):
         result = st.session_state["_centralizer_result"]
-        st.success("Current Centralizer calculation complete.")
-        st.dataframe(pd.DataFrame([{"Zone #":index + 1, "Computed Density":row["density_computed"],
-                                   "Min Standoff (%)":row["min_stdf"] * 100,
-                                   "Status":"Pass" if row["meets_target"] else "Target missed"}
-                                  for index,row in enumerate(result["zones"])]), hide_index=True)
-        if any(not row["meets_target"] for row in result["zones"]):
+        count = len(result["profile"]["centralizer_md"])
+        st.success(f"Current Centralizer calculation complete. Total centralizers: {count}.")
+        rows = []
+        for index, zone in enumerate(result["zones"], 1):
+            measured = zone["achieved_min_stdf"]
+            assessed = zone["meets_target"]
+            if measured is None or assessed is None:
+                status = "Not assessed"
+            else:
+                status = "Pass" if assessed else "Target missed"
+            rows.append({"Zone #": index, "Computed Density": zone["density_computed"],
+                         "Count": zone["count"], "Spacing (m)": zone["spacing_m"],
+                         "Min Standoff (%)": None if measured is None else measured * 100, "Status": status})
+        st.dataframe(pd.DataFrame(rows), hide_index=True,
+                     column_config={"Status": st.column_config.TextColumn(help=(
+                         "Optimize assesses the target during the engine's placement search. "
+                         "Minimum standoff comes from the final whole-string profile."))})
+        if any(row["Status"] == "Target missed" for row in rows):
             st.warning("Required target standoff was not achieved in one or more zones. The calculation is valid.")
     else:
         st.info("Needs Review: Execute the current Centralizer design. Saved projects require a fresh execution after load.")
