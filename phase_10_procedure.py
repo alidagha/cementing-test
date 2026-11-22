@@ -373,11 +373,23 @@ def build_ordered_notes(
 
     # --- One "Mix Additives" note per active slurry, in slurry order ---
     for s in slurries_payload:
-        tank = s.get("mixing_tank") or "Mud Reserve Tanks"
-        total_water = s.get("total_water_bbl", 0.0)
-        mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         if job_type == materials_db.CT_JOB and s.get("name") == "Main":
-            mix_note += " " + s["ct_stage_note"]
+            projection = s["ct_mixing_water"]
+            count = projection["count"]
+            stage_label = {1: "One stage", 2: "Two stages", 3: "Three stages"}[count]
+            water = [f"{volume:.1f}" for volume in projection["water_bbl"]]
+            if count == 1:
+                detail = f"{stage_label}: {water[0]} bbl. fresh water."
+            elif len(set(water)) == 1:
+                detail = f"{stage_label} and each stage {water[0]} bbl. fresh water."
+            else:
+                detail = f"{stage_label}: {_summary_join(water)} bbl. fresh water."
+            mix_note = (f"Mix above Additives in {projection['display_water_bbl']:.1f} bbl. fresh water "
+                        f"at {projection['tank_name']}. ({detail})")
+        else:
+            tank = s.get("mixing_tank") or "Mud Reserve Tanks"
+            total_water = s.get("total_water_bbl", 0.0)
+            mix_note = f"Mix above Additives in {round_half_up(total_water, 1):.1f} bbl Fresh Water at {tank}."
         s["note_mix"] = counter.next(mix_note)
 
     if spacer_payload is not None:
@@ -617,6 +629,8 @@ def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_c
             continue
         record = config.get("per_slurry", {}).get(slurry, {})
         basis = config.get("volume_basis", record.get("volume_basis", "auto"))
+        if job_type == materials_db.CT_JOB and basis == "client_request" and "volume_basis" not in config:
+            basis = "auto"
         try:
             excess = resolve_report_excess(job_type, placement_config, config or None, slurry)
         except ValueError:
@@ -627,10 +641,10 @@ def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_c
         reason = ("client request" if basis == "client_request" else
                   _summary_join(clauses) if basis in ("auto", "unspecified", "excess") else "")
         qualifiers = []
-        if record.get("wet_stands") is not None:
+        if job_type != materials_db.CT_JOB and record.get("wet_stands") is not None:
             host = hardware_context_label(hw_df, record.get("wet_inside_host_row"))
             qualifiers.append(f'with {record["wet_stands"]:g} stands wet' + (f" inside {host}" if host else ""))
-        if record.get("liner_lap_m") is not None:
+        if job_type != materials_db.CT_JOB and record.get("liner_lap_m") is not None:
             host = hardware_context_label(hw_df, record.get("liner_lap_host_row"))
             qualifiers.append(f'{record["liner_lap_m"]:.1f} m liner lap' + (f" inside {host}" if host else ""))
         qualifier = _summary_join(qualifiers)
@@ -642,15 +656,44 @@ def _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_c
             groups.append((group_key, [volume]))
     sentences = []
     for (reason, qualifier), volumes in groups:
-        if reason:
+        ct_client_basis = job_type == materials_db.CT_JOB and reason == "client request"
+        if reason and not ct_client_basis:
             suffix = (" " if qualifier.startswith("with ") else " and ") + qualifier if qualifier else ""
             sentences.append(f"The calculated cement volume is based on {reason}{suffix}, giving {_summary_join(volumes)}.")
         else:
             suffix = f", {qualifier}" if qualifier else ""
             # Direct single-slurry references state the volume without a basis claim.
             value = volumes[0].split(" for ")[0] if len(active_slurries) == 1 else _summary_join(volumes)
-            sentences.append(f"The calculated cement volume is {value}{suffix}.")
+            basis_text = " based on client request" if ct_client_basis else ""
+            sentences.append(f"The calculated cement volume is {value}{basis_text}{suffix}.")
     return " ".join(sentences)
+
+
+def _ct_summary_walls(payload, top, bottom):
+    """Describe the walls in contact with the plug using validated schematic sections."""
+    from engineering_tools import parse_fractional_size
+    from well_schematic_adapter import format_size
+
+    walls = [(section["top_md"], section["shoe_md"], section["size_in"],
+              "tie back liner" if pipe["type"] == "tieback" else pipe["type"])
+             for pipe in payload["casings"] for section in pipe.get("sections", [pipe])]
+    walls += [(hole["top_md"], hole["bottom_md"], hole["hole_size_in"], "open hole")
+              for hole in payload["open_holes"]]
+    depths = sorted({top, bottom, *(md for start, end, _, _ in walls
+                                   for md in (start, end) if top < md < bottom)}, reverse=True)
+    labels = []
+    for end, start in zip(depths, depths[1:]):
+        covering = [wall for wall in walls if wall[0] <= start and end <= wall[1]]
+        if not covering:
+            return []
+        _, _, size, kind = min(covering, key=lambda wall: (wall[3] == "open hole", wall[2]))
+        size_label = format_size(size)
+        if parse_fractional_size(size_label) != size:
+            size_label = f'{size}"'
+        label = f"{size_label} {kind}"
+        if label not in labels:
+            labels.append(label)
+    return labels
 
 
 def generate_executive_summary(
@@ -675,6 +718,7 @@ def generate_executive_summary(
         hw_df = state["hardware_table"]
         cement_params = state["cement_params"]
         placement_config = state.get("placement_config", {})
+        executive_summary_config = state.get("executive_summary_config")
     p1 = ("Enclosed are our recommendations for NIDC Cement Engineering and Planning Department intervention "
           "on the referenced well. The proposal includes well data, materials and resources requirements.")
 
@@ -700,6 +744,24 @@ def generate_executive_summary(
             for _, row in frame.iterrows()) if isinstance(frame, pd.DataFrame) else False)
     design = ("Dry blend and neat" if any(dry_designs) and not all(dry_designs) else
               "Dry blend" if any(dry_designs) else "Neat") + " cement design will be used"
+    if job_type == materials_db.CT_JOB:
+        from ct_stages import ct_stage_projection
+
+        geometry = prepare_schematic(state)
+        top = placements["Main"]["top_depth"]
+        walls = _ct_summary_walls(geometry["payload"], top, target) if geometry["available"] else []
+        environment = f" to cement {_summary_join(walls)};" if walls else "."
+        _, density = get_slurry_display_values(fluid_data, "Main")
+        volumes = _summary_volume_sentences(job_type, fluid_data, active_slurries, placement_config, config, hw_df)
+        p3 = (f"Cement plug will be set at {target_text}. {design}{environment} "
+              f"{density} Main cement slurry will be cemented from {target:.1f} m to {top:.1f} m. {volumes}")
+        stages = {1: "one stage", 2: "a minimum of two stages", 3: "three stages"}
+        stage_text = stages[ct_stage_projection(state)["count"]]
+        important = ("Important: Due to the anticipated cement slurry volume, as well as the requirement to perform "
+                     "the cementing operation through Coiled Tubing (CT), "
+                     f"the operation shall be conducted in {stage_text}.")
+        return f"{p1}\n\n{p2}\n\n{p3}\n\n{important}"
+
     # Parse only a complete supported taxonomy form; host size is never the job size.
     match = re.fullmatch(r'(?:CSG|LNR|TIE BACK LNR) (\d+(?: \d+/\d+)?)"', job_type)
     size = match.group(1) if match else None
@@ -711,9 +773,6 @@ def generate_executive_summary(
         verb = "set" if origin == "Target depth" else "done"
         opening = f'{size}" Tie Back cementing will be {verb} at {target_text}.'
         environment = "this tie back"
-    elif job_type == materials_db.CT_JOB:
-        opening = f"CMT PLUG WITH CT will set the Main cement plug with Coiled Tubing at {target_text}."
-        environment = "the configured Main plug interval"
     elif "PLUG" in job:
         opening = f"Cement plug will be set at {target_text}."
         environment = "inside " + (_summary_join(contexts) if contexts else "casing / open hole")
@@ -826,10 +885,23 @@ def _ct_procedure(state):
     ]
     for name in state["fluids_config"]["active"]:
         record = state["fluid_data"][name]
-        planned = "Planned " if name == "Displacement Fluid" else ""
-        lines.append(sc.next(f"{planned}Pump {record['volume']:g} bbl {record['material_name']} as {name} "
-            f"({record['density']} pcf) at {_word_fluid_number(record['pump_rate'], 1)} bpm; "
-            f"calculated duration {record['duration_min']:.2f} min."))
+        volume = _word_fluid_number(record["volume"], 1)
+        material = record["material_name"] or name.lower()
+        if name == "Main":
+            count = projection["count"]
+            stages = {1: "One stage", 2: "Two stages", 3: "Three stages"}[count]
+            amounts = [_word_fluid_number(amount, 1) for amount in projection["cement_bbl"]]
+            if count > 1 and len(set(amounts)) == 1:
+                detail = f"{stages} and each stage {amounts[0]} bbl."
+            else:
+                detail = f"{stages}: {_summary_join(amounts)} bbl."
+            instruction = f"Mix and pump {volume} bbl Main cement slurry ({record['density']} pcf). ({detail})"
+        elif name == "Displacement Fluid":
+            instruction = f"Displace cement slurry with {volume} bbl {material} (planned; confirm final volume at rig site)."
+        else:
+            role = f" as {name.lower()}" if material.casefold() != name.casefold() else ""
+            instruction = f"Pump {volume} bbl {material}{role}."
+        lines.append(sc.next(instruction))
     lines += [
         sc.next("Displacement Volume: Calculate at rig site. The Phase IV Displacement Fluid volume and time are planning values; confirm the final field displacement at the rig."),
         sc.next(f"POOH Coiled Tubing to at least 30 m above Main TOC ({interval['top_depth']:.1f} m MD); confirm the withdrawal position at rig site."),
@@ -1275,7 +1347,10 @@ def synchronize_report_texts():
     if job == materials_db.CT_JOB:
         from placement import ct_setting_depth
         from ct_stages import ct_stage_projection
-        procedure_source += [ct_setting_depth(hardware), ct_stage_projection(state), {"ct_numeric_display_revision": 1}]
+        stage_projection = ct_stage_projection(state)
+        summary_source += [stage_projection, {"ct_summary_presentation_revision": 1}]
+        procedure_source += [ct_setting_depth(hardware), stage_projection,
+                             {"ct_numeric_display_revision": 1, "ct_pumping_presentation_revision": 1}]
     specs = {
         "exec_summary_text": {
             "generated": generate_executive_summary(job, fluids, active, additives, hardware, depth, params, placement, summary_config or None),
@@ -1639,8 +1714,11 @@ def build_master_context(*, calculations_prepared=False) -> dict:
             }
         })
         if job_type == materials_db.CT_JOB:
-            from ct_stages import ct_stage_projection, stage_note
-            slurries_payload[-1]["ct_stage_note"] = stage_note(ct_stage_projection(st.session_state))
+            from ct_stages import ct_stage_projection
+            projection = ct_stage_projection(st.session_state)
+            slurries_payload[-1]["ct_mixing_water"] = {
+                key: projection[key] for key in ("count", "water_bbl", "display_water_bbl", "tank_name")
+            }
         # BUG-04: populate the four placement keys the template's per-slurry
         # placement block consumes (top/bottom/excess_oh/excess_csg).
         _attach_placement_fields(slurries_payload[-1], p, hw_df, job_type,

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
 import re
+import pandas as pd
 import pytest
 from docx import Document
 from docxtpl import DocxTemplate
@@ -15,7 +16,7 @@ import well_report
 import well_schematic_adapter as schematic
 from ct_stages import ct_stage_projection, stage_note
 import test_audit_regressions as audit
-from test_round13b_b3_ct_schematic import state, PLACEHOLDER
+from test_round13b_b3_ct_schematic import state, row, PLACEHOLDER
 
 CASE=audit.AuditRegressions()
 
@@ -48,6 +49,405 @@ def context(s,prepared=False):
         return report.build_master_context(calculations_prepared=prepared)
 
 
+def homa_summary_source(valid_ct):
+    """Representative of the Owner-supplied dimensions, using the admitted CT fixture."""
+    source = deepcopy(valid_ct)
+    hardware = source['hardware_table']
+    ct = hardware.loc[hardware['Description'].eq('CT')].iloc[0].to_dict()
+    ct['MD (m)'] = '2987'
+    hole = row('Open Hole Size', '2799.5-2987', '6 1/5', 6.125)
+    # Correct the fixture's Hardware size only. The document-control draft is not geometry.
+    hole['Size (in)'] = '6 1/8'
+    source['hardware_table'] = pd.DataFrame([
+        row('Previous Casing', '2400', '13 3/8', 12.415),
+        row('Previous Liner Shoe', '2200-2799.5', '7', 6.276),
+        hole,
+        ct,
+    ], columns=hardware.columns)
+    source['doc_control'] = {**source.get('doc_control', {}), 'hole_size': '6 1/5'}
+    source['fluids_config']['params']['Main'].update(volume=24.1, density='118')
+    source['cement_params']['Main']['top_depth'] = 2785.
+    source['ct_stage_config'].update(main_volume='24.1', count=3)
+    return source
+
+
+def test_uat21_ct_summary_homa_uses_verified_crossing_and_current_stages(valid_ct):
+    source = homa_summary_source(valid_ct)
+    source['executive_summary_config'] = {
+        'version': 1, 'job_type': db.CT_JOB, 'volume_basis': 'client_request',
+    }
+    assert ps.prepare_calculations(source) == []
+    plug = schematic.prepare_schematic(source)['payload']['cement_plugs'][0]
+    assert plug == {'top_md': 2785., 'bottom_md': 2987.}
+    before = ps.fingerprint([source['hardware_table'], source['fluids_config'],
+                             source['cement_params'], ct_stage_projection(source)])
+    paragraphs = context(source)['executive_summary'].split('\n\n')
+    assert paragraphs[2] == (
+        'Cement plug will be set at 2987.0 m MD. Neat cement design will be used to cement '
+        '6 1/8" open hole and 7" liner; 118 pcf Main cement slurry will be cemented '
+        'from 2987.0 m to 2785.0 m. The calculated cement volume is 24.1 bbl based on client request.'
+    )
+    assert paragraphs[3:] == [
+        'Important: Due to the anticipated cement slurry volume, as well as the requirement to perform '
+        'the cementing operation through Coiled Tubing (CT), the operation shall be conducted in three stages.'
+    ]
+    assert ps.fingerprint([source['hardware_table'], source['fluids_config'],
+                           source['cement_params'], ct_stage_projection(source)]) == before
+
+
+@pytest.mark.parametrize('geometry,volume,count,ending,wall', [
+    ('complete', 12, None, 'one stage.', '7" liner'),
+    ('casing', 24, 2, 'a minimum of two stages.', '7" casing'),
+    ('hole', 24, 2, 'a minimum of two stages.', '12 1/4" open hole'),
+    ('partial', 24, 2, 'a minimum of two stages.', None),
+])
+def test_uat21_ct_summary_other_walls_and_stage_counts(valid_ct, geometry, volume, count, ending, wall):
+    source = deepcopy(valid_ct)
+    source['hardware_table'] = state(geometry)['hardware_table']
+    source['fluids_config']['params']['Main']['volume'] = volume
+    source.pop('ct_stage_config')
+    if count is not None:
+        source['ct_stage_config'] = {'job_type': db.CT_JOB, 'main_volume': str(volume), 'count': count}
+    summary = context(source)['executive_summary']
+    paragraphs = summary.split('\n\n')
+    assert summary.count('Important:') == 1 and len(paragraphs) == 4
+    assert paragraphs[3] == (
+        'Important: Due to the anticipated cement slurry volume, as well as the requirement to perform '
+        'the cementing operation through Coiled Tubing (CT), the operation shall be conducted in ' + ending
+    )
+    assert 'Cement plug will be set at 3527.0 m MD.' in paragraphs[2]
+    assert 'from 3527.0 m to 3470.0 m.' in paragraphs[2]
+    assert f'The calculated cement volume is {volume:.1f} bbl.' in paragraphs[2]
+    if wall:
+        assert f'cement design will be used to cement {wall};' in paragraphs[2]
+    else:
+        assert not schematic.prepare_schematic(source)['available']
+        assert 'cement design will be used. 118 pcf Main' in paragraphs[2]
+    assert 'configured Main plug interval' not in summary
+
+
+def test_uat21_ct_summary_geometry_and_review_are_source_bound(valid_ct):
+    source = homa_summary_source(valid_ct)
+    # A top exactly at the shoe occupies no positive interval inside the liner.
+    source['cement_params']['Main']['top_depth'] = 2799.5
+    assert '6 1/8" open hole;' in context(source)['executive_summary']
+    hole = source['hardware_table']['Description'].eq('Open Hole Size')
+    source['hardware_table'].loc[hole, ['Size (in)', 'ID (in)']] = ['6.147', 6.147]
+    assert '6.147" open hole;' in context(source)['executive_summary']
+    source['hardware_table'].loc[hole, 'Size (in)'] = '6 1/5'
+    source['_compiled_doc_bytes'] = b'stale'
+    with pytest.raises(ValueError, match='Size and ID/Bit Size must match'):
+        context(source, prepared=True)
+    assert '_compiled_doc_bytes' not in source
+
+
+def test_uat21_ct_summary_only_claims_explicit_current_client_basis(valid_ct):
+    source = deepcopy(valid_ct)
+    source['executive_summary_config'] = {
+        'version': 1, 'job_type': db.CT_JOB,
+        'per_slurry': {'Main': {'volume_basis': 'client_request', 'excess_csg_oh_pct': 9.0,
+                                'wet_stands': 3.0, 'liner_lap_m': 2.0}},
+    }
+    summary = context(source)['executive_summary']
+    assert 'client request' not in summary
+    assert 'stands wet' not in summary and 'liner lap' not in summary
+    assert 'based on 9% excess for OH-CSG, giving 20.0 bbl for main slurry.' in summary
+    source['executive_summary_config']['volume_basis'] = 'client_request'
+    assert 'The calculated cement volume is 20.0 bbl based on client request.' in context(source)['executive_summary']
+
+
+@pytest.mark.parametrize('fault', ['missing', 'stale', 'invalid'])
+def test_uat21_ct_summary_rejects_unusable_stage_selection(valid_ct, fault):
+    source = deepcopy(valid_ct)
+    if fault == 'missing':
+        source.pop('ct_stage_config')
+    elif fault == 'stale':
+        source['ct_stage_config']['main_volume'] = '21'
+    else:
+        source['ct_stage_config']['count'] = 4
+    with patch.object(report.st, 'session_state', source):
+        with pytest.raises(ValueError, match='Phase V CT stages'):
+            report.synchronize_report_texts()
+    assert not source.get('exec_summary_text')
+
+
+def test_uat21_ct_summary_stage_and_geometry_edits_preserve_manual_review(valid_ct):
+    source = deepcopy(valid_ct)
+    source['ct_stage_config']['count'] = 2
+    before = context(source)
+    first = source['report_text_state']['exec_summary_text']['source_signature']
+    source['ct_stage_config']['count'] = 3
+    after = context(source)
+    assert 'a minimum of two stages.' in before['executive_summary']
+    assert 'three stages.' in after['executive_summary']
+    assert source['report_text_state']['exec_summary_text']['source_signature'] != first
+    assert report.document_signature(before, report.TEMPLATE_PATH) != report.document_signature(after, report.TEMPLATE_PATH)
+
+    liner = source['hardware_table']['Description'].eq('Previous Liner Shoe')
+    source['hardware_table'].loc[liner, 'Size (in)'] = '7 5/8'
+    geometry_edit = context(source)
+    assert '7 5/8" liner' in geometry_edit['executive_summary']
+    assert report.document_signature(after, report.TEMPLATE_PATH) != report.document_signature(geometry_edit, report.TEMPLATE_PATH)
+
+    manual = 'Operator-reviewed CT Executive Summary.'
+    source['exec_summary_text'] = manual
+    with patch.object(report.st, 'session_state', source):
+        spec = report.synchronize_report_texts()['exec_summary_text']
+        ps.accept_report_text(source, 'exec_summary_text', spec['generated'], spec['signature'])
+        source['ct_stage_config']['count'] = 2
+        updated = report.synchronize_report_texts()['exec_summary_text']
+        assert updated['pending'] and updated['signature'] != spec['signature']
+        assert source['exec_summary_text'] == manual
+        with pytest.raises(ValueError, match='preserved manual'):
+            report.build_master_context()
+    restored = audit.round_trip(source)
+    assert restored['exec_summary_text'] == manual
+    with patch.object(report.st, 'session_state', restored):
+        assert report.synchronize_report_texts()['exec_summary_text']['pending']
+
+
+def test_uat21_ct_summary_word_has_same_text_as_editor_and_keeps_template_style(valid_ct, tmp_path):
+    source = homa_summary_source(valid_ct)
+    app = CASE.app(audit.round_trip(source))
+    CASE.phase(app, 'phase10')
+    editor = next(w for w in app.text_area if w.label == 'Executive Summary Text (Official NIDC Format):')
+    build = next(w for w in app.button if w.label == 'Build Word Document')
+    assert not build.disabled, [w.value for w in app.error]
+    build.click().run(timeout=90)
+    CASE.healthy(app)
+    data = app.session_state['_compiled_doc_bytes']
+    word = Document(BytesIO(data))
+    body = next(p for p in word.paragraphs if p.text.startswith('Enclosed are our recommendations'))
+    template = next(p for p in Document(report.TEMPLATE_PATH).paragraphs if '{{ executive_summary }}' in p.text)
+    assert body.text == editor.value
+    assert body.style.style_id == template.style.style_id
+    assert body.alignment == template.alignment
+    assert body.paragraph_format.line_spacing == template.paragraph_format.line_spacing
+    preamble, safety, placement, important = body.text.split('\n\n')
+    assert preamble == ('Enclosed are our recommendations for NIDC Cement Engineering and Planning Department '
+                        'intervention on the referenced well. The proposal includes well data, materials and '
+                        'resources requirements.')
+    assert safety == ('NIDC has established a safety policy to which all NIDC personnel must adhere. A pre-job '
+                      'safety meeting will be held with client representatives and other on location personnel '
+                      'to familiarize everyone with existing hazards and safety procedures. We would appreciate '
+                      'close cooperation between the client representative and the NIDC representative to ensure '
+                      'a safe operation.')
+    assert '6 1/8" open hole and 7" liner;' in placement and '6 1/5' not in placement
+    assert important.startswith('Important:') and important.endswith('three stages.')
+    assert sum(p.text.count('Important:') for p in word.paragraphs) == 1
+    (tmp_path / 'uat21-a-ct-summary.docx').write_bytes(data)
+
+
+def test_uat21_b_homa_note5_in_actual_word(valid_ct, tmp_path):
+    source = homa_summary_source(valid_ct)
+    source['cement_params']['Main'].update(
+        mix_water=14.021480453863592, dead_vol=1.98, tank_name='Cement Unit Tanks',
+    )
+    app = CASE.app(audit.round_trip(source))
+    CASE.phase(app, 'phase10')
+    build = next(w for w in app.button if w.label == 'Build Word Document')
+    assert not build.disabled, [w.value for w in app.error]
+    build.click().run(timeout=90)
+    CASE.healthy(app)
+    data = app.session_state['_compiled_doc_bytes']
+    (tmp_path / 'uat21-b-note5.docx').write_bytes(data)
+    projection = ct_stage_projection(app.session_state)
+    assert f"{projection['display_water_bbl']:.1f}" == '16.0'
+    assert tuple(f'{water:.1f}' for water in projection['water_bbl']) == ('5.3', '5.3', '5.4')
+    assert sum(projection['water_bbl']) == projection['display_water_bbl']
+
+    paragraphs = Document(BytesIO(data)).paragraphs
+    note_index = next(index for index, p in enumerate(paragraphs) if p.text.startswith('NOTE 5:'))
+    note = paragraphs[note_index]
+    assert note.text == (
+        'NOTE 5: Mix above Additives in 16.0 bbl. fresh water at Cement Unit Tanks. '
+        '(Three stages: 5.3, 5.3 and 5.4 bbl. fresh water.)'
+    )
+    assert 'pump truck tanks' not in note.text
+    assert 'Main cement stages (bbl)' not in note.text and 'Mixing water stages (bbl)' not in note.text
+    assert sum(p.text == note.text for p in paragraphs) == 1
+    program = next(i for i, p in enumerate(paragraphs) if p.text.strip() == 'V. Cementing Program')
+    preflush = next(i for i, p in enumerate(paragraphs) if p.text.strip() == 'VI. Pre-flush Program')
+    assert program < note_index < preflush
+    numbers = [int(hit[1]) for p in paragraphs if (hit := re.match(r'NOTE (\d+):', p.text.lstrip()))]
+    assert numbers == list(range(1, 10))
+    template_note = next(p for p in Document(report.TEMPLATE_PATH).paragraphs if '{{ s.note_mix }}' in p.text)
+    assert note.style.style_id == template_note.style.style_id
+    assert note.alignment == template_note.alignment
+    assert note.paragraph_format.space_after == template_note.paragraph_format.space_after
+
+    technical_note = stage_note(projection)
+    assert app.session_state['cement_note_Main'].endswith(technical_note)
+    assert any(p.text.startswith('5. Prepare Cement Unit Tanks with 16.0 bbl Fresh Water')
+               and p.text.endswith(technical_note) for p in paragraphs)
+    summary = next(p.text for p in paragraphs if p.text.startswith('Enclosed are our recommendations'))
+    assert '6 1/8" open hole and 7" liner;' in summary
+    assert summary.count('Important:') == 1 and summary.endswith('three stages.')
+
+
+@pytest.mark.parametrize('volume,count,water,tank,allocation,detail', [
+    (12, None, 14., 'Cement Unit Tanks', ('16.0',), 'One stage: 16.0 bbl. fresh water.'),
+    (20, 2, 14., 'Cement Unit Tanks', ('8.0', '8.0'), 'Two stages and each stage 8.0 bbl. fresh water.'),
+    (19, 2, 14., 'Mud Reserve Tanks', ('8.4', '7.6'), 'Two stages: 8.4 and 7.6 bbl. fresh water.'),
+    (18, 3, 13., 'Mud Reserve Tanks', ('5.0', '5.0', '5.0'), 'Three stages and each stage 5.0 bbl. fresh water.'),
+])
+def test_uat21_b_note_uses_current_allocation_and_tank(valid_ct, volume, count, water, tank, allocation, detail):
+    source = deepcopy(valid_ct)
+    source['fluids_config']['params']['Main']['volume'] = volume
+    source['cement_params']['Main'].update(mix_water=water, dead_vol=2., tank_name=tank)
+    source.pop('ct_stage_config')
+    if count is not None:
+        source['ct_stage_config'] = {'job_type': db.CT_JOB, 'main_volume': str(volume), 'count': count}
+    assert ps.prepare_calculations(source) == []
+    projection = ct_stage_projection(source)
+    assert projection['count'] == len(allocation)
+    assert tuple(f'{amount:.1f}' for amount in projection['water_bbl']) == allocation
+    assert sum(projection['water_bbl']) == projection['display_water_bbl']
+    before = ps.fingerprint([source['cement_params'], source['fluids_config'],
+                             source['lab_qc_params'], projection])
+    ctx = context(source)
+    assert ctx['slurries'][0]['note_mix'] == (
+        f"NOTE 5: Mix above Additives in {water + 2:.1f} bbl. fresh water at {tank}. ({detail})"
+    )
+    assert ctx['slurries'][0]['mix_water_bbl'] == water
+    assert ctx['slurries'][0]['total_water_bbl'] == water + 2
+    assert stage_note(projection) in ctx['procedure']
+    assert source['cement_note_Main'].endswith(stage_note(projection))
+    assert ps.fingerprint([source['cement_params'], source['fluids_config'],
+                           source['lab_qc_params'], ct_stage_projection(source)]) == before
+
+
+def test_uat21_b_repeated_word_and_source_edits_retire_stale_note(valid_ct):
+    source = deepcopy(valid_ct)
+    source['ct_stage_config']['count'] = 2
+    source['cement_params']['Main'].update(mix_water=14., dead_vol=2., tank_name='Cement Unit Tanks')
+    app = CASE.app(audit.round_trip(source))
+
+    def build_word():
+        CASE.phase(app, 'phase10')
+        build = next(w for w in app.button if w.label == 'Build Word Document')
+        assert not build.disabled, [w.value for w in app.error]
+        build.click().run(timeout=90)
+        CASE.healthy(app)
+        data = app.session_state['_compiled_doc_bytes']
+        note = next(p.text for p in Document(BytesIO(data)).paragraphs if p.text.startswith('NOTE 5:'))
+        with ZipFile(BytesIO(data)) as package:
+            return note, app.session_state['_compiled_doc_signature'], package.read('word/document.xml')
+
+    first = build_word()
+    assert '(Two stages and each stage 8.0 bbl. fresh water.)' in first[0]
+    assert build_word() == first
+    CASE.phase(app, 'phase5')
+    before = ps.fingerprint([app.session_state['cement_params'], app.session_state['fluids_config'],
+                             app.session_state['lab_qc_params']])
+    next(w for w in app.selectbox if w.label == 'Stage count - Main').set_value('3 stages').run()
+    assert '_compiled_doc_bytes' not in app.session_state
+    assert ps.fingerprint([app.session_state['cement_params'], app.session_state['fluids_config'],
+                           app.session_state['lab_qc_params']]) == before
+    resplit = build_word()
+    assert '(Three stages: 5.6, 5.6 and 4.8 bbl. fresh water.)' in resplit[0]
+    assert resplit[1] != first[1] and resplit[2] != first[2]
+
+    CASE.phase(app, 'phase5')
+    dead_volume = next(w for w in app.number_input if w.label == 'Dead Vol (bbl) - Main')
+    dead_volume.set_value(3.).run()
+    assert '_compiled_doc_bytes' not in app.session_state
+    refilled = build_word()
+    assert '17.0 bbl. fresh water' in refilled[0]
+    assert refilled[1] != resplit[1] and refilled[2] != resplit[2]
+    assert app.session_state['cement_params']['Main']['mix_water'] == 14.
+
+
+def test_uat21_abc_homa_program_in_actual_word(valid_ct, tmp_path):
+    source = homa_summary_source(valid_ct)
+    source['cement_params']['Main'].update(
+        mix_water=14.021480453863592, dead_vol=1.98, tank_name='Cement Unit Tanks',
+    )
+    config = source['fluids_config']
+    config['active'] = ['Displacement Fluid', 'Spacer Behind', 'Main', 'Spacer Ahead']
+    for name, volume in [('Spacer Ahead', 5.), ('Spacer Behind', .5)]:
+        config['params'][name] = dict(volume=volume, density='80', pump_rate='0.7-1.2',
+                                      material_name='Fresh Water')
+    config['params']['Displacement Fluid'].update(volume=26., material_name='Mud')
+    app = CASE.app(audit.round_trip(source))
+    CASE.phase(app, 'phase10')
+    build = next(w for w in app.button if w.label == 'Build Word Document')
+    assert not build.disabled, [w.value for w in app.error]
+    build.click().run(timeout=90)
+    CASE.healthy(app)
+    data = app.session_state['_compiled_doc_bytes']
+    (tmp_path / 'uat21-abc-homa.docx').write_bytes(data)
+    document = Document(BytesIO(data))
+    paragraphs = [p.text.strip() for p in document.paragraphs]
+    train = [p for p in paragraphs if re.match(r'(8|9|10|11)\. ', p)]
+    note = next(p for p in paragraphs if p.startswith('NOTE 5:'))
+    assert (train, note) == ([
+        '8. Pump 5.0 bbl Fresh Water as spacer ahead.',
+        '9. Mix and pump 24.1 bbl Main cement slurry (118 pcf). (Three stages: 8.0, 8.0 and 8.1 bbl.)',
+        '10. Pump 0.5 bbl Fresh Water as spacer behind.',
+        '11. Displace cement slurry with 26.0 bbl Mud (planned; confirm final volume at rig site).',
+    ], 'NOTE 5: Mix above Additives in 16.0 bbl. fresh water at Cement Unit Tanks. '
+       '(Three stages: 5.3, 5.3 and 5.4 bbl. fresh water.)')
+    assert sum(p.startswith('NOTE 5:') for p in paragraphs) == 1
+    assert not re.search(r'\brespectively\b', ' '.join(document.element.xpath('.//w:t/text()')), re.I)
+    assert any(p.startswith('12. Displacement Volume: Calculate at rig site.') for p in paragraphs)
+    assert any('6 1/8" open hole and 7" liner;' in p and 'Important:' in p for p in paragraphs)
+    assert stage_note(ct_stage_projection(app.session_state)) in next(p for p in paragraphs if p.startswith('5. Prepare '))
+
+
+@pytest.mark.parametrize('volume,count,detail', [
+    (12, None, 'One stage: 12.0 bbl.'),
+    (20, 2, 'Two stages and each stage 10.0 bbl.'),
+    (12.01, 2, 'Two stages: 6.0 and 6.01 bbl.'),
+    (18, 3, 'Three stages and each stage 6.0 bbl.'),
+    (20, 3, 'Three stages: 7.0, 7.0 and 6.0 bbl.'),
+])
+def test_uat21_abc_pumping_cement_projection_preserves_stage_precision(valid_ct, volume, count, detail):
+    source = deepcopy(valid_ct)
+    source['fluids_config']['params']['Main']['volume'] = volume
+    source.pop('ct_stage_config')
+    if count is not None:
+        source['ct_stage_config'] = {'job_type': db.CT_JOB, 'main_volume': str(volume), 'count': count}
+    assert ps.prepare_calculations(source) == []
+    projection = ct_stage_projection(source)
+    sources = ps.fingerprint([source['fluid_data'], source['fluids_config'], source['cement_params'], projection])
+    ctx = context(source)
+    steps = ctx['procedure'].splitlines()
+    main = next(line for line in steps if 'Mix and pump' in line)
+    assert main.endswith(f'Main cement slurry (118 pcf). ({detail})')
+    from decimal import Decimal
+    assert Decimal(main.split('Mix and pump ')[1].split()[0]) == projection['source_main_bbl']
+    assert sum(projection['cement_bbl']) == projection['source_main_bbl']
+    assert 'as spacer ahead' not in ctx['procedure'] and 'as spacer behind' not in ctx['procedure']
+    assert not re.search(r'\brespectively\b', ' '.join([ctx['procedure'], ctx['exec_summary'], *ctx['all_notes']]), re.I)
+    assert sources == ps.fingerprint([source['fluid_data'], source['fluids_config'], source['cement_params'],
+                                       ct_stage_projection(source)])
+
+
+def test_uat21_abc_optional_fluids_keep_selected_materials_and_order(valid_ct):
+    source = deepcopy(valid_ct)
+    source['mud_type'] = 'OBM'
+    source['well_data']['mud_type'] = 'OBM'
+    config = source['fluids_config']
+    config['active'] = ['Displacement Fluid', 'Main', 'Spacer Ahead', 'Pre Flush', 'Diesel']
+    for name, volume, material in [('Diesel', 1., 'Diesel'), ('Pre Flush', 2.3, 'Field wash'),
+                                   ('Spacer Ahead', 4.2, 'Weighted brine')]:
+        config['params'][name] = dict(volume=volume, density='52' if name == 'Diesel' else '80',
+                                      pump_rate='1', material_name=material)
+    source['preflush_config'] = {'type': 'Fresh Water Only', 'nacl_multiplier': 126., 'wash_multiplier': 3.}
+    ctx = context(source)
+    assert [row['name'] for row in ctx['fluids_train']] == ['Diesel', 'Pre Flush', 'Spacer Ahead', 'Main',
+                                                          'Displacement Fluid']
+    steps = ctx['procedure'].splitlines()
+    assert [line for line in steps if re.match(r'(8|9|10)\. ', line)] == [
+        '8. Pump 1.0 bbl Diesel.',
+        '9. Pump 2.3 bbl Field wash as pre flush.',
+        '10. Pump 4.2 bbl Weighted brine as spacer ahead.',
+    ]
+    assert any(line.startswith('13. Displacement Volume: Calculate at rig site.') for line in steps)
+    assert not any('as spacer behind' in line for line in steps)
+
+
 def test_current_ct_is_admitted_and_dedicated_procedure_uses_sources(valid_ct):
     s=deepcopy(valid_ct)
     assert ps.prepare_calculations(s)==[]
@@ -55,10 +455,17 @@ def test_current_ct_is_admitted_and_dedicated_procedure_uses_sources(valid_ct):
     text=ctx['procedure'] if 'procedure' in ctx else s['procedure_text']
     assert ctx['job_type']==db.CT_JOB
     assert '3527.0 m MD' in text and '3470.0 m' in ctx['executive_summary']
-    for term in ['Coiled Tubing','3000 psi','DAQ','30 m above','Displacement Volume: Calculate at rig site.','0.7–1.2','WOC']:
+    for term in ['Coiled Tubing','3000 psi','DAQ','30 m above','Displacement Volume: Calculate at rig site.','WOC']:
         assert term in text,term
+    assert 'Mix and pump 20.0 bbl Main cement slurry (118 pcf). (Three stages: 7.0, 7.0 and 6.0 bbl.)' in text
+    main = next(row for row in ctx['fluids_train'] if row['name'] == 'Main')
+    assert main['pump_rate'] == '0.7-1.2' and main['duration_min'] == 20 / .7
+    assert 'calculated duration' not in text and '0.7–1.2 bpm' not in text
     assert stage_note(ct_stage_projection(s)) in text
-    assert stage_note(ct_stage_projection(s)) in ctx['slurries'][0]['note_mix']
+    assert ctx['slurries'][0]['note_mix'] == (
+        'NOTE 5: Mix above Additives in 14.0 bbl. fresh water at Mud Reserve Tanks. '
+        '(Three stages: 4.9, 4.9 and 4.2 bbl. fresh water.)'
+    )
     assert '7 + 7 + 6' in text and '4.9 + 4.9 + 4.2' in text
     assert not re.search(r'drill.?pipe|swage|stands|bump|plug release',text,re.I)
     steps=[int(x) for x in re.findall(r'(?m)^(\d+)\. ',text)]
@@ -93,13 +500,14 @@ def test_actual_ct_docx_uses_existing_section_ii_and_canonical_context(valid_ct,
 
 
 @pytest.mark.parametrize('prepared',[False,True])
-@pytest.mark.parametrize('fault',['depth','top','stage','rate','lab','geometry'])
+@pytest.mark.parametrize('fault',['depth','top','stage','rate','volume','lab','geometry'])
 def test_all_ct_report_entry_points_fail_closed_and_invalidate(valid_ct,prepared,fault):
     s=deepcopy(valid_ct);s['_compiled_doc_bytes']=b'stale'
     if fault=='depth':s['hardware_table'].loc[s['hardware_table']['Description']=='CT','MD (m)']='3500-3527'
     elif fault=='top':s['cement_params']['Main']['top_depth']=3527.
     elif fault=='stage':s['ct_stage_config']['count']=2;s['fluids_config']['params']['Main']['volume']=30.
     elif fault=='rate':s['fluids_config']['params']['Main']['pump_rate']='0'
+    elif fault=='volume':s['fluids_config']['params']['Displacement Fluid']['volume']=0.
     elif fault=='lab':s['lab_qc_params']['Main']['reviewed']=False
     elif fault=='geometry':s['hardware_table'].loc[0,'ID (in)']=20.
     with pytest.raises(ValueError):context(s,prepared)
@@ -170,11 +578,17 @@ def test_all_job_operational_procedure_contract(valid_ct,job,selected):
     for name in cfg['active']:
         if name in ('Spacer Ahead','Spacer Behind'):
             record=s['fluid_data'][name]
-            line=next(l for l in text.splitlines() if 'as '+name in l)
-            assert record['material_name'] in line and '0.7–1.2' in line
             if job == db.CT_JOB:
-                assert f"calculated duration {record['duration_min']:.2f} min." in line and 'HH:MM' not in line
+                line = next(l for l in text.splitlines() if l.endswith(f'as {name.lower()}.'))
+                assert line.split('. ', 1)[1] == f"Pump 7.5 bbl {record['material_name']} as {name.lower()}."
+                assert record['pump_rate'] == '0.7-1.2' and record['duration_min'] == 7.5 / .7
+                ctx = context(s)
+                word_row = next(row for row in report._word_quantity_context(ctx)['fluids_train']
+                                if row['name'] == name)
+                assert word_row['pump_rate'] == '0.7–1.2' and word_row['duration_str'] != '00:00'
             else:
+                line=next(l for l in text.splitlines() if 'as '+name in l)
+                assert record['material_name'] in line and '0.7–1.2' in line
                 from engineering_tools import format_to_hr_mm
                 index=cfg['active'].index(name)
                 previous=s['fluid_data'][cfg['active'][index-1]]['cumul_time_min'] if index else 0

@@ -159,12 +159,26 @@ def test_ct_duration_is_one_decimal_minute_projection(valid_ct, volume, rate, di
     s['fluids_config']['params']['Displacement Fluid'].update(volume=volume, pump_rate=rate)
     ps.refresh_fluids(s)
     before = deepcopy(s['fluid_data'])
-    with patch.object(report.st, 'session_state', s):
-        text = report._ct_procedure(s)
-    line = next(l for l in text.splitlines() if 'as Displacement Fluid' in l)
-    assert f'calculated duration {display} min.' in line
-    assert 'HH:MM' not in line
+    ctx = context(s)
+    line = next(l for l in ctx['procedure'].splitlines() if 'Displace cement slurry with' in l)
+    assert line.split('. ', 1)[1] == (
+        f'Displace cement slurry with {volume:.1f} bbl Mud (planned; confirm final volume at rig site).'
+    )
+    assert not any(token in line for token in ('HH:MM', 'bpm', 'calculated duration'))
     expected_rate = {'0.7-1.2': '0.7–1.2', '2': '2.0'}[rate]
-    assert f'at {expected_rate} bpm' in line
+    template = DocxTemplate(report.TEMPLATE_PATH)
+    template.render(report._word_quantity_context(ctx))
+    buf = BytesIO()
+    template.save(buf)
+    rows = [tuple(cell.text for cell in row.cells) for table in Document(buf).tables for row in table.rows]
+    displacement = next(row for row in rows if row[0] == 'Displacement Fluid')
+    from engineering_tools import format_to_hr_mm
+    main_end = before['Main']['cumul_time_min']
+    end = before['Displacement Fluid']['cumul_time_min']
+    minutes = lambda value: sum(x * int(y) for x, y in zip((60, 1), format_to_hr_mm(value).split(':')))
+    elapsed = minutes(end) - minutes(main_end)
+    assert displacement[3:7] == (f'{volume:.1f}', expected_rate, f'{elapsed // 60:02d}:{elapsed % 60:02d}',
+                                 format_to_hr_mm(end))
     assert s['fluid_data'] == before
     assert before['Displacement Fluid']['duration_min'] == volume / float(rate.split('-')[0])
+    assert f"{before['Displacement Fluid']['duration_min']:.2f}" == display
