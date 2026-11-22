@@ -1901,6 +1901,35 @@ BUG01_JOBS = ('CSG 13 3/8"', 'CSG 9 5/8"', 'LNR 7"', 'LNR 5"', 'LNR 4 1/2"',
               'TIE BACK LNR 7"', 'TIE BACK LNR 5"', 'TIE BACK LNR 4 1/2"')
 
 
+@pytest.mark.parametrize('job,expected', [
+    ('CSG 13 3/8"', [(0., 400.), (400., 1200.)]),
+    ('CSG 9 5/8"', [(0., 400.), (400., 1200.)]),
+    ('CSG 7"', [(0., 500.), (500., 1000.)]),
+    ('LNR 7"', [(400., 700.), (700., 1200.)]),
+    ('LNR 5"', [(3419., 3839.), (3839., 4500.)]),
+    ('LNR 4 1/2"', [(400., 700.), (700., 1200.)]),
+    ('TIE BACK LNR 7"', [(200., 700.)]),
+    ('TIE BACK LNR 5"', [(200., 700.)]),
+    ('TIE BACK LNR 4 1/2"', [(200., 700.)]),
+])
+def test_uat22_measured_zone_bounds_cover_supported_jobs_without_chart_admission(job, expected):
+    import phase_9_centralizer as phase9
+
+    if job == 'CSG 7"':
+        state = project(job, hardware(('Casing', '1000', '7', 6.094),
+            ('Previous Casing', '500', '9 5/8', 8.535), ('Open Hole Size', '500-1000', '8.5', 8.5)), 1000.)
+    else:
+        state = bug01_geometry_case(job)
+    state['placement_config'].pop('chart_excess_mode')
+    before = pickle.dumps(state)
+    zones = phase9.auto_populate(state)
+    assert [(z['top_md'], z['bottom_md']) for z in zones] == expected
+    assert all(z['product_nr'] is None and z['custom_product_id'] is None for z in zones)
+    assert pickle.dumps(state) == before
+    with pytest.raises(ValueError, match='Chart Capacity Excess Mode'):
+        centralizer_adapter.to_engine_geometry(state)
+
+
 def bug01_solver_state(job):
     import materials_db as db
     import phase_9_centralizer as phase9
@@ -2012,6 +2041,9 @@ def test_bug01_tieback_new_job_physical_negatives_are_not_bypassed(fault):
     else: table.at[1,'ID (in)'] = 4.5
     with pytest.raises(ValueError, match='host|Host|Top|target|Target|Previous|Liner|clearance|overlap|missing|continuous|receiving|restriction|pass|ambiguous'):
         centralizer_adapter.to_engine_geometry(state)
+    from phase_9_centralizer import auto_populate
+    with pytest.raises(ValueError, match='host|Host|Top|target|Target|Previous|Liner|clearance|overlap|missing|continuous|receiving|restriction|pass|ambiguous'):
+        auto_populate(state)
 
 
 @pytest.fixture(scope='module')

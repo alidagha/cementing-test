@@ -5,6 +5,7 @@ import json
 import pickle
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -248,39 +249,131 @@ def test_duplicate_display_names_keep_exact_source_identity(catalog):
 
 
 @pytest.mark.parametrize("kind", ["casing","liner","tieback"])
-def test_auto_populate_consumes_calculated_toc_not_report_overrides(catalog, kind):
-    from cement_chart_model import resolve_chart_geometry, interval_volume
+def test_auto_populate_uses_measured_walls_instead_of_cement_boundaries(catalog, kind):
     state = configured(catalog, kind)
-    geometry = resolve_chart_geometry(state)
     top = 0. if kind != "liner" else 400.
-    toc = 450. if kind != "tieback" else 600.
-    row = state["fluids_config"]["params"]["Tail"]
-    row["volume"] = interval_volume(geometry["capacity_segments"], toc, 1000.) + geometry["shoe_track_bbl"]
-    state["cement_params"] = {"Tail":{"top_depth":999., "report_bottom_depth":1.}}
     before = pickle.dumps(state)
     zones = phase9().auto_populate(state)
     assert pickle.dumps(state) == before
-    assert zones[0]["top_md"] == top and zones[-1]["bottom_md"] == 1000.
-    assert zones[0]["bottom_md"] == pytest.approx(toc)
-    assert zones[0]["density"] == "1/4" and zones[0]["target_standoff_pct"] == 67.
+    expected = [(top, 1000., "1/4", None)] if kind == "tieback" else [
+        (top, 500., "1/4", None), (500., 1000., "1/4", None)]
+    assert [(z["top_md"], z["bottom_md"], z["density"], z["target_standoff_pct"]) for z in zones] == expected
     assert all(zone["product_nr"] is None and zone["custom_product_id"] is None for zone in zones)
     assert all(zone["top_md"] < zone["bottom_md"] for zone in zones)
     assert all(a["bottom_md"] == b["top_md"] for a,b in zip(zones,zones[1:]))
-    if kind == "tieback":
-        assert len(zones) == 2  # Previous Shoe == String Shoe: drop zero width only.
+    state["fluids_config"]["params"]["Tail"]["volume"] = 20.
+    state["cement_params"] = {"Tail": {"top_depth": 999., "report_bottom_depth": 1.}}
+    state["placement_config"].update(chart_excess_mode="apply", excess_csg_oh_pct=50., excess_csg_csg_pct=20.)
+    assert pickle.dumps(phase9().auto_populate(state)) == pickle.dumps(zones)
+
+
+@pytest.mark.parametrize("kind,top", [("casing", 0.), ("liner", 400.)])
+def test_uat22_auto_populate_does_not_require_cement_placement(catalog, kind, top):
+    from cement_chart_model import interval_volume, resolve_cement_placement, resolve_chart_geometry
+
+    state = configured(catalog, kind)
+    geometry = resolve_chart_geometry(state)
+    toc = 200.
+    state["fluids_config"]["params"]["Tail"]["volume"] = (
+        interval_volume(geometry["capacity_segments"], toc, 1000.) + geometry["shoe_track_bbl"])
+    assert min(row["top_md"] for row in resolve_cement_placement(state)) == pytest.approx(toc)
+    if kind == "casing":
+        state["fluids_config"] = {"active": [], "params": {}}
     else:
-        assert [zone["density"] for zone in zones] == ["1/4","1/3","1/1"]
+        assert toc < top
+    before = pickle.dumps(state)
+    zones = phase9().auto_populate(state)
+    assert [(z["top_md"], z["bottom_md"]) for z in zones] == [(top, 500.), (500., 1000.)]
+    assert pickle.dumps(state) == before
+    state["fluids_config"] = {"active": [], "params": {}}
+    state["placement_config"].update(chart_excess_mode="apply", excess_csg_csg_pct=31.)
+    state["pore_gradient_emw_pcf"] = -1.
+    state["cement_params"] = {"Tail": {"top_depth": 1.}}
+    assert pickle.dumps(phase9().auto_populate(state)) == pickle.dumps(zones)
 
 
 def test_invalid_auto_populate_preserves_current_zones(catalog):
-    state = configured(catalog)
-    state["fluids_config"]["params"]["Tail"]["volume"] = 20.
-    before = deepcopy(state["centralizer_config"]["zones"])
-    with pytest.raises(ValueError, match="TOC"):
+    state = configured(catalog, mode="optimize", use_custom=True)
+    state["hardware_table"].loc[state["hardware_table"]["Description"].eq("Previous Casing"), "ID (in)"] = 9.
+    existing = state["centralizer_config"]["zones"]
+    state["_centralizer_zone_epoch"] = 6
+    before = pickle.dumps(state["centralizer_config"])
+    with pytest.raises(ValueError, match="pass|clearance|restriction"):
         phase9().auto_populate(state)
     with patch.object(phase9().st, "session_state", state): phase9()._zones_action("auto")
-    assert state["centralizer_config"]["zones"] == before
+    assert state["centralizer_config"]["zones"] is existing
+    assert pickle.dumps(state["centralizer_config"]) == before
+    assert state["_centralizer_zone_epoch"] == 6
     assert state["_centralizer_error"]
+
+
+def test_uat22_equal_cased_sections_coalesce_and_measured_id_change_splits():
+    from test_uat_round9b_geometry import state_for
+
+    state = state_for()
+    ranges = lambda: [(z["top_md"], z["bottom_md"]) for z in phase9().auto_populate(state)]
+    assert ranges() == [(0., 500.), (500., 1000.)]  # Same diameter across steel and open hole.
+    table = state["hardware_table"]
+    inner = table.iloc[[1]].assign(**{"MD (m)": "250-500"})
+    state["hardware_table"] = pd.concat([table.assign(**{"MD (m)": ["1000", "250", "1000"]}), inner],
+                                        ignore_index=True)
+    assert ranges() == [(0., 500.), (500., 1000.)]
+    state["hardware_table"].at[3, "ID (in)"] = 12.2
+    assert ranges() == [(0., 250.), (250., 500.), (500., 1000.)]
+    with pytest.raises(ValueError, match="one identical scalar ID"):
+        adapter.to_engine_geometry(state)
+    state["hardware_table"].at[1, "MD (m)"] = "275"
+    state["hardware_table"].at[3, "MD (m)"] = "275-600"
+    assert ranges() == [(0., 275.), (275., 600.), (600., 1000.)]
+
+
+@pytest.mark.parametrize("fault,match", [
+    ("target", "target"), ("trajectory", "outside the canonical trajectory"),
+    ("taper", "Tapered Centralizer string"), ("hole", "Size and ID/Bit Size"),
+])
+def test_uat22_draft_geometry_keeps_physical_validation(fault, match):
+    from test_uat_round9b_geometry import split_active, state_for
+
+    state = state_for()
+    if fault == "target":
+        state["placement_config"].pop("target_row")
+    elif fault == "trajectory":
+        state["well_geometry"]["td_m"] = 999.
+    elif fault == "taper":
+        split_active(state, **{"ID (in)": 8.4})
+    else:
+        state["hardware_table"].at[2, "ID (in)"] = 11.
+    with pytest.raises(ValueError, match=match):
+        phase9().auto_populate(state)
+
+
+def test_uat22_phase9_can_draft_and_select_products_before_chart_or_fluids(catalog):
+    state = configured(catalog, mode="optimize")
+    state["fluids_config"] = {"active": [], "params": {}}
+    state["placement_config"].pop("chart_excess_mode")
+    case = audit.AuditRegressions()
+    with patch.object(adapter, "solve_static", side_effect=AssertionError("Implicit solver")), \
+         patch.object(adapter, "solve_dynamic", side_effect=AssertionError("Implicit solver")):
+        app = case.app(state)
+        case.phase(app, "phase9")
+        assert not app.button(key="_centralizer_auto_zones").disabled
+        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.caption)
+        assert len(app.selectbox(key="_centralizer_zone_0_0_product").options) > 1
+        app.button(key="_centralizer_auto_zones").click().run()
+        case.healthy(app)
+        config = app.session_state["centralizer_config"]
+        assert [(z["top_md"], z["bottom_md"]) for z in config["zones"]] == [(0., 500.), (500., 1000.)]
+        assert all(z["product_nr"] is None and z["custom_product_id"] is None for z in config["zones"])
+        epoch = app.session_state["_centralizer_zone_epoch"]
+        generated = pickle.dumps(config)
+        app.button(key="_centralizer_auto_zones").click().run()
+        assert app.session_state["_centralizer_zone_epoch"] == epoch
+        assert pickle.dumps(app.session_state["centralizer_config"]) == generated
+        app.radio(key="_centralizer_placement").set_value("direct").run()
+        case.healthy(app)
+        assert app.button(key="_centralizer_auto_zones").disabled
+        assert not app.button(key="_centralizer_add_zone").disabled
+        assert "_centralizer_result" not in app.session_state
 
 
 @pytest.mark.parametrize("physics", ["static","dynamic"])
@@ -593,8 +686,11 @@ def test_ui_results_show_named_percent_units_not_internal_payload(catalog):
     app.button(key="_centralizer_execute").click().run()
     assert not app.exception
     frame = app.dataframe[-1].value
-    assert list(frame.columns) == ["Zone #","Computed Density","Min Standoff (%)","Status"]
-    assert frame.iloc[0]["Min Standoff (%)"] == app.session_state["_centralizer_result"]["zones"][0]["min_stdf"] * 100
+    assert list(frame.columns) == ["Zone #", "Computed Density", "Count", "Spacing (m)", "Min Standoff (%)", "Status"]
+    zone = app.session_state["_centralizer_result"]["zones"][0]
+    assert frame.iloc[0]["Min Standoff (%)"] == zone["achieved_min_stdf"] * 100
+    assert frame.iloc[0]["Count"] == len(zone["centralizer_md"])
+    assert frame.iloc[0]["Spacing (m)"] == zone["spacing_m"]
 
 
 def test_deleted_custom_reference_in_one_zone_does_not_break_other_zone_callbacks(catalog):
@@ -644,3 +740,320 @@ def test_restored_finite_out_of_widget_bounds_draft_remains_editable(catalog,fie
     assert not app.exception and app.radio(key="_app_mode_key").value=="phase9"
     config = app.session_state["centralizer_config"]
     assert config["zones"][0][field] == 10.
+
+
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+def test_uat22b_direct_without_target_uses_real_solver_and_never_compares(catalog, physics):
+    import centralizer_report as report
+
+    state = configured(catalog, physics=physics, mode='direct')
+    config = state['centralizer_config']
+    with_target = phase9().execute(state, catalog)
+    config['zones'][0]['target_standoff_pct'] = None
+    assert not phase9().result_is_current(state, catalog)
+    result = phase9().execute(state, catalog)
+    row = result['zones'][0]
+    assert row['target'] is None and row['meets_target'] is None
+    assert row['min_stdf'] == with_target['zones'][0]['min_stdf']
+    for name in ('centralizer_md', 'tension_force', 'normal_force', 'stdf_at', 'between_stdf'):
+        assert result['profile'][name] == with_target['profile'][name]
+    assert report.prepare_report(state)['warning'] is False
+
+
+def test_uat22b_auto_open_hole_seed_permits_sparser_design(catalog):
+    state = configured(catalog, mode='optimize')
+    config = state['centralizer_config']
+    product = config['zones'][0]['product_nr']
+    generated = phase9().auto_populate(state)
+    assert generated[-1]['top_md'] == 500.
+    for zone in generated:
+        zone.update(product_nr=product, target_standoff_pct=0.1)
+    config['zones'] = generated
+    result = phase9().execute(state, catalog)
+    sparse = result['zones'][-1]
+    assert sparse['meets_target'] is True
+    assert sparse['density_computed'] == '1/4'
+    generated[-1]['density'] = '1/1'
+    dense = phase9().execute(state, catalog)['zones'][-1]
+    assert dense['meets_target'] is True and dense['count'] > sparse['count']
+
+
+@pytest.mark.parametrize('kind', ['casing', 'liner', 'tieback'])
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+@pytest.mark.parametrize('mode', ['direct', 'optimize'])
+def test_uat22b_placed_mds_counts_spacing_and_minimum_are_engine_results(catalog, kind, physics, mode):
+    state = configured(catalog, kind, physics, mode, use_custom=True)
+    config = state['centralizer_config']
+    original = config['zones'][0]
+    config['zones'] = [{**original, 'top_md': a, 'bottom_md': b} for a, b in
+                       [(original['top_md'], 600.), (600., 764.), (801., original['bottom_md'])]]
+    # Use different user densities without altering physical fixtures.
+    for zone, density in zip(config['zones'], ['1/4', '1/3', '1/1']):
+        zone['density'] = density
+        if mode == 'direct':
+            zone['target_standoff_pct'] = None
+    before = pickle.dumps(config)
+    result = phase9().execute(state, catalog)
+    profile = result['profile']
+    rows = result['zones']
+    joint = adapter.to_engine_geometry(state)['casing']['joint_length']
+    assert sum(row['count'] for row in rows) == len(profile['centralizer_md'])
+    assert sorted((md for row in rows for md in row['centralizer_md']), reverse=True) == profile['centralizer_md']
+    for i, (zone, row) in enumerate(zip(config['zones'], rows)):
+        assert row['custom_product_id'] == original['custom_product_id']
+        assert row['count'] == len(row['centralizer_md'])
+        assert row['achieved_min_stdf'] == profile['zones_min'][i]['min_stdf']
+        if mode == 'direct':
+            from fractions import Fraction
+            assert row['density_computed'] == zone['density']
+            assert row['spacing_m'] == (1 / Fraction(zone['density'])) * joint
+            assert row['meets_target'] is None
+        else:
+            assert row['spacing_m'] == profile['zones'][i]['spacing_m']
+            assert row['centralizer_md'] == [round(md, 6) for md in profile['zones'][i]['centralizer_md']]
+    assert pickle.dumps(config) == before
+
+
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+def test_uat22b_auto_draft_needs_user_target_and_failed_execute_is_stale(catalog, physics):
+    state = configured(catalog, physics=physics, mode='optimize')
+    funcs = adapter.centralizer_engine
+    phase9().execute(state, catalog)
+    config = state['centralizer_config']
+    product = config['zones'][0]['product_nr']
+    config['zones'] = phase9().auto_populate(state)
+    assert all(z['density'] == '1/4' and z['target_standoff_pct'] is None for z in config['zones'])
+    assert not phase9().result_is_current(state, catalog)
+    with patch.object(funcs, 'optimize_placement', side_effect=AssertionError('Engine called on unfinished design')):
+        for zone in config['zones']:
+            zone['product_nr'] = product
+        with pytest.raises(ValueError, match='Target Standoff is required for Optimize'):
+            phase9().execute(state, catalog)
+        for zone in config['zones']:
+            zone.update(product_nr=None, target_standoff_pct=65.)
+        with pytest.raises(ValueError, match='select exactly one Official or Custom'):
+            phase9().execute(state, catalog)
+    assert '_centralizer_result' not in state and '_centralizer_signature' not in state
+    for zone in config['zones']:
+        zone['product_nr'] = product
+    assert phase9().execute(state, catalog)['mode'] == 'optimize'
+
+
+def test_uat22b_direct_and_optimize_ui_preserve_legacy_seed_and_optional_target(catalog):
+    state = configured(catalog)
+    zone = state['centralizer_config']['zones'][0]
+    zone.update(density='1/1', target_standoff_pct=None)
+    original = pickle.dumps(state['centralizer_config']['zones'])
+    app = ui_app(state)
+    assert app.selectbox(key='_centralizer_zone_0_0_density').value == '1/1'
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and app.dataframe[-1].value.iloc[0]['Status'] == 'Not assessed'
+    assert not any('Required target' in warning.value for warning in app.warning)
+    app.radio(key='_centralizer_placement').set_value('optimize').run()
+    assert not app.exception
+    assert not [box for box in app.selectbox if box.label.startswith('Design Density')]
+    assert any('Saved starting density — Zone 1: 1/1' in c.value for c in app.caption)
+    assert pickle.dumps(app.session_state['centralizer_config']['zones']) == original
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and any('required for Optimize' in error.value for error in app.error)
+    assert '_centralizer_result' not in app.session_state
+    app.radio(key='_centralizer_placement').set_value('direct').run()
+    assert app.selectbox(key='_centralizer_zone_0_0_density').value == '1/1'
+    assert app.button(key='_centralizer_auto_zones').disabled
+    assert pickle.dumps(app.session_state['centralizer_config']['zones']) == original
+
+
+def test_uat22b_short_unassessed_zone_does_not_report_engine_sentinel(catalog):
+    import centralizer_report as report
+
+    state = configured(catalog)
+    zone = state['centralizer_config']['zones'][0]
+    zone['target_standoff_pct'] = None
+    state['centralizer_config']['zones'] = [{**zone, 'top_md': a, 'bottom_md': b} for a, b in
+                                           [(0., 475.), (475., 475.01), (700., 1000.)]]
+    result = phase9().execute(state, catalog)
+    row = result['zones'][1]
+    assert result['profile']['zones_min'][1]['min_stdf'] == 2.0  # The frozen empty-window sentinel.
+    assert row['centralizer_md'] == [] and row['count'] == 0
+    assert row['min_stdf'] is row['min_depth'] is row['achieved_min_stdf'] is row['meets_target'] is None
+    with pytest.raises(ValueError, match='Word requires an evaluated minimum'):
+        report.prepare_report(state)
+
+
+@pytest.mark.parametrize('kind', ['casing', 'liner', 'tieback'])
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+@pytest.mark.parametrize('mode', ['direct', 'optimize'])
+def test_uat22c_installation_schedule_from_one_current_result(catalog, kind, physics, mode):
+    state = configured(catalog, kind, physics, mode, use_custom=physics == 'dynamic')
+    zones = state['centralizer_config']['zones']
+    zone = zones[0]
+    zones[:] = [{**zone, 'top_md': top, 'bottom_md': bottom}
+                for top, bottom in ((zone['top_md'], 600.), (600., 764.), (801., zone['bottom_md']))]
+    if mode == 'direct':
+        for zone in zones:
+            zone['target_standoff_pct'] = None
+    app = ui_app(state)
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    result = app.session_state['_centralizer_result']
+    assert phase9().result_is_current(app.session_state.to_dict(), catalog)
+    whole_string = result['profile']['centralizer_md']
+    assert len(whole_string) > 10
+    matching = [item for item in app.expander if item.label == 'Installation MD']
+    assert len(matching) == 1
+    disclosure = matching[0]
+    assert not disclosure.proto.expanded
+    assert not disclosure.get('dataframe')
+    installation = disclosure.get('table')[0].value
+    expected = [(index, number, md) for index, zone in enumerate(result['zones'], 1)
+                for number, md in enumerate(zone['centralizer_md'], 1)]
+    assert list(installation.columns) == ['Zone #', 'Centralizer #', 'Installation MD (m)']
+    assert list(installation.itertuples(index=False, name=None)) == expected
+    for index, zone in enumerate(result['zones'], 1):
+        assert len(installation.loc[installation['Zone #'] == index]) == zone['count']
+    assert len(installation) == len(whole_string) == sum(zone['count'] for zone in result['zones'])
+    assert sorted(installation['Installation MD (m)']) == sorted(whole_string)
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert list(summary.columns) == ['Zone #', 'Computed Density', 'Count', 'Spacing (m)', 'Min Standoff (%)', 'Status']
+    for index, zone in enumerate(result['zones']):
+        row = summary.iloc[index]
+        assert row['Count'] == zone['count'] and row['Computed Density'] == zone['density_computed']
+        assert row['Spacing (m)'] == zone['spacing_m'] and row['Min Standoff (%)'] == zone['achieved_min_stdf'] * 100
+        if mode == 'direct':
+            assert row['Status'] == 'Not assessed'
+        else:
+            assert row['Status'] == ('Pass' if zone['meets_target'] else 'Target missed')
+    assert any(f'Total centralizers: {len(whole_string)}.' in item.value for item in app.success)
+
+
+def test_uat22c_schedule_reruns_navigation_and_failed_execute(catalog):
+    from contextlib import ExitStack
+    import centralizer_report
+
+    app = ui_app(configured(catalog))
+    with patch.object(adapter, 'solve_static', wraps=adapter.solve_static) as explicit:
+        app.button(key='_centralizer_execute').click().run()
+        assert explicit.call_count == 1
+    signature = app.session_state['_centralizer_signature']
+    config = pickle.dumps(app.session_state['centralizer_config'])
+    result = pickle.dumps(app.session_state['_centralizer_result'])
+    with ExitStack() as guards:
+        for module, names in ((adapter, ('solve_static', 'solve_dynamic')),
+                              (adapter.centralizer_engine, ('compute_standoff_profile', 'optimize_placement', 'place_zone_centralizers')),
+                              (centralizer_report, ('render_chart_png',))):
+            for name in names:
+                guards.enter_context(patch.object(module, name, side_effect=AssertionError(f'Implicit {name}')))
+        app.run()
+        assert any(item.label == 'Installation MD' for item in app.expander)
+        app.radio(key='_app_mode_key').set_value('phase1').run()
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        app.radio(key='_app_mode_key').set_value('phase9').run()
+        assert not app.exception
+        assert any(item.label == 'Installation MD' for item in app.expander)
+        assert app.session_state['_centralizer_signature'] == signature
+        assert pickle.dumps(app.session_state['_centralizer_result']) == result
+        assert pickle.dumps(app.session_state['centralizer_config']) == config
+        app.selectbox(key='_centralizer_zone_0_0_product').set_value(None).run()
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        app.button(key='_centralizer_execute').click().run()
+        assert not app.exception
+        assert any('select exactly one' in item.value for item in app.error)
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        assert '_centralizer_result' not in app.session_state and '_centralizer_signature' not in app.session_state
+
+
+@pytest.mark.parametrize('edit', ['top', 'density', 'target', 'product', 'volume', 'trajectory', 'mode', 'restore'])
+def test_uat22c_schedule_disappears_on_source_edit_or_restore(catalog, edit):
+    state = configured(catalog, use_custom=True)
+    state['hardware_table'] = state['hardware_table'].assign(**{'Collapse (psi)': None, 'Burst (psi)': None})
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert any(item.label == 'Installation MD' for item in app.expander)
+    if edit == 'top':
+        app.number_input(key='_centralizer_zone_0_0_top_md').set_value(10.).run()
+    elif edit == 'density':
+        app.selectbox(key='_centralizer_zone_0_0_density').set_value('1/1').run()
+    elif edit == 'target':
+        app.number_input(key='_centralizer_zone_0_0_target_standoff_pct').set_value(72.).run()
+    elif edit == 'product':
+        app.selectbox(key='_centralizer_zone_0_0_product').set_value('official:' + str(zones_for(catalog)[0]['product_nr'])).run()
+    elif edit == 'volume':
+        app.session_state['fluids_config']['params']['Tail']['volume'] += 1.
+        app.run()
+    elif edit == 'trajectory':
+        app.session_state['well_geometry']['td_m'] += 1.
+        app.run()
+    elif edit == 'mode':
+        app.radio(key='_centralizer_placement').set_value('optimize').run()
+    else:
+        restored = audit.round_trip(app.session_state.to_dict())
+        assert '_centralizer_result' not in restored and '_centralizer_signature' not in restored
+        app = ui_app(restored)
+    assert not app.exception
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    assert not any('Current Centralizer calculation complete' in item.value for item in app.success)
+
+
+@pytest.mark.parametrize('fault', ['count', 'missing', 'same-set-different-multiset', 'nonfinite', 'profile'])
+def test_uat22c_inconsistent_installation_receipt_fails_closed(catalog, fault):
+    state = configured(catalog)
+    result = phase9().execute(state, catalog)
+    zone = result['zones'][0]
+    if fault == 'count':
+        zone['count'] += 1
+    elif fault == 'missing':
+        del zone['centralizer_md']
+    elif fault == 'same-set-different-multiset':
+        mds, whole = zone['centralizer_md'], result['profile']['centralizer_md']
+        a, b = mds[:2]
+        assert len(set(mds)) == len(mds) and set(mds) == set(whole)
+        mds[-2:] = [a, a]
+        whole[-2:] = [b, b]
+        assert set(mds) == set(whole) and len(mds) == len(whole)
+    elif fault == 'nonfinite':
+        zone['centralizer_md'][0] = float('nan')
+    else:
+        del result['profile']['centralizer_md']
+    assert phase9().result_is_current(state, catalog)
+    saved = pickle.dumps(state['centralizer_config'])
+    receipt = pickle.dumps(result)
+    app = ui_app(state)
+    assert not app.exception
+    assert any('result could not be verified' in item.value for item in app.error)
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    assert pickle.dumps(app.session_state['centralizer_config']) == saved
+    assert pickle.dumps(app.session_state['_centralizer_result']) == receipt
+
+
+def test_uat22c_empty_zone_has_no_synthetic_installation_or_minimum(catalog):
+    state = configured(catalog)
+    zone = state['centralizer_config']['zones'][0]
+    state['centralizer_config']['zones'] = [{**zone, 'top_md': top, 'bottom_md': bottom, 'target_standoff_pct': None}
+                                           for top, bottom in ((0., 475.), (475., 475.01), (700., 1000.))]
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    result = app.session_state['_centralizer_result']
+    assert result['zones'][1]['count'] == 0 and result['zones'][1]['centralizer_md'] == []
+    assert result['zones'][1]['achieved_min_stdf'] is None
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert pd.isna(summary['Min Standoff (%)'].iloc[1]) and summary['Status'].iloc[1] == 'Not assessed'
+    schedule = next(item for item in app.expander if item.label == 'Installation MD').get('table')[0].value
+    assert set(schedule['Zone #']) == {1, 3}
+    assert len(schedule) == len(result['profile']['centralizer_md'])
+
+
+def test_uat22c_target_miss_warning_stays_outside_installation_disclosure(catalog):
+    state = configured(catalog, mode='optimize')
+    state['well_geometry'] = {'version': 1, 'type': 'Directional', 'survey': pd.DataFrame(
+        [[0., 0., 0.], [450., 65., 30.], [1200., 85., 80.]], columns=['MD', 'Deviation', 'Azimuth'])}
+    state['centralizer_config']['zones'][0]['target_standoff_pct'] = 100.
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    disclosure = next(item for item in app.expander if item.label == 'Installation MD')
+    assert not disclosure.proto.expanded and not disclosure.get('warning')
+    assert any('Required target standoff was not achieved' in warning.value for warning in app.warning)
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert summary['Status'].iloc[0] == 'Target missed'

@@ -153,7 +153,7 @@ def test_all_certified_design_densities_work_without_sparsifying(catalog, densit
 
 INVALID_FIELDS = [
     ("target_standoff_pct", 0), ("target_standoff_pct", -1), ("target_standoff_pct", 100.1),
-    ("target_standoff_pct", None), ("target_standoff_pct", True), ("target_standoff_pct", "70"),
+    ("target_standoff_pct", True), ("target_standoff_pct", "70"),
     ("target_standoff_pct", float("nan")), ("target_standoff_pct", float("inf")),
     ("target_standoff_pct", 5e-324),
     ("top_md", True), ("top_md", None), ("top_md", "0"), ("top_md", -1),
@@ -179,13 +179,23 @@ def test_invalid_explicit_zone_blocks_before_any_solver(catalog, monkeypatch, fi
         solve(fluid_state(), zones, catalog, mode=mode)
 
 
-@pytest.mark.parametrize("field", ["top_md", "bottom_md", "density", "target_standoff_pct", "product_nr"])
+@pytest.mark.parametrize("field", ["top_md", "bottom_md", "density", "product_nr"])
 def test_missing_required_zone_value_has_no_default(catalog, field, monkeypatch):
     monkeypatch.setattr(engine, "compute_standoff_profile", forbidden)
     zones = zones_for(catalog)
     del zones[0][field]
     with pytest.raises(ValueError):
         solve(fluid_state(), zones, catalog)
+
+
+@pytest.mark.parametrize("target_present", [True, False])
+def test_uat22b_optimize_rejects_no_target_before_solver(catalog, monkeypatch, target_present):
+    monkeypatch.setattr(engine, "optimize_placement", forbidden)
+    zones = zones_for(catalog, target=None)
+    if not target_present:
+        del zones[0]["target_standoff_pct"]
+    with pytest.raises(ValueError, match="Target Standoff is required for Optimize"):
+        solve(fluid_state(), zones, catalog, mode="optimize")
 
 
 @pytest.mark.parametrize("zones", [None, [], (), {}, "zones", [None], [[]], ["zone"]])
