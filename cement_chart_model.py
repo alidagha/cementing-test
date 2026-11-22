@@ -324,17 +324,13 @@ def _capacity(outer_in, inner_in=0.0):
     return math.pi/4 * (outer_in**2-inner_in**2) / 144 / 0.3048 / BBL_TO_CUFT
 
 
-def resolve_chart_geometry(state):
+def resolve_measured_geometry(state):
     """Continuous active-string and enclosing paths from explicit Hardware only."""
-    from placement import target_depth, hardware_choices, HOST_DESCRIPTIONS, measured_depth, excess_percentage
+    from placement import target_depth, hardware_choices, HOST_DESCRIPTIONS, measured_depth
     job, config = state.get("job_type"), state.get("placement_config", {})
     kind = chart_job_kind(job)
     if kind is None:
         return None
-    validate_chart_inputs(state if formation_source(state).get("mode") == "basic" else {}, config)
-    mode = config.get("chart_excess_mode") if config.get("job_type") == job else None
-    if mode is None:
-        raise ValueError("Choose Chart Capacity Excess Mode explicitly.")
     table = state.get("hardware_table")
     if not isinstance(table, pd.DataFrame) or table.empty:
         raise ValueError("Chart geometry requires explicit Tubular and Casing Hardware.")
@@ -382,6 +378,24 @@ def resolve_chart_geometry(state):
                 for sec in selected_string[0]["sections"]):
             raise ValueError("Selected Tie Back host is not the actual immediate enclosing string at its Top.")
         installed_geometry.receiving_liner(strings, shoe)
+    return {"kind": kind, "shoe_md": shoe, "active_string": active, "enclosing_string": outer}
+
+
+def resolve_chart_geometry(state):
+    """Apply the existing Chart admission and capacity rules to measured geometry."""
+    from placement import excess_percentage
+
+    job, config = state.get("job_type"), state.get("placement_config", {})
+    kind = chart_job_kind(job)
+    if kind is None:
+        return None
+    validate_chart_inputs(state if formation_source(state).get("mode") == "basic" else {}, config)
+    mode = config.get("chart_excess_mode") if config.get("job_type") == job else None
+    if mode is None:
+        raise ValueError("Choose Chart Capacity Excess Mode explicitly.")
+    geometry = resolve_measured_geometry(state)
+    shoe = geometry["shoe_md"]
+    active, outer = geometry["active_string"], geometry["enclosing_string"]
     boundaries = sorted({0., shoe, *(s[k] for s in active+outer for k in ("top_md", "bottom_md"))})
     capacities = []
     for top, bottom in zip(boundaries, boundaries[1:]):

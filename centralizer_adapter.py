@@ -188,6 +188,45 @@ def centralizer_applicable(job_type):
             and job_type not in ("CMT PLUG", "CMT SQUEEZE", materials_db.CT_JOB))
 
 
+def _active_casing(state, geometry):
+    description = {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[geometry["kind"]]
+    active = [s for s in geometry["active_string"] if s["description"] == description]
+    rows = [r for r in state["hardware_table"].to_dict("records") if r["Description"] == description]
+    # The measured resolver preserves source row order and clips a prefix at
+    # the shoe. Pair that prefix with its source Weight/Joint fields only.
+    properties = []
+    for segment, row in zip(active, rows):
+        _positive_pipe_size(row.get("Size (in)"))
+        values = (segment["od_in"], segment["id_in"],
+                  _number(row.get("Weight (ppf)"), "Active string Weight (ppf)"),
+                  _number(row.get("Joint (m)"), "Active string Joint (m)"))
+        if any(value <= 0 for value in values) or values[1] >= values[0]:
+            raise ValueError("Active string requires OD > ID > 0, Weight > 0 and Joint Length > 0.")
+        properties.append(values)
+    if not properties or len(properties) != len(active):
+        raise ValueError("Active Centralizer string Hardware is unresolved.")
+    if any(values != properties[0] for values in properties[1:]):
+        raise ValueError("Tapered Centralizer string unsupported: OD, ID, Weight and Joint Length must be uniform.")
+    od, inner, weight, joint = properties[0]
+    casing = {"od": od * INCH_TO_M, "id": inner * INCH_TO_M,
+              "weight_kg_m": weight * 0.45359237 / 0.3048, "joint_length": joint}
+    for field, value in casing.items():
+        if _number(value, f"casing.{field}") <= 0:
+            raise ValueError(f"casing.{field} must be greater than zero after SI conversion.")
+    return active[0], casing
+
+
+def geometry_for_zones(state):
+    """Return the active body and measured walls for editing, without solver admission."""
+    if not centralizer_applicable(state.get("job_type")):
+        raise ValueError("Centralizer zones are not applicable to this job.")
+    geometry = cement_chart_model.resolve_measured_geometry(state)
+    shoe = geometry["shoe_md"]
+    well_profile.tvd_at_md(state.get("well_geometry", {}), [shoe])
+    active, _ = _active_casing(state, geometry)
+    return active["top_md"], shoe, active["od_in"], geometry["enclosing_string"]
+
+
 def to_engine_geometry(state):
     """Project canonical geometry/survey to v1.2.9, or None for an N/A job.
 
@@ -212,35 +251,11 @@ def to_engine_geometry(state):
         survey = {output: frame[column].tolist() for output, column in
                   zip(("md", "inc_deg", "azi_deg"), well_profile.SURVEY_COLUMNS)}
 
-    description = {"casing": "Casing", "liner": "Liner Shoe", "tieback": "Tie Back Liner Shoe"}[kind]
-    active = [s for s in geometry["active_string"] if s["description"] == description]
-    rows = [r for r in state["hardware_table"].to_dict("records") if r["Description"] == description]
-    # resolve_chart_geometry preserves source row order and clips a prefix at
-    # the shoe. Pair that prefix with its source Weight/Joint fields only.
-    properties = []
-    for segment, row in zip(active, rows):
-        _positive_pipe_size(row.get("Size (in)"))
-        values = (segment["od_in"], segment["id_in"],
-                  _number(row.get("Weight (ppf)"), "Active string Weight (ppf)"),
-                  _number(row.get("Joint (m)"), "Active string Joint (m)"))
-        if any(value <= 0 for value in values) or values[1] >= values[0]:
-            raise ValueError("Active string requires OD > ID > 0, Weight > 0 and Joint Length > 0.")
-        properties.append(values)
-    if not properties or len(properties) != len(active):
-        raise ValueError("Active Centralizer string Hardware is unresolved.")
-    if any(values != properties[0] for values in properties[1:]):
-        raise ValueError("Tapered Centralizer string unsupported: OD, ID, Weight and Joint Length must be uniform.")
-    od, inner, weight, joint = properties[0]
-    casing = {"od": od * INCH_TO_M, "id": inner * INCH_TO_M,
-              "weight_kg_m": weight * 0.45359237 / 0.3048, "joint_length": joint}
-    for field, value in casing.items():
-        if _number(value, f"casing.{field}") <= 0:
-            raise ValueError(f"casing.{field} must be greater than zero after SI conversion.")
-
     # The resolver has already validated the complete measured running path.
     # Only the active mechanical body enters the frozen scalar force model;
     # build_fluid_snapshot retains the full original path for fluid volumes.
-    top = active[0]["top_md"]
+    active, casing = _active_casing(state, geometry)
+    top = active["top_md"]
     outer = [{**s, "top_md": max(top, s["top_md"]), "bottom_md": min(shoe, s["bottom_md"])}
              for s in geometry["enclosing_string"] if s["top_md"] < shoe and s["bottom_md"] > top]
     cased = [s for s in outer if s["description"] != "Open Hole Size"]
@@ -260,7 +275,7 @@ def to_engine_geometry(state):
         "casing": casing,
         "wellbore": {"prev_casing_id": previous_id * INCH_TO_M, "hole_size": hole * INCH_TO_M,
                      "prev_shoe_depth": previous_shoe, "open_hole_top": previous_shoe,
-                     "open_hole_bottom": shoe, "string_top": active[0]["top_md"], "string_shoe": shoe},
+                     "open_hole_bottom": shoe, "string_top": top, "string_shoe": shoe},
     }
 
 

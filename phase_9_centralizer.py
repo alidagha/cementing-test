@@ -1,6 +1,5 @@
 """Phase IX inputs and transient execution. Word readiness is advisory in 9F."""
 from copy import deepcopy
-import math
 from uuid import uuid4
 
 import pandas as pd
@@ -9,7 +8,6 @@ import streamlit as st
 import centralizer_adapter as adapter
 import materials_db
 import rheology
-from cement_chart_model import resolve_cement_placement, resolve_chart_geometry
 from project_state import fingerprint
 
 
@@ -116,24 +114,23 @@ def delete_custom_product(state, custom_id):
 
 
 def auto_populate(state):
-    """Explicit helper only: engineering TOC, never report-only Top/Bottom."""
-    geometry = adapter.to_engine_geometry(state)
-    if geometry is None:
-        raise ValueError("Centralizer zones are not applicable to this job.")
-    bounds = geometry["wellbore"]
-    top, previous, shoe = (bounds[key] for key in ("string_top", "prev_shoe_depth", "string_shoe"))
-    cement = resolve_cement_placement(state)
-    toc = min(row["top_md"] for row in cement)
-    if not all(math.isfinite(value) for value in (top, toc, previous, shoe)) or not top <= toc <= previous <= shoe:
-        raise ValueError("Auto-Populate requires active Top <= calculated TOC <= Previous Shoe <= String Shoe. "
-                         "Review geometry/volumes or enter explicit manual zones; current zones are unchanged.")
+    """Draft zones from measured walls along the active Centralizer body."""
+    top, shoe, _, walls = adapter.geometry_for_zones(state)
     zones = []
-    for start, end, density, target in ((top, toc, "1/4", 67.), (toc, previous, "1/3", 70.),
-                                      (previous, shoe, "1/1", 75.)):
-        start, end = max(start, top), min(end, shoe)
-        if start < end:
+    previous = None
+    for wall in walls:
+        start, end = max(top, wall["top_md"]), min(shoe, wall["bottom_md"])
+        if start >= end:
+            continue
+        open_hole = wall["description"] == "Open Hole Size"
+        identity = (open_hole, wall["id_in"])
+        if identity == previous and zones[-1]["bottom_md"] == start:
+            zones[-1]["bottom_md"] = end
+        else:
+            density, target = ("1/1", 75.) if open_hole else ("1/4", 67.)
             zones.append({"top_md": start, "bottom_md": end, "density": density,
                           "target_standoff_pct": target, "product_nr": None, "custom_product_id": None})
+        previous = identity
     return zones
 
 
@@ -243,7 +240,11 @@ def _zones_action(action, index=None):
     config = st.session_state["centralizer_config"]
     try:
         if action == "auto":
-            config["zones"] = auto_populate(st.session_state)
+            zones = auto_populate(st.session_state)
+            if zones == config["zones"]:
+                st.session_state.pop("_centralizer_error", None)
+                return
+            config["zones"] = zones
         elif action == "add":
             config["zones"].append({"top_md": None, "bottom_md": None, "density": "1/4",
                                     "target_standoff_pct": 67., "product_nr": None, "custom_product_id": None})
@@ -291,7 +292,7 @@ def _render_custom_manager(config):
             st.rerun()
 
 
-def _render_zones(config, candidates):
+def _render_zones(config, candidates, geometry_ready):
     options = {}
     for candidate in candidates:
         token = (f"official:{candidate['product_nr']}" if candidate["product_nr"] is not None
@@ -340,7 +341,8 @@ def _render_zones(config, candidates):
         st.button(f"Delete Zone {index + 1}", key=f"{prefix}_delete", on_click=_zones_action, args=("delete", index))
     st.button("Add Zone", key="_centralizer_add_zone", on_click=_zones_action, args=("add",))
     st.button("Auto-Populate Zones", key="_centralizer_auto_zones", on_click=_zones_action, args=("auto",),
-              help="Uses calculated cement TOC and resolved string bounds. Products remain unselected.")
+              disabled=not geometry_ready or config["placement_mode"] != "optimize",
+              help="Drafts zones for Optimize from measured Hardware. Products remain unselected.")
 
 
 def render():
@@ -370,17 +372,16 @@ def render():
                  help=PHYSICS_HELP if field == "physics_mode" else "Direct evaluates the entered density. Optimize uses the certified engine density ladder.",
                  on_change=_commit, args=(field, key))
     _render_custom_manager(config)
+    geometry_ready = False
     try:
-        geometry = adapter.to_engine_geometry(st.session_state)
-        st.caption(f"Active Centralizer string: {geometry['wellbore']['string_top']:g}–{geometry['wellbore']['string_shoe']:g} m MD")
-        description = {"casing":"Casing", "liner":"Liner Shoe", "tieback":"Tie Back Liner Shoe"}[geometry["job_type"]]
-        pipe_size = next(segment["od_in"] for segment in resolve_chart_geometry(st.session_state)["active_string"]
-                         if segment["description"] == description)
+        top, shoe, pipe_size, _ = adapter.geometry_for_zones(st.session_state)
+        st.caption(f"Active Centralizer string: {top:g}–{shoe:g} m MD")
         candidates = product_candidates(products, config["custom_products"], pipe_size)
+        geometry_ready = True
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         candidates = []
         st.warning(f"Complete current geometry in Phase II/III: {exc}")
-    _render_zones(config, candidates)
+    _render_zones(config, candidates, geometry_ready)
     if config["physics_mode"] == "dynamic":
         st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
         st.caption("Selected Spacer Ahead/Behind RPM and Gel are entered once in Phase VII Lab Report.")

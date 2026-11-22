@@ -5,6 +5,7 @@ import json
 import pickle
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -248,39 +249,131 @@ def test_duplicate_display_names_keep_exact_source_identity(catalog):
 
 
 @pytest.mark.parametrize("kind", ["casing","liner","tieback"])
-def test_auto_populate_consumes_calculated_toc_not_report_overrides(catalog, kind):
-    from cement_chart_model import resolve_chart_geometry, interval_volume
+def test_auto_populate_uses_measured_walls_instead_of_cement_boundaries(catalog, kind):
     state = configured(catalog, kind)
-    geometry = resolve_chart_geometry(state)
     top = 0. if kind != "liner" else 400.
-    toc = 450. if kind != "tieback" else 600.
-    row = state["fluids_config"]["params"]["Tail"]
-    row["volume"] = interval_volume(geometry["capacity_segments"], toc, 1000.) + geometry["shoe_track_bbl"]
-    state["cement_params"] = {"Tail":{"top_depth":999., "report_bottom_depth":1.}}
     before = pickle.dumps(state)
     zones = phase9().auto_populate(state)
     assert pickle.dumps(state) == before
-    assert zones[0]["top_md"] == top and zones[-1]["bottom_md"] == 1000.
-    assert zones[0]["bottom_md"] == pytest.approx(toc)
-    assert zones[0]["density"] == "1/4" and zones[0]["target_standoff_pct"] == 67.
+    expected = [(top, 1000., "1/4", 67.)] if kind == "tieback" else [
+        (top, 500., "1/4", 67.), (500., 1000., "1/1", 75.)]
+    assert [(z["top_md"], z["bottom_md"], z["density"], z["target_standoff_pct"]) for z in zones] == expected
     assert all(zone["product_nr"] is None and zone["custom_product_id"] is None for zone in zones)
     assert all(zone["top_md"] < zone["bottom_md"] for zone in zones)
     assert all(a["bottom_md"] == b["top_md"] for a,b in zip(zones,zones[1:]))
-    if kind == "tieback":
-        assert len(zones) == 2  # Previous Shoe == String Shoe: drop zero width only.
+    state["fluids_config"]["params"]["Tail"]["volume"] = 20.
+    state["cement_params"] = {"Tail": {"top_depth": 999., "report_bottom_depth": 1.}}
+    state["placement_config"].update(chart_excess_mode="apply", excess_csg_oh_pct=50., excess_csg_csg_pct=20.)
+    assert pickle.dumps(phase9().auto_populate(state)) == pickle.dumps(zones)
+
+
+@pytest.mark.parametrize("kind,top", [("casing", 0.), ("liner", 400.)])
+def test_uat22_auto_populate_does_not_require_cement_placement(catalog, kind, top):
+    from cement_chart_model import interval_volume, resolve_cement_placement, resolve_chart_geometry
+
+    state = configured(catalog, kind)
+    geometry = resolve_chart_geometry(state)
+    toc = 200.
+    state["fluids_config"]["params"]["Tail"]["volume"] = (
+        interval_volume(geometry["capacity_segments"], toc, 1000.) + geometry["shoe_track_bbl"])
+    assert min(row["top_md"] for row in resolve_cement_placement(state)) == pytest.approx(toc)
+    if kind == "casing":
+        state["fluids_config"] = {"active": [], "params": {}}
     else:
-        assert [zone["density"] for zone in zones] == ["1/4","1/3","1/1"]
+        assert toc < top
+    before = pickle.dumps(state)
+    zones = phase9().auto_populate(state)
+    assert [(z["top_md"], z["bottom_md"]) for z in zones] == [(top, 500.), (500., 1000.)]
+    assert pickle.dumps(state) == before
+    state["fluids_config"] = {"active": [], "params": {}}
+    state["placement_config"].update(chart_excess_mode="apply", excess_csg_csg_pct=31.)
+    state["pore_gradient_emw_pcf"] = -1.
+    state["cement_params"] = {"Tail": {"top_depth": 1.}}
+    assert pickle.dumps(phase9().auto_populate(state)) == pickle.dumps(zones)
 
 
 def test_invalid_auto_populate_preserves_current_zones(catalog):
-    state = configured(catalog)
-    state["fluids_config"]["params"]["Tail"]["volume"] = 20.
-    before = deepcopy(state["centralizer_config"]["zones"])
-    with pytest.raises(ValueError, match="TOC"):
+    state = configured(catalog, mode="optimize", use_custom=True)
+    state["hardware_table"].loc[state["hardware_table"]["Description"].eq("Previous Casing"), "ID (in)"] = 9.
+    existing = state["centralizer_config"]["zones"]
+    state["_centralizer_zone_epoch"] = 6
+    before = pickle.dumps(state["centralizer_config"])
+    with pytest.raises(ValueError, match="pass|clearance|restriction"):
         phase9().auto_populate(state)
     with patch.object(phase9().st, "session_state", state): phase9()._zones_action("auto")
-    assert state["centralizer_config"]["zones"] == before
+    assert state["centralizer_config"]["zones"] is existing
+    assert pickle.dumps(state["centralizer_config"]) == before
+    assert state["_centralizer_zone_epoch"] == 6
     assert state["_centralizer_error"]
+
+
+def test_uat22_equal_cased_sections_coalesce_and_measured_id_change_splits():
+    from test_uat_round9b_geometry import state_for
+
+    state = state_for()
+    ranges = lambda: [(z["top_md"], z["bottom_md"]) for z in phase9().auto_populate(state)]
+    assert ranges() == [(0., 500.), (500., 1000.)]  # Same diameter across steel and open hole.
+    table = state["hardware_table"]
+    inner = table.iloc[[1]].assign(**{"MD (m)": "250-500"})
+    state["hardware_table"] = pd.concat([table.assign(**{"MD (m)": ["1000", "250", "1000"]}), inner],
+                                        ignore_index=True)
+    assert ranges() == [(0., 500.), (500., 1000.)]
+    state["hardware_table"].at[3, "ID (in)"] = 12.2
+    assert ranges() == [(0., 250.), (250., 500.), (500., 1000.)]
+    with pytest.raises(ValueError, match="one identical scalar ID"):
+        adapter.to_engine_geometry(state)
+    state["hardware_table"].at[1, "MD (m)"] = "275"
+    state["hardware_table"].at[3, "MD (m)"] = "275-600"
+    assert ranges() == [(0., 275.), (275., 600.), (600., 1000.)]
+
+
+@pytest.mark.parametrize("fault,match", [
+    ("target", "target"), ("trajectory", "outside the canonical trajectory"),
+    ("taper", "Tapered Centralizer string"), ("hole", "Size and ID/Bit Size"),
+])
+def test_uat22_draft_geometry_keeps_physical_validation(fault, match):
+    from test_uat_round9b_geometry import split_active, state_for
+
+    state = state_for()
+    if fault == "target":
+        state["placement_config"].pop("target_row")
+    elif fault == "trajectory":
+        state["well_geometry"]["td_m"] = 999.
+    elif fault == "taper":
+        split_active(state, **{"ID (in)": 8.4})
+    else:
+        state["hardware_table"].at[2, "ID (in)"] = 11.
+    with pytest.raises(ValueError, match=match):
+        phase9().auto_populate(state)
+
+
+def test_uat22_phase9_can_draft_and_select_products_before_chart_or_fluids(catalog):
+    state = configured(catalog, mode="optimize")
+    state["fluids_config"] = {"active": [], "params": {}}
+    state["placement_config"].pop("chart_excess_mode")
+    case = audit.AuditRegressions()
+    with patch.object(adapter, "solve_static", side_effect=AssertionError("Implicit solver")), \
+         patch.object(adapter, "solve_dynamic", side_effect=AssertionError("Implicit solver")):
+        app = case.app(state)
+        case.phase(app, "phase9")
+        assert not app.button(key="_centralizer_auto_zones").disabled
+        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.caption)
+        assert len(app.selectbox(key="_centralizer_zone_0_0_product").options) > 1
+        app.button(key="_centralizer_auto_zones").click().run()
+        case.healthy(app)
+        config = app.session_state["centralizer_config"]
+        assert [(z["top_md"], z["bottom_md"]) for z in config["zones"]] == [(0., 500.), (500., 1000.)]
+        assert all(z["product_nr"] is None and z["custom_product_id"] is None for z in config["zones"])
+        epoch = app.session_state["_centralizer_zone_epoch"]
+        generated = pickle.dumps(config)
+        app.button(key="_centralizer_auto_zones").click().run()
+        assert app.session_state["_centralizer_zone_epoch"] == epoch
+        assert pickle.dumps(app.session_state["centralizer_config"]) == generated
+        app.radio(key="_centralizer_placement").set_value("direct").run()
+        case.healthy(app)
+        assert app.button(key="_centralizer_auto_zones").disabled
+        assert not app.button(key="_centralizer_add_zone").disabled
+        assert "_centralizer_result" not in app.session_state
 
 
 @pytest.mark.parametrize("physics", ["static","dynamic"])

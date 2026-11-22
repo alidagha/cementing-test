@@ -230,12 +230,8 @@ def test_static_tier2_remains_real_and_dynamic_rejects_before_solver(catalog):
 
 @pytest.mark.parametrize("kind", ["casing", "liner", "tieback"])
 def test_auto_populated_zones_remain_explicit_editable_and_reportable(catalog, kind):
-    from cement_chart_model import resolve_chart_geometry, interval_volume
     state = configured(catalog, kind)
-    geometry = resolve_chart_geometry(state)
-    toc = 600. if kind == "tieback" else 450.
-    state["fluids_config"]["params"]["Tail"]["volume"] = (
-        interval_volume(geometry["capacity_segments"], toc, 1000.) + geometry["shoe_track_bbl"])
+    state["centralizer_config"]["placement_mode"] = "optimize"
     state["cement_params"] = {"Tail": {"top_depth": 999., "report_bottom_depth": 1.}}
     generated = phase9.auto_populate(state)
     assert all(zone["product_nr"] is None and zone["custom_product_id"] is None for zone in generated)
@@ -244,7 +240,7 @@ def test_auto_populated_zones_remain_explicit_editable_and_reportable(catalog, k
         zone["product_nr"] = product
     generated[0]["target_standoff_pct"] = 68.
     state["centralizer_config"]["zones"] = generated
-    phase9.execute(state, catalog)
+    assert phase9.execute(state, catalog)["mode"] == "optimize"
     assert state["centralizer_config"]["zones"] == generated
     assert len(bridge.prepare_report(state)["view"]["zone_rows"]) == len(generated)
 
