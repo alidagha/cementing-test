@@ -55,11 +55,12 @@ def prepare_report(state):
         mapped = adapter.resolve_zone_product(zone, catalog, config["custom_products"])
         if zone.get("product_name") != mapped["name"] or type(zone.get("count")) is not int or zone["count"] < 0:
             raise ValueError("Phase IX: Current zone product/count diagnostics are incomplete.")
+        # A numeric design assessment can exist even when the final profile did not sample this zone.
+        if zone.get("achieved_min_stdf") is None or zone.get("min_stdf") is None:
+            raise ValueError(f"Phase IX: Word requires an evaluated minimum standoff for Zone {index + 1}.")
         if result["mode"] == "direct" and source.get("target_standoff_pct") is None:
             if "meets_target" not in zone or zone["meets_target"] is not None or zone.get("target") is not None:
                 raise ValueError("Phase IX: A Direct Check without a target cannot report a target comparison.")
-            if zone.get("min_stdf") is None:
-                raise ValueError("Phase IX: Word requires an evaluated minimum standoff for each zone.")
             unassessed.append(index)
         elif type(zone.get("meets_target")) is not bool:
             raise ValueError("Phase IX: Current zone target diagnostics are incomplete.")

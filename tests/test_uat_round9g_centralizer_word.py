@@ -599,3 +599,22 @@ def test_uat22b_direct_without_target_exports_the_same_actual_placement(word_sta
     state['_centralizer_result']['zones'][0]['meets_target'] = True
     with pytest.raises(ValueError, match='without a target cannot report a target comparison'):
         bridge().prepare_report(state)
+
+
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+@pytest.mark.parametrize('mode', ['direct', 'optimize'])
+def test_uat22_integration_unsampled_zone_cannot_supply_numeric_word_row(catalog, mode, physics):
+    state = configured(catalog, physics=physics, mode=mode)
+    zone = state['centralizer_config']['zones'][0]
+    state['centralizer_config']['zones'] = [{**zone, 'top_md': top, 'bottom_md': bottom}
+                                           for top, bottom in ((0., 475.), (475., 475.01), (700., 1000.))]
+    result = phase9.execute(state, catalog)
+    assert phase9.result_is_current(state, catalog)
+    assert result['zones'][1]['target'] > 0.
+    assert result['zones'][1]['count'] == 0 and result['zones'][1]['achieved_min_stdf'] is None
+    assert result['profile']['zones_min'][1]['min_stdf'] == 2.0  # Native empty-window sentinel.
+    original = deepcopy(result)
+    with patch.object(bridge()._companion(), 'build_view', side_effect=AssertionError('Unsampled zone reached Word')), \
+         pytest.raises(ValueError, match='Word requires an evaluated minimum standoff for Zone 2'):
+        bridge().prepare_report(state)
+    assert state['_centralizer_result'] == original and phase9.result_is_current(state, catalog)
