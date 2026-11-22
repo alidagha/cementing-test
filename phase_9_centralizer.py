@@ -404,10 +404,29 @@ def render():
         st.error(st.session_state["_centralizer_error"])
     if result_is_current(st.session_state, products):
         result = st.session_state["_centralizer_result"]
-        count = len(result["profile"]["centralizer_md"])
+        try:
+            zones = result["zones"]
+            profile_mds = result["profile"]["centralizer_md"]
+            if not isinstance(zones, list) or not zones or not isinstance(profile_mds, list) or not profile_mds:
+                raise ValueError("Incomplete placement result.")
+            installations = []
+            for index, zone in enumerate(zones, 1):
+                mds, zone_count = zone["centralizer_md"], zone["count"]
+                if not isinstance(mds, list) or type(zone_count) is not int or len(mds) != zone_count:
+                    raise ValueError("Zone placement and count disagree.")
+                installations.extend((index, number, md) for number, md in enumerate(mds, 1))
+            # Compare at the frozen profile's six-decimal MD precision, without changing either list.
+            zone_mds = sorted(round(adapter._number(md, "Installation MD"), 6) for _, _, md in installations)
+            whole_mds = sorted(round(adapter._number(md, "Installation MD"), 6) for md in profile_mds)
+            if zone_mds != whole_mds:
+                raise ValueError("Zone and whole-string placement disagree.")
+        except (KeyError, TypeError, ValueError, OverflowError):
+            st.error("Installation MD is unavailable because the result could not be verified. Execute Centralizer again.")
+            return
+        count = len(profile_mds)
         st.success(f"Current Centralizer calculation complete. Total centralizers: {count}.")
         rows = []
-        for index, zone in enumerate(result["zones"], 1):
+        for index, zone in enumerate(zones, 1):
             measured = zone["achieved_min_stdf"]
             assessed = zone["meets_target"]
             if measured is None or assessed is None:
@@ -423,5 +442,9 @@ def render():
                          "Minimum standoff comes from the final whole-string profile."))})
         if any(row["Status"] == "Target missed" for row in rows):
             st.warning("Required target standoff was not achieved in one or more zones. The calculation is valid.")
+        with st.expander("Installation MD", expanded=False):
+            table = pd.DataFrame(installations, columns=["Zone #", "Centralizer #", "Installation MD (m)"])
+            st.table(table.style.format({"Installation MD (m)": str}), hide_index=True,
+                     height=300 if len(installations) > 8 else "content")
     else:
         st.info("Needs Review: Execute the current Centralizer design. Saved projects require a fresh execution after load.")

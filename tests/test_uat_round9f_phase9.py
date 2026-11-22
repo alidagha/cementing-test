@@ -878,3 +878,182 @@ def test_uat22b_short_unassessed_zone_does_not_report_engine_sentinel(catalog):
     assert row['min_stdf'] is row['min_depth'] is row['achieved_min_stdf'] is row['meets_target'] is None
     with pytest.raises(ValueError, match='Word requires an evaluated minimum'):
         report.prepare_report(state)
+
+
+@pytest.mark.parametrize('kind', ['casing', 'liner', 'tieback'])
+@pytest.mark.parametrize('physics', ['static', 'dynamic'])
+@pytest.mark.parametrize('mode', ['direct', 'optimize'])
+def test_uat22c_installation_schedule_from_one_current_result(catalog, kind, physics, mode):
+    state = configured(catalog, kind, physics, mode, use_custom=physics == 'dynamic')
+    zones = state['centralizer_config']['zones']
+    zone = zones[0]
+    zones[:] = [{**zone, 'top_md': top, 'bottom_md': bottom}
+                for top, bottom in ((zone['top_md'], 600.), (600., 764.), (801., zone['bottom_md']))]
+    if mode == 'direct':
+        for zone in zones:
+            zone['target_standoff_pct'] = None
+    app = ui_app(state)
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    result = app.session_state['_centralizer_result']
+    assert phase9().result_is_current(app.session_state.to_dict(), catalog)
+    whole_string = result['profile']['centralizer_md']
+    assert len(whole_string) > 10
+    matching = [item for item in app.expander if item.label == 'Installation MD']
+    assert len(matching) == 1
+    disclosure = matching[0]
+    assert not disclosure.proto.expanded
+    assert not disclosure.get('dataframe')
+    installation = disclosure.get('table')[0].value
+    expected = [(index, number, md) for index, zone in enumerate(result['zones'], 1)
+                for number, md in enumerate(zone['centralizer_md'], 1)]
+    assert list(installation.columns) == ['Zone #', 'Centralizer #', 'Installation MD (m)']
+    assert list(installation.itertuples(index=False, name=None)) == expected
+    for index, zone in enumerate(result['zones'], 1):
+        assert len(installation.loc[installation['Zone #'] == index]) == zone['count']
+    assert len(installation) == len(whole_string) == sum(zone['count'] for zone in result['zones'])
+    assert sorted(installation['Installation MD (m)']) == sorted(whole_string)
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert list(summary.columns) == ['Zone #', 'Computed Density', 'Count', 'Spacing (m)', 'Min Standoff (%)', 'Status']
+    for index, zone in enumerate(result['zones']):
+        row = summary.iloc[index]
+        assert row['Count'] == zone['count'] and row['Computed Density'] == zone['density_computed']
+        assert row['Spacing (m)'] == zone['spacing_m'] and row['Min Standoff (%)'] == zone['achieved_min_stdf'] * 100
+        if mode == 'direct':
+            assert row['Status'] == 'Not assessed'
+        else:
+            assert row['Status'] == ('Pass' if zone['meets_target'] else 'Target missed')
+    assert any(f'Total centralizers: {len(whole_string)}.' in item.value for item in app.success)
+
+
+def test_uat22c_schedule_reruns_navigation_and_failed_execute(catalog):
+    from contextlib import ExitStack
+    import centralizer_report
+
+    app = ui_app(configured(catalog))
+    with patch.object(adapter, 'solve_static', wraps=adapter.solve_static) as explicit:
+        app.button(key='_centralizer_execute').click().run()
+        assert explicit.call_count == 1
+    signature = app.session_state['_centralizer_signature']
+    config = pickle.dumps(app.session_state['centralizer_config'])
+    result = pickle.dumps(app.session_state['_centralizer_result'])
+    with ExitStack() as guards:
+        for module, names in ((adapter, ('solve_static', 'solve_dynamic')),
+                              (adapter.centralizer_engine, ('compute_standoff_profile', 'optimize_placement', 'place_zone_centralizers')),
+                              (centralizer_report, ('render_chart_png',))):
+            for name in names:
+                guards.enter_context(patch.object(module, name, side_effect=AssertionError(f'Implicit {name}')))
+        app.run()
+        assert any(item.label == 'Installation MD' for item in app.expander)
+        app.radio(key='_app_mode_key').set_value('phase1').run()
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        app.radio(key='_app_mode_key').set_value('phase9').run()
+        assert not app.exception
+        assert any(item.label == 'Installation MD' for item in app.expander)
+        assert app.session_state['_centralizer_signature'] == signature
+        assert pickle.dumps(app.session_state['_centralizer_result']) == result
+        assert pickle.dumps(app.session_state['centralizer_config']) == config
+        app.selectbox(key='_centralizer_zone_0_0_product').set_value(None).run()
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        app.button(key='_centralizer_execute').click().run()
+        assert not app.exception
+        assert any('select exactly one' in item.value for item in app.error)
+        assert not any(item.label == 'Installation MD' for item in app.expander)
+        assert '_centralizer_result' not in app.session_state and '_centralizer_signature' not in app.session_state
+
+
+@pytest.mark.parametrize('edit', ['top', 'density', 'target', 'product', 'volume', 'trajectory', 'mode', 'restore'])
+def test_uat22c_schedule_disappears_on_source_edit_or_restore(catalog, edit):
+    state = configured(catalog, use_custom=True)
+    state['hardware_table'] = state['hardware_table'].assign(**{'Collapse (psi)': None, 'Burst (psi)': None})
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert any(item.label == 'Installation MD' for item in app.expander)
+    if edit == 'top':
+        app.number_input(key='_centralizer_zone_0_0_top_md').set_value(10.).run()
+    elif edit == 'density':
+        app.selectbox(key='_centralizer_zone_0_0_density').set_value('1/1').run()
+    elif edit == 'target':
+        app.number_input(key='_centralizer_zone_0_0_target_standoff_pct').set_value(72.).run()
+    elif edit == 'product':
+        app.selectbox(key='_centralizer_zone_0_0_product').set_value('official:' + str(zones_for(catalog)[0]['product_nr'])).run()
+    elif edit == 'volume':
+        app.session_state['fluids_config']['params']['Tail']['volume'] += 1.
+        app.run()
+    elif edit == 'trajectory':
+        app.session_state['well_geometry']['td_m'] += 1.
+        app.run()
+    elif edit == 'mode':
+        app.radio(key='_centralizer_placement').set_value('optimize').run()
+    else:
+        restored = audit.round_trip(app.session_state.to_dict())
+        assert '_centralizer_result' not in restored and '_centralizer_signature' not in restored
+        app = ui_app(restored)
+    assert not app.exception
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    assert not any('Current Centralizer calculation complete' in item.value for item in app.success)
+
+
+@pytest.mark.parametrize('fault', ['count', 'missing', 'same-set-different-multiset', 'nonfinite', 'profile'])
+def test_uat22c_inconsistent_installation_receipt_fails_closed(catalog, fault):
+    state = configured(catalog)
+    result = phase9().execute(state, catalog)
+    zone = result['zones'][0]
+    if fault == 'count':
+        zone['count'] += 1
+    elif fault == 'missing':
+        del zone['centralizer_md']
+    elif fault == 'same-set-different-multiset':
+        mds, whole = zone['centralizer_md'], result['profile']['centralizer_md']
+        a, b = mds[:2]
+        assert len(set(mds)) == len(mds) and set(mds) == set(whole)
+        mds[-2:] = [a, a]
+        whole[-2:] = [b, b]
+        assert set(mds) == set(whole) and len(mds) == len(whole)
+    elif fault == 'nonfinite':
+        zone['centralizer_md'][0] = float('nan')
+    else:
+        del result['profile']['centralizer_md']
+    assert phase9().result_is_current(state, catalog)
+    saved = pickle.dumps(state['centralizer_config'])
+    receipt = pickle.dumps(result)
+    app = ui_app(state)
+    assert not app.exception
+    assert any('result could not be verified' in item.value for item in app.error)
+    assert not any(item.label == 'Installation MD' for item in app.expander)
+    assert pickle.dumps(app.session_state['centralizer_config']) == saved
+    assert pickle.dumps(app.session_state['_centralizer_result']) == receipt
+
+
+def test_uat22c_empty_zone_has_no_synthetic_installation_or_minimum(catalog):
+    state = configured(catalog)
+    zone = state['centralizer_config']['zones'][0]
+    state['centralizer_config']['zones'] = [{**zone, 'top_md': top, 'bottom_md': bottom, 'target_standoff_pct': None}
+                                           for top, bottom in ((0., 475.), (475., 475.01), (700., 1000.))]
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    result = app.session_state['_centralizer_result']
+    assert result['zones'][1]['count'] == 0 and result['zones'][1]['centralizer_md'] == []
+    assert result['zones'][1]['achieved_min_stdf'] is None
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert pd.isna(summary['Min Standoff (%)'].iloc[1]) and summary['Status'].iloc[1] == 'Not assessed'
+    schedule = next(item for item in app.expander if item.label == 'Installation MD').get('table')[0].value
+    assert set(schedule['Zone #']) == {1, 3}
+    assert len(schedule) == len(result['profile']['centralizer_md'])
+
+
+def test_uat22c_target_miss_warning_stays_outside_installation_disclosure(catalog):
+    state = configured(catalog, mode='optimize')
+    state['well_geometry'] = {'version': 1, 'type': 'Directional', 'survey': pd.DataFrame(
+        [[0., 0., 0.], [450., 65., 30.], [1200., 85., 80.]], columns=['MD', 'Deviation', 'Azimuth'])}
+    state['centralizer_config']['zones'][0]['target_standoff_pct'] = 100.
+    app = ui_app(state)
+    app.button(key='_centralizer_execute').click().run()
+    assert not app.exception and not app.error
+    disclosure = next(item for item in app.expander if item.label == 'Installation MD')
+    assert not disclosure.proto.expanded and not disclosure.get('warning')
+    assert any('Required target standoff was not achieved' in warning.value for warning in app.warning)
+    summary = next(table.value for table in app.dataframe if 'Computed Density' in table.value.columns)
+    assert summary['Status'].iloc[0] == 'Target missed'
