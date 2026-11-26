@@ -3,13 +3,20 @@ import streamlit as st
 from typing import Dict, Any
 import materials_db
 from project_state import (purge_inactive_slurries, invalidate_document,
-                           available_fluid_types, reconcile_fluid_applicability)
+                           available_fluid_types, reconcile_fluid_applicability, refresh_fluids)
 from formation_pressure_ui import render_static_security
 from input_guard import repair_invalid_inputs
 from engineering_tools import parse_effective_numeric, require_fluid_density, require_positive_pump_rate, format_to_hr_mm, require_preflush_material_name
 
 # Strict API & Well Execution Sequence for Fluid Train Sorting
 HYDRAULIC_EXECUTION_ORDER = materials_db.HYDRAULIC_EXECUTION_ORDER
+_DISPLACEMENT = "Displacement Fluid"
+_DISPLACEMENT_INPUTS = (("volume", "vol_Displacement Fluid", 0.0),
+                        ("pump_rate", "rate_Displacement Fluid", ""))
+
+
+def _displacement_context(state):
+    return state.get("last_loaded_hash"), state.get("job_type")
 
 def _commit_fluid_selection(fluid, key):
     cfg = st.session_state["fluids_config"]
@@ -64,7 +71,12 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
     config = st.session_state.get("fluids_config", {})
     if fluid not in config.get("active", []):
         return
+    displacement_input = fluid == _DISPLACEMENT and field in ("volume", "pump_rate")
+    if displacement_input and st.session_state.get("_phase4_displacement_owner") != _displacement_context(st.session_state):
+        return
     if config.get("params", {}).get(fluid, {}).get(field) != value:
+        if displacement_input:
+            st.session_state["_phase4_displacement_changed"] = True
         invalidate_document(st.session_state)
     config.setdefault("params", {}).setdefault(fluid, {})[field] = value
     if st.session_state.get("job_type") == materials_db.CT_JOB and fluid == "Main":
@@ -83,6 +95,30 @@ def _commit_fluid_widget(fluid: str, field: str, widget_key: str) -> None:
                     record["effective_density"] = 0.0
             else:
                 record["effective_density"] = parse_effective_numeric(value, default=0.0)
+
+
+def commit_pending_displacement_inputs():
+    """Recover received Phase IV drafts before navigation can unmount them."""
+    state = st.session_state
+    config = state.get("fluids_config", {})
+    owned = state.get("_phase4_displacement_owner") == _displacement_context(state)
+    if owned and _DISPLACEMENT in config.get("active", []):
+        params = config.get("params", {}).get(_DISPLACEMENT, {})
+        for field, key, default in _DISPLACEMENT_INPUTS:
+            current = params.get(field, default)
+            shown = str(current) if field == "pump_rate" else current
+            if key in state and state[key] != shown:
+                _commit_fluid_widget(_DISPLACEMENT, field, key)
+        if state.get("_phase4_displacement_changed"):
+            try:
+                refresh_fluids(state)
+            except ValueError:
+                # Keep the raw draft. Dependent calculation admission validates it again.
+                pass
+    state.pop("_phase4_displacement_changed", None)
+    if state.get("_app_mode_key") != "phase4":
+        state.pop("_phase4_displacement_owner", None)
+
 
 def _commit_preflush_name(widget_key: str, selector: bool = False) -> None:
     value = st.session_state[widget_key]
@@ -194,6 +230,8 @@ def render():
     )
     
     cfg["active"] = active_fluids_list
+    if _DISPLACEMENT not in active_fluids_list:
+        st.session_state.pop("_phase4_displacement_owner", None)
     purge_inactive_slurries(st.session_state, active_fluids_list)
     st.session_state["active_fluids"] = {f: (f in active_fluids_list) for f in materials_db.FLUID_TYPES}
     inactive_drafts = st.session_state.get("inactive_slurry_drafts", {})
@@ -249,6 +287,7 @@ def render():
         
         if fluid == "Displacement Fluid":
             p = cfg["params"].setdefault(fluid, {"volume": 0.0, "pump_rate": ""})
+            st.session_state["_phase4_displacement_owner"] = _displacement_context(st.session_state)
             disp_density_text = live_mud_density_display
             disp_effective_density = live_effective_mud_density
         else:

@@ -13,6 +13,7 @@ from bhct_helper import suggest_bhct, M_TO_FT
 import phase_10_procedure as report
 from project_state import lab_source_signature
 import pytest
+from streamlit.runtime.state.session_state import SessionState
 from test_audit_regressions import legacy_word_fixture
 
 pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
@@ -25,6 +26,37 @@ class Phase7UAT(unittest.TestCase):
     configured_app = audit.AuditRegressions.configured_app
     export = audit.AuditRegressions.export
     assert_export_blocked = audit.AuditRegressions.assert_export_blocked
+
+    def test_received_mud_rpm_drafts_survive_interrupted_navigation(self):
+        fluid = "Displacement Fluid"
+        names = {rpm: f"_rheo_displacement_fluid_bhct_down_{rpm}_default_project" for rpm in (200, 300)}
+        widget_changed = SessionState._widget_changed
+
+        def interrupted(state, widget_id):
+            return not widget_id.endswith(tuple(names.values())) and widget_changed(state, widget_id)
+
+        for selected, first, second in ((True, "61", "43"), (True, "", "00"), (False, "93", "95")):
+            with self.subTest(selected=selected, first=first, second=second):
+                app = self.app({"job_type": 'CSG 9 5/8"', "mud_density": "80-82",
+                                "fluids_config": {"active": [fluid], "params": {
+                                    fluid: {"volume": 50., "pump_rate": "5"}}}})
+                self.phase(app, "phase7")
+                next(w for w in app.checkbox if w.label == "BHCT — Ramp-Down - Displacement Fluid").check().run()
+                app.text_input(key=names[200]).set_value("58").run()
+                app.text_input(key=names[300]).set_value("41").run()
+                app.text_input(key=names[200]).set_value(first)
+                app.text_input(key=names[300]).set_value(second)
+                if not selected:
+                    next(w for w in app.checkbox if w.label == "BHCT — Ramp-Down - Displacement Fluid").uncheck()
+                with patch.object(SessionState, "_widget_changed", interrupted):
+                    self.phase(app, "phase1")
+                saved = audit.round_trip(app.session_state.to_dict())
+                row = saved["lab_qc_params"][fluid]["rheology"]["bhct_down"]
+                self.assertIs(row["selected"], selected)
+                self.assertEqual((row["readings"]["200"], row["readings"]["300"]),
+                                 (first, second) if selected else ("58", "41"))
+                self.assertEqual(len(row["readings"]), 7)
+                self.assertFalse(saved["lab_qc_params"][fluid]["reviewed"])
 
     def input(self, app, label):
         return next(w for w in app.number_input if w.label == label)

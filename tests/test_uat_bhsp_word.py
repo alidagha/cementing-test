@@ -239,8 +239,117 @@ UAT20_CEMENT_WATER_CHANGES = (
 )
 
 
+UI_PERSISTENCE_A_LAB_CHANGES = (
+    (
+        b'from project_state import invalidate_document\n'
+        b'from project_state import mud_lab_source\n'
+        b'from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload, mud_lab_source_signature, mud_lab_readings\n'
+        b'from engineering_tools import round_half_up',
+        b'from project_state import invalidate_document\n'
+        b'from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload, mud_lab_source_signature, mud_lab_readings\n'
+        b'from engineering_tools import round_half_up',
+    ),
+    (
+        b'        return {}, False\n'
+        b'\n'
+        b'\n'
+        b'def _mud_rpm_context(state):\n'
+        b'    try:\n'
+        b'        source = mud_lab_source(state)\n'
+        b'    except ValueError:\n'
+        b'        return None\n'
+        b'    return state.get("last_loaded_hash", "default_project"), state.get("job_type"), source\n'
+        b'\n'
+        b'\n'
+        b'def _owned_mud_rpm_row(state):\n'
+        b'    name = materials_db.MUD_LAB_FLUID\n'
+        b'    owner = state.get("_mud_rpm_owner")\n'
+        b'    if owner is None or name not in phase7_lab_fluids(state, include_mud=True):\n'
+        b'        return None\n'
+        b'    if owner != _mud_rpm_context(state):\n'
+        b'        return None\n'
+        b'    row = state.get("lab_qc_params", {}).get(name, {}).get("rheology", {}).get("bhct_down", {})\n'
+        b'    if (isinstance(row, dict) and isinstance(row.get("readings"), dict)\n'
+        b'            and row.get("selected") is True):\n'
+        b'        return row\n'
+        b'    return None\n'
+        b'\n'
+        b'\n'
+        b'def commit_pending_mud_rpm():\n'
+        b'    """Save received readings after the dataset selection callback has run."""\n'
+        b'    state = st.session_state\n'
+        b'    row = _owned_mud_rpm_row(state)\n'
+        b'    if row is not None:\n'
+        b'        load_sig = state["_mud_rpm_owner"][0]\n'
+        b'        for rpm in RPM_ORDER:\n'
+        b'            key = f"_rheo_displacement_fluid_bhct_down_{rpm}_{load_sig}"\n'
+        b'            raw = row["readings"].get(str(rpm))\n'
+        b'            if key in state and state[key] != ("" if raw is None else str(raw)):\n'
+        b'                _commit_rheology(materials_db.MUD_LAB_FLUID, "bhct_down", "readings", key, rpm)\n'
+        b'    if state.get("_app_mode_key") != "phase7":\n'
+        b'        state.pop("_mud_rpm_owner", None)\n'
+        b'\n'
+        b'\n'
+        b'def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):\n'
+        b'    if slurry == materials_db.MUD_LAB_FLUID and rpm is not None:\n'
+        b'        state = st.session_state\n'
+        b'        row = _owned_mud_rpm_row(state)\n'
+        b'        if row is None:\n'
+        b'            return\n'
+        b'        load_sig = state["_mud_rpm_owner"][0]\n'
+        b'        if widget_key != f"_rheo_displacement_fluid_bhct_down_{rpm}_{load_sig}":\n'
+        b'            return\n'
+        b'        raw = row["readings"].get(str(rpm))\n'
+        b'        value = state[widget_key]\n'
+        b'        if value == ("" if raw is None else str(raw)):\n'
+        b'            return\n'
+        b'        state["lab_qc_params"][slurry]["reviewed"] = False\n'
+        b'        invalidate_document(state)\n'
+        b'        row.setdefault("gel_10_sec", "-")\n'
+        b'        row.setdefault("gel_10_min", "-")\n'
+        b'        row["readings"][str(rpm)] = value\n'
+        b'        return\n'
+        b'    qc = st.session_state["lab_qc_params"].setdefault(slurry, {})',
+        b'        return {}, False\n'
+        b'\n'
+        b'\n'
+        b'def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):\n'
+        b'    qc = st.session_state["lab_qc_params"].setdefault(slurry, {})',
+    ),
+    (
+        b'            st.text_input(f"{rpm} RPM - BHCT \xe2\x80\x94 Ramp-Down - Displacement Fluid", key=key)\n'
+        b'        for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):',
+        b'            st.text_input(f"{rpm} RPM - BHCT \xe2\x80\x94 Ramp-Down - Displacement Fluid", key=key,\n'
+        b'                          on_change=_commit_rheology, args=(name, "bhct_down", "readings", key, rpm))\n'
+        b'        for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):',
+    ),
+    (
+        b'            if slurry == materials_db.MUD_LAB_FLUID:\n'
+        b'                st.session_state["_mud_rpm_owner"] = _mud_rpm_context(st.session_state)\n'
+        b'                _render_mud_lab(load_sig)\n'
+        b'                continue\n'
+        b'            full_lab = slurry in materials_db.PLACEMENT_SLURRIES',
+        b'            if slurry == materials_db.MUD_LAB_FLUID:\n'
+        b'                _render_mud_lab(load_sig)\n'
+        b'                continue\n'
+        b'            full_lab = slurry in materials_db.PLACEMENT_SLURRIES',
+    ),
+)
+
+
+def _before_mud_rpm_recovery(source):
+    for after, before in UI_PERSISTENCE_A_LAB_CHANGES:
+        assert source.count(after) == 1
+        source = source.replace(after, before, 1)
+    return source
+
+
 def r15cd_original_lab_source(source):
     """Undo exact approved changes while preserving the original historical file pin."""
+    return _original_lab_source(_before_mud_rpm_recovery(source))
+
+
+def _original_lab_source(source):
     for after, before in UAT20_CEMENT_WATER_CHANGES + B1M_PHASE7_CHANGES:
         assert source.count(after) == 1
         source = source.replace(after, before, 1)
@@ -269,6 +378,21 @@ def r15cd_original_lab_source(source):
         assert source.count(after)==1
         source=source.replace(after,before,1)
     return source
+
+
+@pytest.mark.parametrize("after,before", UI_PERSISTENCE_A_LAB_CHANGES,
+                         ids=("import", "recovery", "rpm-widget", "owner"))
+def test_mud_rpm_recovery_inverse_preserves_fixed_history(after, before):
+    import hashlib
+
+    source = Path("phase_7_lab.py").read_bytes()
+    expected = "f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f"
+    assert source.count(after) == 1
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest() == expected
+    for mutation in (source.replace(after, b"!" + after[1:], 1), source + after,
+                     source.replace(after, before, 1), source.replace(after, before, 1) + after):
+        with pytest.raises(AssertionError):
+            assert hashlib.sha256(r15cd_original_lab_source(mutation)).hexdigest() == expected
 
 
 @pytest.mark.parametrize("old,new", [
@@ -314,13 +438,14 @@ def test_b1m_exact_mud_inverse_rejects_changed_missing_duplicate_or_relocated_fr
     source=Path('phase_7_lab.py').read_bytes();after,before=B1M_PHASE7_CHANGES[fragment]
     expected='f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
     assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest()==expected
+    source = _before_mud_rpm_recovery(source)
     assert source.count(after)==1
     if mutation=='changed':bad=source.replace(after,bytes([after[0]^1])+after[1:],1)
     elif mutation=='missing':bad=source.replace(after,before,1)
     elif mutation=='duplicated':bad=source+after
     else:bad=source.replace(after,before,1)+after
     with pytest.raises(AssertionError):
-        assert hashlib.sha256(r15cd_original_lab_source(bad)).hexdigest()==expected
+        assert hashlib.sha256(_original_lab_source(bad)).hexdigest()==expected
 
 
 @pytest.mark.parametrize('old,new',[(b'columns = st.columns(2)',b'columns = st.columns(3)'),
@@ -339,14 +464,15 @@ def test_b1m_mud_normalizer_never_hides_unrelated_source_or_bingham_display_chan
                                       'duplicated', 'relocated', 'inserted'])
 def test_b2_gel_inverse_preserves_fixed_history_and_rejects_widget_mutations(mutation):
     import hashlib
-    source = Path('phase_7_lab.py').read_bytes()
+    live_source = Path('phase_7_lab.py').read_bytes()
+    source = _before_mud_rpm_recovery(live_source)
     mud_editor = B1M_PHASE7_CHANGES[2][0]
     # Accepted B2 editor, including its following function boundary; never pin arbitrary current bytes.
     assert len(mud_editor) == 3548
     assert hashlib.sha256(mud_editor).hexdigest() == '8d70b3d5d2893aa4d1d80af936d8e394a844b7f72612025aeb50886782863218'
     assert source.count(mud_editor) == 1
     expected = 'f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
-    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest() == expected
+    assert hashlib.sha256(r15cd_original_lab_source(live_source)).hexdigest() == expected
     start = mud_editor.index(b'        for column, field, label in zip(')
     end = mud_editor.index(b'    try:\n', start)
     gel = mud_editor[start:end]
@@ -368,4 +494,4 @@ def test_b2_gel_inverse_preserves_fixed_history_and_rejects_widget_mutations(mut
     else:
         bad = source.replace(gel, gel + b'        qc["unapproved"] = True\n', 1)
     with pytest.raises(AssertionError):
-        assert hashlib.sha256(r15cd_original_lab_source(bad)).hexdigest() == expected
+        assert hashlib.sha256(_original_lab_source(bad)).hexdigest() == expected
