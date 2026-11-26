@@ -262,7 +262,7 @@ def render():
             help="Enter hole diameter (e.g. 26\", 12 1/4\", 8 1/2\") or injection string context for plugs (e.g. Inside 9 5/8\" CSG)."
         )
         st.session_state["hole_size"] = st.session_state[hole_widget_key]
-        st.caption(f"↳ Default for {st.session_state['job_type']}: {materials_db.DEFAULT_HOLE_SIZES.get(st.session_state['job_type'], '—')} (your own value is kept once edited)")
+        st.markdown(f"↳ Default for {st.session_state['job_type']}: {materials_db.DEFAULT_HOLE_SIZES.get(st.session_state['job_type'], '—')} (your own value is kept once edited)")
         
         # Well Location & Names
         for label, shadow_key in [("Field", "field"), ("Well Location", "well_location"),
@@ -328,7 +328,7 @@ def render():
         st.session_state["revision_no"] = st.session_state["_w_revision_no"]
 
     with st.expander("Request and approval details (optional)"):
-        st.caption("Leave unknown details blank. Select dates using the calendar.")
+        st.markdown("Leave unknown details blank. Select dates using the calendar.")
         detail_columns = st.columns(2)
         for index, (label, shadow_key) in enumerate(DOCUMENT_DETAIL_FIELDS):
             with detail_columns[index % 2]:
@@ -342,7 +342,7 @@ def render():
                     if st.session_state[widget_key] is not None:
                         st.session_state[shadow_key] = st.session_state[widget_key].isoformat()
                     elif st.session_state[shadow_key]:
-                        st.caption(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
+                        st.markdown(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
                 else:
                     st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key, widget_key))
                     st.session_state[shadow_key] = st.session_state[widget_key]
