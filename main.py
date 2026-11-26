@@ -219,6 +219,10 @@ with _navigation_slot:
                             key="_app_mode_key")
 app_mode = _PHASE_LABELS[app_mode_key]
 
+if app_mode_key != "phase1":
+    from phase_1_doc_control import leave_document_control
+    leave_document_control()
+
 if app_mode == "Phase I: Document Control":
     import phase_1_doc_control
     phase_1_doc_control.render()
