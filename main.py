@@ -12,7 +12,9 @@ from project_state import (is_project_key, invalidate_document, restore_canonica
 from project_io import content_signature, decode_project, replace_project_state
 from project_filenames import cementing_program_basename
 from placement import EXCESS_FIELDS
+from phase_2_3_well_data import commit_pending_mud_inputs
 
+commit_pending_mud_inputs()
 restore_canonical_fields(st.session_state)
 migrate_material_properties(st.session_state)
 
