@@ -8,6 +8,8 @@ font = "sans-serif"
 baseFontSize = 15
 borderColor = "#788CA2"
 showWidgetBorder = true
+headingFontSizes = ["27px", "27px", "17px", "14px", "14px", "14px"]
+headingFontWeights = [700, 700, 600, 600, 600, 600]
 
 [theme.sidebar]
 primaryColor = "#F5F7FA"
@@ -15,3 +17,5 @@ backgroundColor = "#173B61"
 secondaryBackgroundColor = "#1F497D"
 textColor = "#F5F7FA"
 borderColor = "#D9E1EA"
+headingFontSizes = ["17px", "17px", "14px", "14px", "14px", "14px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]

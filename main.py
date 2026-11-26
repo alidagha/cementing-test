@@ -554,7 +554,7 @@ def _download_project(project_json, filename):
     # A download starts before a pending editor blur/rerun can finish. Prepare
     # with a regular button first; the modal prevents further source edits
     # while these exact bytes are offered, without another saved-state cache.
-    st.caption("Your current inputs are ready. Download below, or close to continue editing.")
+    st.markdown("Your current inputs are ready. Download below, or close to continue editing.")
     if st.download_button(
         label="Download Project (.json)",
         data=project_json,
