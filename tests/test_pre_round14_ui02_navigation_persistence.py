@@ -177,6 +177,43 @@ def test_loaded_checkpoint_default_navigation_stays_clean(phase_one_checkpoint):
         assert app.session_state["well_name"] == "Next clean checkpoint"
 
 
+def test_hardware_checkpoint_stays_clean_until_a_new_edit():
+    source = CASE.app()
+    source.text_input(key="_w_well_name").set_value("UI02 Hardware Checkpoint").run()
+    CASE.phase(source, "phase2_3")
+    CASE.hardware_event(source, {"added_rows": [
+        {"Description": "Casing", "MD (m)": "1234.5", "Size (in)": "20", "ID (in)": 18.0}
+    ]})
+    raw = save_project(source)
+    assert json.loads(raw)["hardware_table"]["data"][0]["MD (m)"] == "1234.5"
+
+    app = CASE.app()
+    with upload(app, raw):
+        app.run()
+        CASE.healthy(app)
+        assert save_project(app) == raw
+        assert not dirty(app)
+        CASE.phase(app, "phase2_3")
+        assert not dirty(app)
+
+        CASE.hardware_event(app, {"edited_rows": {"0": {"MD (m)": "1235.5"}}}, navigate="phase1")
+        assert app.radio(key="_app_mode_key").value == "phase1"
+        saved = json.loads(save_project(app))
+        assert saved["hardware_table"]["data"][0]["MD (m)"] == "1234.5"
+        assert saved["hardware_editor_draft"]["data"][0]["MD (m)"] == "1235.5"
+        assert dirty(app)
+        app.run()
+        assert dirty(app)
+        CASE.phase(app, "phase2_3")
+        assert json.loads(save_project(app))["hardware_table"]["data"][0]["MD (m)"] == "1235.5"
+        assert dirty(app)
+
+        app.button(key="_reload_uploaded_project").click().run()
+        CASE.healthy(app)
+        assert save_project(app) == raw
+        assert not dirty(app)
+
+
 @pytest.mark.parametrize("edit", ["mud_density", "mud_type", "explicit_zero_excess"])
 def test_first_well_visit_edit_then_navigation_stays_dirty(phase_one_checkpoint, edit):
     app = CASE.app()

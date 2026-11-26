@@ -644,7 +644,8 @@ if uploaded_project is not None:
             if reload_requested or not pending_changes or replace_confirmed:
                 # Compute before publication: failed baseline serialization
                 # must leave the currently open project untouched.
-                checkpoint = serialize_item(prepared)
+                checkpoint = serialize_item({key: value for key, value in prepared.items()
+                                             if is_project_key(key)})
                 # Match Phase I's first mount on the comparison copy only:
                 # explicit null is blank; a missing/legacy-empty date defaults.
                 if "report_date" not in checkpoint:
