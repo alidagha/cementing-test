@@ -373,7 +373,7 @@ def render():
                     # Phase II's range fields — shows the single number this
                     # text actually resolves to for every downstream calculation,
                     # without changing the free-text range-input behavior itself.
-                    st.caption(f"↳ Used in calculations as: **{disp_effective_density:.1f} pcf**" + (" (mean of range)" if any(c in p["density"] for c in "-/") else ""))
+                    st.markdown(f"↳ Used in calculations as: **{disp_effective_density:.1f} pcf**" + (" (mean of range)" if any(c in p["density"] for c in "-/") else ""))
 
                 # FIX (found by testing): the Mass Balance formula (Phase V)
                 # has a denominator that approaches zero as slurry weight
