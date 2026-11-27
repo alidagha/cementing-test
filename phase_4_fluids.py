@@ -408,12 +408,15 @@ def render():
                 args=(fluid, "pump_rate", f"rate_{fluid}")
             )
 
+        # Keep earlier rate messages with their divider so their appearance
+        # cannot move and remount the focused Displacement inputs below.
+        rate_feedback = st.container() if fluid != _DISPLACEMENT and _DISPLACEMENT in active_fluids_list else st
         try:
             min_rate = require_positive_pump_rate(p["pump_rate"])
             duration_min = float(p["volume"]) / min_rate
             duration_str = format_to_hr_mm(duration_min)
         except (ValueError, OverflowError) as exc:
-            st.error(f"{fluid}: {exc}. Correct the rate before exporting the report.")
+            rate_feedback.error(f"{fluid}: {exc}. Correct the rate before exporting the report.")
             min_rate = 0.0
             duration_min = 0.0
             duration_str = "INVALID RATE"
@@ -441,7 +444,7 @@ def render():
             cumul_time_str=cumul_str
         )
             
-        st.divider()
+        rate_feedback.divider()
 
     st.session_state["fluid_data"] = fluid_data_payload
     st.session_state["total_pump_time_min"] = cumulative_time_min

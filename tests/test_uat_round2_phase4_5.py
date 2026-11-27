@@ -64,6 +64,46 @@ class Round2Phase45UAT(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Phase IV:"):
                         refresh_fluids(saved)
 
+    def test_displacement_editors_keep_their_row_when_main_rate_warning_clears(self):
+        fluid = "Displacement Fluid"
+        app = self.app({"mud_density": "80-82", "fluids_config": {
+            "active": ["Main", fluid],
+            "params": {"Main": {"volume": 42., "density": "118", "pump_rate": ""},
+                       fluid: {"volume": 0., "pump_rate": ""}},
+        }})
+        self.phase(app, "phase4")
+        keys = ("vol_" + fluid, "rate_" + fluid)
+
+        def positions(block, parent=()):
+            for index, child in block.children.items():
+                path = (*parent, index)
+                if getattr(child, "key", None) in keys:
+                    yield child.key, (path, child.id)
+                if hasattr(child, "children"):
+                    yield from positions(child, path)
+
+        self.assertTrue(any(message.value.startswith("Main:") for message in app.error))
+        before = dict(positions(app._tree.main))
+        self.assertEqual(set(before), set(keys))
+        self.assertEqual(app.number_input(key=keys[0]).value, 0.)
+        app.text_input(key="rate_Main").set_value("5").run()
+        self.assertFalse(any(message.value.startswith("Main:") for message in app.error))
+        self.assertEqual(dict(positions(app._tree.main)), before)
+        app.number_input(key=keys[0]).set_value(54.25)
+        app.text_input(key=keys[1]).set_value("5-6")
+        self.phase(app, "phase1")
+        saved = audit.round_trip(app.session_state.to_dict())
+        record = saved["fluid_data"][fluid]
+        self.assertEqual((record["volume"], record["pump_rate"], record["min_rate"]), (54.25, "5-6", 5.))
+        self.assertEqual(record["duration_min"], 54.25 / 5.)
+        self.phase(app, "phase4")
+        app.number_input(key="vol_" + fluid).set_value(0.)
+        self.phase(app, "phase1")
+        saved = audit.round_trip(app.session_state.to_dict())
+        self.assertEqual(saved["fluids_config"]["params"][fluid]["volume"], 0.)
+        with self.assertRaisesRegex(ValueError, "active fluid volume must be positive"):
+            refresh_fluids(saved)
+
     def select_slurries(self, app):
         self.phase(app, 'phase4')
         for slurry in SLURRIES:
