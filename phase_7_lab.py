@@ -578,7 +578,7 @@ def _render_spacer_lab(load_sig, bhct, bhst):
         return
     qc = st.session_state["lab_qc_params"]["Spacer"]
     st.markdown("#### Blend & Additives — 600 mL Cup")
-    st.caption("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
+    st.markdown("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
     key = f"_editor_lab_tbl_spacer_{load_sig}_{st.session_state.get('_lab_grid_revision_Spacer', 0)}"
     persistent_data_editor(
         _spacer_lab_display(grid), persist_to=("lab_grid_dfs", "Spacer"), normalize=_commit_spacer_lots,
@@ -590,7 +590,7 @@ def _render_spacer_lab(load_sig, bhct, bhst):
     edited = st.session_state["lab_grid_dfs"]["Spacer"]
     from standalone_spacer import formulation_from_state, lab_sample
     sample = lab_sample(formulation_from_state(st.session_state))
-    st.caption(f"Total Mass: {sample['mass_g']:.1f} g / 600 mL")
+    st.markdown(f"Total Mass: {sample['mass_g']:.1f} g / 600 mL")
     _, issues = _render_rheology("Spacer", qc, load_sig)
     temperature_valid = lab_temperature_valid(bhct, bhst)
     try:
@@ -887,7 +887,7 @@ def render():
                     collection_valid = True
                 except ValueError as exc:
                     collection_valid = False
-                    st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
+                    st.markdown(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
             temperature_valid = lab_temperature_valid(bhct, bhst)
             review_matches = (comp_valid and temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)

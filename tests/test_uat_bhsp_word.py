@@ -337,7 +337,48 @@ UI_PERSISTENCE_A_LAB_CHANGES = (
 )
 
 
+# UI-04: exact display calls only, reversed before all older source inverses.
+UI04_DISPLAY_CHANGES = ((b'st.markdown("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")', b'st.caption("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")'), (b'st.markdown(f"Total Mass: {sample[\'mass_g\']:.1f} g / 600 mL")', b'st.caption(f"Total Mass: {sample[\'mass_g\']:.1f} g / 600 mL")'), (b'st.markdown(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")', b'st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")'))
+
+def _before_ui04_display(source):
+    for after, before in UI04_DISPLAY_CHANGES:
+        if source.count(after):
+            assert source.count(after) == 1 and source.count(before) == 0
+            source = source.replace(after, before, 1)
+        else:
+            assert source.count(before) == 1
+    return source
+
+
+def _assert_ui04_lab_display(source):
+    import hashlib
+    for after, before in UI04_DISPLAY_CHANGES:
+        assert source.count(after) == 1 and source.count(before) == 0
+    assert hashlib.sha256(r15cd_original_lab_source(source)).hexdigest() == 'f95e337cc8445a5b6cf8c582bb09c982a36e9d638608582d41fb50922f56903f'
+
+
+def test_ui04_display_inverse_preserves_fixed_historical_pin():
+    _assert_ui04_lab_display(Path('phase_7_lab.py').read_bytes())
+
+
+@pytest.mark.parametrize('fragment', range(3))
+@pytest.mark.parametrize('mutation', ['changed','missing','duplicated','relocated'])
+def test_ui04_display_inverse_rejects_unapproved_mutations(fragment, mutation):
+    source = Path('phase_7_lab.py').read_bytes()
+    after, before = UI04_DISPLAY_CHANGES[fragment]
+    bad = {
+        'changed': source.replace(after, after.replace(b'st.markdown', b'st.write', 1), 1),
+        'missing': source.replace(after, before, 1),
+        'duplicated': source + b'\n' + after,
+        'relocated': source.replace(after, b'', 1) + b'\n' + after,
+    }[mutation]
+    assert bad != source
+    with pytest.raises(AssertionError):
+        _assert_ui04_lab_display(bad)
+
+
 def _before_mud_rpm_recovery(source):
+    source = _before_ui04_display(source)
     for after, before in UI_PERSISTENCE_A_LAB_CHANGES:
         assert source.count(after) == 1
         source = source.replace(after, before, 1)
@@ -350,6 +391,7 @@ def r15cd_original_lab_source(source):
 
 
 def _original_lab_source(source):
+    source = _before_ui04_display(source)
     for after, before in UAT20_CEMENT_WATER_CHANGES + B1M_PHASE7_CHANGES:
         assert source.count(after) == 1
         source = source.replace(after, before, 1)

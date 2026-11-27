@@ -522,7 +522,7 @@ def test_spacer_lab_ui_formats_without_changing_reviewed_sources(source):
     assert grid.loc["Defoamer", "Mass"] == "4.80"
     assert grid.loc["Fresh Water", "Mass"] == "402.4"
     assert grid.loc["Salt", "Concentration"] == "126.00"
-    assert any("Total Mass: 1057.2 g" in item.value for item in app.caption)
+    assert any("Total Mass: 1057.2 g" in item.value for item in app.markdown)
     pd.testing.assert_frame_equal(app.session_state["lab_grid_dfs"]["Spacer"], canonical)
     current = app.session_state["lab_qc_params"]["Spacer"]
     assert current["reviewed"] == qc["reviewed"]
