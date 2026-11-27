@@ -619,7 +619,7 @@ def render():
                     else:
                         st.caption(f"Modelled placement: {interval['top']} → {interval['bottom']}. "
                                    f"Returned/dumped at Surface: {interval['returned_bbl']:.2f} bbl.")
-                    st.caption("Optional Word Top/Bottom overrides below affect presentation only. "
+                    st.markdown("Optional Word Top/Bottom overrides below affect presentation only. "
                                "Engineering placement uses Phase IV volume and explicit Hardware capacity; "
                                "it is theoretical, not measured field TOC.")
                     bottom_key = f"_report_bottom_{get_slurry_key(slurry, 'slurry')}_{fingerprint(job_type)[:10]}_{load_sig}"
@@ -695,10 +695,10 @@ def render():
 
             st.markdown("---")
             st.markdown("#### Materials & Additives Formulation")
-            st.caption("**Mix Method Guide:** Choose **'Dry Blend'** for powders pre-blended dry with bulk cement (no dead volume penalty). Choose **'In Mix Water'** for chemicals dissolved in the mixing tank.")
-            st.caption("**NaCl / Salt:** Enter % BWOW (weight of water). Salt is always included in mix water; its totals include the selected water volume and, in the last column, dead volume.")
-            st.caption("**Name Guide:** Pick a listed commercial brand to auto-set its Material Type & Physical State. Pick **'Other (Custom)'** to enter a material not on the master list, then set Material Type/Physical State yourself.")
-            st.caption("ℹ️ For a row with a *recognized brand* in Name, Material Type/Physical State are locked to that brand's correct values — if you edit them by hand on such a row, they'll snap back on the next edit. This is intentional (a known brand can't be miscategorized), not a bug. To set Material Type/Physical State freely, change Name to **'Other (Custom)'** first.")
+            st.markdown("**Mix Method Guide:** Choose **'Dry Blend'** for powders pre-blended dry with bulk cement (no dead volume penalty). Choose **'In Mix Water'** for chemicals dissolved in the mixing tank.")
+            st.markdown("**NaCl / Salt:** Enter % BWOW (weight of water). Salt is always included in mix water; its totals include the selected water volume and, in the last column, dead volume.")
+            st.markdown("**Name Guide:** Pick a listed commercial brand to auto-set its Material Type & Physical State. Pick **'Other (Custom)'** to enter a material not on the master list, then set Material Type/Physical State yourself.")
+            st.markdown("ℹ️ For a row with a *recognized brand* in Name, Material Type/Physical State are locked to that brand's correct values — if you edit them by hand on such a row, they'll snap back on the next edit. This is intentional (a known brand can't be miscategorized), not a bug. To set Material Type/Physical State freely, change Name to **'Other (Custom)'** first.")
             
             # Initialize only when the key is absent: old projects can contain
             # a full table without the newer initialized-slurries marker.

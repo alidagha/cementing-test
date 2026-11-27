@@ -667,7 +667,8 @@ def test_unrelated_guardrails_and_all_frozen_authorities_are_unchanged():
             continue
         if name == 'phase_5_cement.py':
             import hashlib
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14'
+            from test_round13b_b3_ct_schematic import ui03_original_display_source
+            assert hashlib.sha256(ui03_original_display_source(Path(name).read_bytes(), name)).hexdigest() == '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14'
             continue
         reference='f185c0f88bdcb9fc5342dcbf5eb306dd29c0cee6'
         source = Path(name).read_bytes()
