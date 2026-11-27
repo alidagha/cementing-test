@@ -235,7 +235,30 @@ def _commit(field, key, index=None, fluid=None, rpm=None, epoch=None):
     st.session_state.pop("_centralizer_error", None)
 
 
+_ZONE_NUMERIC_FIELDS = ("top_md", "bottom_md", "target_standoff_pct")
+
+
+def _zone_numeric_owner(state):
+    return state.get("last_loaded_hash"), state.get("job_type"), state.get("_centralizer_zone_epoch", 0)
+
+
+def commit_pending_zone_numbers():
+    """Preserve received numeric edits and clears at the mounted zone epoch."""
+    state = st.session_state
+    owner = state.get("_centralizer_zone_numeric_owner")
+    if owner == _zone_numeric_owner(state):
+        epoch = owner[2]
+        for index, zone in enumerate(state["centralizer_config"]["zones"]):
+            for field in _ZONE_NUMERIC_FIELDS:
+                key = f"_centralizer_zone_{epoch}_{index}_{field}"
+                if key in state and state[key] != zone.get(field):
+                    _commit(field, key, index, epoch=epoch)
+    if state.get("_app_mode_key") != "phase9":
+        state.pop("_centralizer_zone_numeric_owner", None)
+
+
 def _zones_action(action, index=None):
+    commit_pending_zone_numbers()
     config = st.session_state["centralizer_config"]
     try:
         if action == "auto":
@@ -304,6 +327,7 @@ def _render_zones(config, candidates, geometry_ready):
         options[token] = (f"{view['Identification']} | {view['Hole Size (in)']} in | {view['Kind']} | "
                           f"{view['Restoring Force (lbf)']} lbf [{token}]")
     epoch = st.session_state.get("_centralizer_zone_epoch", 0)
+    st.session_state["_centralizer_zone_numeric_owner"] = _zone_numeric_owner(st.session_state)
     direct = config["placement_mode"] == "direct"
     for index, zone in enumerate(config["zones"]):
         st.markdown(f"**Zone {index + 1}**")
@@ -312,7 +336,9 @@ def _render_zones(config, candidates, geometry_ready):
         for column, field, label in ((columns[0], "top_md", "Top MD (m)"), (columns[1], "bottom_md", "Bottom MD (m)"),
                                     (columns[3], "target_standoff_pct", "Target Standoff (%)")):
             key = f"{prefix}_{field}"
-            st.session_state[key] = zone.get(field)
+            # Reseeding a mounted field can send an older value to the browser.
+            if key not in st.session_state:
+                st.session_state[key] = zone.get(field)
             column.number_input(f"{label} — Zone {index + 1}", min_value=0.,
                 **({"max_value":100.} if field == "target_standoff_pct" else {}),
                 value=None, key=key, on_change=_commit, args=(field, key, index),

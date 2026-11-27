@@ -15,10 +15,12 @@ from placement import EXCESS_FIELDS
 from phase_2_3_well_data import commit_pending_mud_inputs
 from phase_4_fluids import commit_pending_displacement_inputs
 from phase_7_lab import commit_pending_mud_rpm
+from phase_9_centralizer import commit_pending_zone_numbers
 
 commit_pending_mud_inputs()
 commit_pending_displacement_inputs()
 commit_pending_mud_rpm()
+commit_pending_zone_numbers()
 restore_canonical_fields(st.session_state)
 migrate_material_properties(st.session_state)
 
