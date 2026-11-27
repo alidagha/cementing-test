@@ -391,7 +391,7 @@ def render():
 
     # --- SECTION 1: TUBULAR AND CASING HARDWARE ---
     st.subheader("1. Tubular and Casing Hardware")
-    st.caption("**Guide:** Double-click any cell to edit. For **Open Hole Size**, Weight is automatically zeroed and ID serves as Bit Size.")
+    st.markdown("**Guide:** Double-click any cell to edit. For **Open Hole Size**, Weight is automatically zeroed and ID serves as Bit Size.")
     
     # Hold unfinished grid rows separately: an MD entered before Description
     # is a real operator edit, but must not become a hardware/export row yet.
@@ -696,7 +696,7 @@ def render():
                     pass  # Invalid ranges have no valid BHSP basis to display.
                 else:
                     density_caption += f"; ↳ BHSP density basis: **{bhsp_density:.1f} pcf** (upper end of range)"
-            st.caption(density_caption)
+            st.markdown(density_caption)
         
     with col_m3:
         st.text_input(
@@ -706,7 +706,7 @@ def render():
         )
         _eff_pv = parse_effective_numeric(st.session_state["plastic_viscosity"], default=None)
         if _eff_pv is not None:
-            st.caption(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
+            st.markdown(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
         
     with col_m4:
         st.text_input(
@@ -716,7 +716,7 @@ def render():
         )
         _eff_yp = parse_effective_numeric(st.session_state["yield_point"], default=None)
         if _eff_yp is not None:
-            st.caption(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
+            st.markdown(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
 
     # Clean bridge for mathematical models downstream
     st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=None)
