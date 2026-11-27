@@ -7,6 +7,8 @@ from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS, request_
 
 DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approved_date", "revision_date")
 _DESCRIPTION_FIELDS = ("request_description", "revision_description")
+_REQUEST_EDITORS = "_doc_request_description_editors"
+_OUTGOING_REQUEST_EDITOR = "_doc_outgoing_request_editor"
 
 # FIX (real bug, confirmed pre-existing — not introduced by any earlier update):
 # Streamlit deletes a widget's session_state entry whenever that widget is not
@@ -82,6 +84,9 @@ def _commit_description(field, widget_key):
     editors = state.get(editors_key, {})
     if widget_key not in editors:
         return
+    outgoing = state.get(_OUTGOING_REQUEST_EDITOR)
+    if widget_key == outgoing and state.get("_w_job_type") != state["job_type"]:
+        return  # The draft belongs to the previous transition, not another job change.
     draft = state.get(widget_key)
     if draft is None or draft == editors[widget_key]:
         return  # An unchanged old browser snapshot does not make a description manual.
@@ -94,6 +99,8 @@ def _commit_description(field, widget_key):
     state[field + "_customized"] = True
     state[field] = draft
     state[editors_key] = current_and_later
+    if field == "request_description" and widget_key != outgoing:
+        _retire_outgoing_request_editor()
     _sync_document_descriptions()
 
 
@@ -108,8 +115,16 @@ def _commit_pending_descriptions():
                 break
 
 
+def _retire_outgoing_request_editor():
+    state = st.session_state
+    outgoing = state.pop(_OUTGOING_REQUEST_EDITOR, None)
+    if outgoing is not None:
+        state.get(_REQUEST_EDITORS, {}).pop(outgoing, None)
+
+
 def leave_document_control():
     _commit_pending_descriptions()
+    _retire_outgoing_request_editor()
     st.session_state["_doc_control_remount"] = True
 
 
@@ -118,14 +133,15 @@ def _render_description(label, field):
     editors_key = f"_doc_{field}_editors"
     editors = state.get(editors_key, {})
     widget_key = next(reversed(editors), None)
-    if widget_key is None or editors[widget_key] != state[field]:
+    if (widget_key is None or widget_key == state.get(_OUTGOING_REQUEST_EDITOR)
+            or editors[widget_key] != state[field]):
         # Streamlit sends whole widget snapshots. A new suggestion gets a new
         # editor so an in-flight frame still refers to the text it was shown.
         widget_key = f"_w_{field}_{uuid4().hex}"
         state[editors_key] = {**editors, widget_key: state[field]}
-    # While Revision inherits Request, a new suggestion can remount it before
-    # blur. Send those edits immediately. Manual editors keep Enter/blur.
-    live = "0ms" if field == "revision_description" and not state[field + "_customized"] else False
+    # A new Job Type or inherited Request can replace an automatic suggestion
+    # before blur. Send edits to suggestions immediately. Manual editors keep Enter/blur.
+    live = "0ms" if not state[field + "_customized"] else False
     st.text_input(label, value=state[field], key=widget_key,
                   on_change=_commit_description, args=(field, widget_key), live=live)
 
@@ -184,8 +200,15 @@ def on_job_type_change():
     st.session_state[_doc_widget_key("hole_size")] = st.session_state["hole_size"]
     _commit_doc_widget("hole_size")
     _sync_document_descriptions()
-    for field in _DESCRIPTION_FIELDS:
-        st.session_state.pop(f"_doc_{field}_editors", None)
+    _retire_outgoing_request_editor()
+    editors = st.session_state.pop(_REQUEST_EDITORS, {})
+    if editors:
+        # A first Request edit can arrive from the editor still visible while
+        # the new Job Type renders. Only that last editor may finish the edit.
+        outgoing = next(reversed(editors))
+        st.session_state[_REQUEST_EDITORS] = {outgoing: editors[outgoing]}
+        st.session_state[_OUTGOING_REQUEST_EDITOR] = outgoing
+    st.session_state.pop("_doc_revision_description_editors", None)
 
 def _mark_hole_size_customized(widget_key):
     if widget_key != _doc_widget_key("hole_size"):

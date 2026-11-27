@@ -232,6 +232,57 @@ class Round2Phase1UAT(unittest.TestCase):
                 app._run(browser_frame)
                 self.descriptions(app, 'Operator request', expected)
 
+    def test_first_request_edit_from_the_outgoing_job_editor_survives_navigation(self):
+        for request, revision in (('First request for the liner', None), ('', 'Independent revision'),
+                                  ('7" LNR Cementing', None)):
+            with self.subTest(request=request, revision=revision):
+                app = self.app()
+                if revision is not None:
+                    next(w for w in app.text_input if w.label == 'Revision Description').set_value(revision).run()
+                outgoing = next(w for w in app.text_input if w.label == 'Request Description')
+                app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+                self.descriptions(app, '7" LNR Cementing', '7" LNR Cementing' if revision is None else revision)
+
+                browser_frame = app._tree.get_widget_states()
+                browser_frame.widgets.append(outgoing.set_value(request)._widget_state)
+                app._run(browser_frame)
+                self.phase(app, 'phase2_3')
+                self.descriptions(app, request, request if revision is None else revision)
+                self.assertTrue(app.session_state['request_description_customized'])
+                self.assertEqual(app.session_state['revision_description_customized'], revision is not None)
+                saved = audit.round_trip(app.session_state.to_dict())
+                self.descriptions(self.app(saved), request, request if revision is None else revision)
+
+    def test_outgoing_request_editor_expires_after_a_new_edit_job_change_or_leave(self):
+        for transition in ('new edit', 'another job', 'leave', 'finished handoff'):
+            with self.subTest(transition=transition):
+                app = self.app()
+                outgoing = next(w for w in app.text_input if w.label == 'Request Description')
+                app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+                expected = '7" LNR Cementing'
+                if transition == 'new edit':
+                    expected = 'Current liner request'
+                    next(w for w in app.text_input if w.label == 'Request Description').set_value(expected).run()
+                elif transition == 'another job':
+                    expected = '20" CSG Cementing'
+                    app.selectbox(key='_w_job_type').set_value('CSG 20"').run()
+                elif transition == 'leave':
+                    self.phase(app, 'phase2_3')
+                    self.phase(app, 'phase1')
+                else:
+                    expected = 'Accepted outgoing request'
+                    for draft in ('Accepted outgoing', expected):
+                        browser_frame = app._tree.get_widget_states()
+                        browser_frame.widgets.append(outgoing.set_value(draft)._widget_state)
+                        app._run(browser_frame)
+                    self.phase(app, 'phase2_3')
+                    self.phase(app, 'phase1')
+
+                browser_frame = app._tree.get_widget_states()
+                browser_frame.widgets.append(outgoing.set_value('Late retired request')._widget_state)
+                app._run(browser_frame)
+                self.descriptions(app, expected, expected)
+
     def test_current_json_preserves_all_customization_combinations(self):
         for request_custom in (False, True):
             for revision_custom in (False, True):
