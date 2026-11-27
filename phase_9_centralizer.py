@@ -410,7 +410,7 @@ def render():
     geometry_ready = False
     try:
         top, shoe, pipe_size, _ = adapter.geometry_for_zones(st.session_state)
-        st.caption(f"Active Centralizer string: {top:g}–{shoe:g} m MD")
+        st.markdown(f"Active Centralizer string: {top:g}–{shoe:g} m MD")
         candidates = product_candidates(products, config["custom_products"], pipe_size)
         geometry_ready = True
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
@@ -418,8 +418,8 @@ def render():
         st.warning(f"Complete current geometry in Phase II/III: {exc}")
     _render_zones(config, candidates, geometry_ready)
     if config["physics_mode"] == "dynamic":
-        st.caption("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
-        st.caption("Selected Spacer Ahead/Behind RPM and Gel are entered once in Phase VII Lab Report.")
+        st.markdown("Mud PV/YP: Phase II. Cement/Scavenger/Diesel/Spacer/Pre Flush: Phase VII BHCT — Ramp-Down. Pump rate: Phase IV Displacement Fluid.")
+        st.markdown("Selected Spacer Ahead/Behind RPM and Gel are entered once in Phase VII Lab Report.")
     if st.button("Execute Centralizer", type="primary", key="_centralizer_execute"):
         try:
             with st.spinner("Calculating Centralizer..."):

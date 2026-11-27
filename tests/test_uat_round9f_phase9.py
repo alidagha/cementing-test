@@ -358,7 +358,8 @@ def test_uat22_phase9_can_draft_and_select_products_before_chart_or_fluids(catal
         app = case.app(state)
         case.phase(app, "phase9")
         assert not app.button(key="_centralizer_auto_zones").disabled
-        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.caption)
+        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.markdown)
+        assert not any("Active Centralizer string:" in cap.value for cap in app.caption)
         assert len(app.selectbox(key="_centralizer_zone_0_0_product").options) > 1
         app.button(key="_centralizer_auto_zones").click().run()
         case.healthy(app)
