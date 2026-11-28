@@ -272,6 +272,7 @@ def test_special_job_save_restore_and_build_remain_na_without_simulation(job):
     ("Main", "volume", 50., 51.),
     ("Spacer", "density", "80", "81"),
     ("Displacement Fluid", "pump_rate", "4", "5"),
+    ("Displacement Fluid", "volume", 40., 41.),
     ("Main", "material_name", "Cement Slurry", "Measured Cement"),
 ])
 @pytest.mark.parametrize("changed", [False, True])
@@ -282,9 +283,17 @@ def test_fluid_callback_invalidates_only_changed_canonical_source(fluid, field, 
         "_compiled_doc_bytes": b"existing document", "_compiled_doc_filename": "existing.docx",
         "_compiled_doc_signature": "existing signature",
     }
+    widget_key = "_edit"
+    displacement = fluid == "Displacement Fluid"
+    if displacement:
+        state.update(job_type='CSG 9 5/8"', last_loaded_hash=content_signature(b'current project'),
+                     _app_mode_key="phase4")
+        state["_phase4_displacement_owner"] = (state["last_loaded_hash"], state["job_type"])
+        widget_key = ("vol_" if field == "volume" else "rate_") + fluid
+        state[widget_key] = state.pop("_edit")
     before = deepcopy(state)
     with patch.object(phase4.st, "session_state", state):
-        phase4._commit_fluid_widget(fluid, field, "_edit")
+        phase4._commit_fluid_widget(fluid, field, widget_key)
     if not changed:
         if field == "density":
             before["fluid_data"][fluid]["effective_density"] = float(old)
@@ -293,6 +302,8 @@ def test_fluid_callback_invalidates_only_changed_canonical_source(fluid, field, 
         assert not any(key.startswith("_compiled_doc_") for key in state)
         before["fluids_config"]["params"][fluid][field] = new
         before["fluid_data"][fluid][field] = new
+        if displacement:
+            before["_phase4_displacement_changed"] = True
         if field == "density":
             before["fluid_data"][fluid]["effective_density"] = float(new)
         for key in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"):
@@ -307,3 +318,94 @@ def test_inactive_fluid_callback_leaves_canonical_and_document_unchanged():
     with patch.object(phase4.st, "session_state", state):
         phase4._commit_fluid_widget("Main", "volume", "_edit")
     assert state == before
+
+
+@pytest.mark.parametrize("field,old,new,key", [
+    ("volume", 40., 54., "vol_Displacement Fluid"),
+    ("pump_rate", "4", "5", "rate_Displacement Fluid"),
+])
+@pytest.mark.parametrize("fault", ["missing_owner", "wrong_owner_project", "wrong_owner_job",
+                                   "project_changed", "job_changed"])
+def test_displacement_unowned_and_stale_events_preserve_entire_state(field, old, new, key, fault):
+    state = {"job_type": 'CSG 9 5/8"', "last_loaded_hash": content_signature(b'current project'),
+             "_app_mode_key": "phase4", "mud_type": "WBM", "mud_density": "80-82",
+             "fluids_config": {"active": ["Displacement Fluid"],
+                               "params": {"Displacement Fluid": {"volume": 40., "pump_rate": "4"}}},
+             "fluid_data": {"Displacement Fluid": {field: old}}, key: new,
+             "_compiled_doc_bytes": b"existing document", "_compiled_doc_filename": "existing.docx",
+             "_compiled_doc_signature": "existing signature"}
+    state["_phase4_displacement_owner"] = (state["last_loaded_hash"], state["job_type"])
+    if fault == "missing_owner":
+        del state["_phase4_displacement_owner"]
+    elif fault == "wrong_owner_project":
+        state["_phase4_displacement_owner"] = (content_signature(b'other project'), state["job_type"])
+    elif fault == "wrong_owner_job":
+        state["_phase4_displacement_owner"] = (state["last_loaded_hash"], 'LNR 7"')
+    elif fault == "project_changed":
+        state["last_loaded_hash"] = content_signature(b'replaced project')
+    else:
+        state["job_type"] = 'LNR 7"'
+    before = deepcopy(state)
+    with patch.object(phase4.st, "session_state", state):
+        phase4._commit_fluid_widget("Displacement Fluid", field, key)
+        assert state == before
+        phase4.commit_pending_displacement_inputs()
+    assert state == before
+
+
+@pytest.mark.parametrize("field,new,duration", [("volume", 54., 13.5), ("pump_rate", "5", 8.)])
+@pytest.mark.parametrize("callback_first", [False, True])
+@pytest.mark.parametrize("destination", ["phase4", "phase1"])
+def test_owned_displacement_pending_commit_refreshes_and_consumes_only_its_signal(field, new, duration, callback_first, destination):
+    state = {"job_type": 'CSG 9 5/8"', "last_loaded_hash": content_signature(b'current project'),
+             "_app_mode_key": destination, "mud_type": "WBM", "mud_density": "80-82",
+             "fluids_config": {"active": ["Displacement Fluid"],
+                               "params": {"Displacement Fluid": {"volume": 40., "pump_rate": "4"}}},
+             "vol_Displacement Fluid": 40., "rate_Displacement Fluid": "4",
+             "_compiled_doc_bytes": b"existing document", "_compiled_doc_filename": "existing.docx",
+             "_compiled_doc_signature": "existing signature"}
+    state["_phase4_displacement_owner"] = (state["last_loaded_hash"], state["job_type"])
+    key = ("vol_" if field == "volume" else "rate_") + "Displacement Fluid"
+    state[key] = new
+    with patch.object(phase4.st, "session_state", state):
+        if callback_first:
+            phase4._commit_fluid_widget("Displacement Fluid", field, key)
+            assert state["_phase4_displacement_changed"] is True
+        phase4.commit_pending_displacement_inputs()
+        snapshot = deepcopy(state)
+        phase4.commit_pending_displacement_inputs()
+        assert state == snapshot
+    assert state["fluids_config"]["params"]["Displacement Fluid"][field] == new
+    assert state["fluid_data"]["Displacement Fluid"][field] == new
+    assert state["fluid_data"]["Displacement Fluid"]["duration_min"] == duration
+    assert state["fluid_data"]["Displacement Fluid"]["effective_density"] == 81.
+    assert not any(k.startswith("_compiled_doc_") for k in state)
+    assert "_phase4_displacement_changed" not in state
+    assert ("_phase4_displacement_owner" in state) == (destination == "phase4")
+
+
+def test_normal_mounted_displacement_rate_edit_refreshes_retires_and_restores():
+    case = audit.AuditRegressions()
+    app = case.configured_app('CSG 9 5/8"')
+    case.phase(app, "phase4")
+    app.text_input(key="rate_Displacement Fluid").set_value("4").run()
+    case.export(app)
+    assert all(k in app.session_state for k in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"))
+    case.phase(app, "phase4")
+    owner = app.session_state["_phase4_displacement_owner"]
+    assert owner == (app.session_state.to_dict().get("last_loaded_hash"), app.session_state["job_type"])
+    volume = app.session_state["fluids_config"]["params"]["Displacement Fluid"]["volume"]
+    app.text_input(key="rate_Displacement Fluid").set_value("5").run()
+    case.phase(app, "phase1")
+    assert not any(k in app.session_state for k in ("_compiled_doc_bytes", "_compiled_doc_filename", "_compiled_doc_signature"))
+    raw = save_project(app)
+    for record in (json.loads(raw)["fluids_config"]["params"]["Displacement Fluid"],
+                   json.loads(raw)["fluid_data"]["Displacement Fluid"]):
+        assert record["pump_rate"] == "5"
+    restored = restore_project(raw)
+    case.phase(restored, "phase4")
+    assert restored.text_input(key="rate_Displacement Fluid").value == "5"
+    assert restored.session_state["fluid_data"]["Displacement Fluid"]["min_rate"] == 5.
+    assert restored.session_state["fluid_data"]["Displacement Fluid"]["duration_min"] == volume / 5.
+    case.phase(restored, "phase10")
+    assert not next(b for b in restored.button if b.label == "Build Word Document").disabled

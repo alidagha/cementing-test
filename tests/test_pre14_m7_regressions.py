@@ -83,6 +83,7 @@ def test_top_controls_respect_effective_mode_and_job(reviewed_plug, mode, depth,
 
 
 def test_phase5_literal_pins_reject_one_changed_byte_in_memory():
+    from test_round13b_b3_ct_schematic import ui03_original_display_source
     source = Path("phase_5_cement.py").read_bytes()
     changed = bytes([source[0] ^ 1]) + source[1:]
     digests = set()
@@ -104,6 +105,7 @@ def test_phase5_literal_pins_reject_one_changed_byte_in_memory():
 
         def verify(data):
             exec(code, {"hashlib": hashlib, "name": "phase_5_cement.py",
+                        "ui03_original_display_source": ui03_original_display_source,
                         "Path": lambda _: SimpleNamespace(read_bytes=lambda: data)})
 
         verify(source)
