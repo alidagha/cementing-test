@@ -5,6 +5,7 @@ import re
 import materials_db
 from rheology import RPM_ORDER, RHEOLOGY_DATASETS, new_rheology_dataset
 from project_state import invalidate_document
+from project_state import mud_lab_source
 from project_state import lab_source_signature, phase7_lab_fluids, refresh_spacer_lab, spacer_lab_payload, mud_lab_source_signature, mud_lab_readings
 from engineering_tools import round_half_up, build_lab_rheology, lab_review_signature, lab_temperature_valid, validate_thickening_test, validate_lab_collection_results, THICKENING_TEST_FIELDS, COMPRESSIVE_TEST_FIELDS, compressive_inputs, validate_compressive_test
 from input_guard import repair_invalid_inputs
@@ -126,7 +127,62 @@ def _render_compressive(slurry, qc, load_sig, bhst, bhsp):
         return {}, False
 
 
+def _mud_rpm_context(state):
+    try:
+        source = mud_lab_source(state)
+    except ValueError:
+        return None
+    return state.get("last_loaded_hash", "default_project"), state.get("job_type"), source
+
+
+def _owned_mud_rpm_row(state):
+    name = materials_db.MUD_LAB_FLUID
+    owner = state.get("_mud_rpm_owner")
+    if owner is None or name not in phase7_lab_fluids(state, include_mud=True):
+        return None
+    if owner != _mud_rpm_context(state):
+        return None
+    row = state.get("lab_qc_params", {}).get(name, {}).get("rheology", {}).get("bhct_down", {})
+    if (isinstance(row, dict) and isinstance(row.get("readings"), dict)
+            and row.get("selected") is True):
+        return row
+    return None
+
+
+def commit_pending_mud_rpm():
+    """Save received readings after the dataset selection callback has run."""
+    state = st.session_state
+    row = _owned_mud_rpm_row(state)
+    if row is not None:
+        load_sig = state["_mud_rpm_owner"][0]
+        for rpm in RPM_ORDER:
+            key = f"_rheo_displacement_fluid_bhct_down_{rpm}_{load_sig}"
+            raw = row["readings"].get(str(rpm))
+            if key in state and state[key] != ("" if raw is None else str(raw)):
+                _commit_rheology(materials_db.MUD_LAB_FLUID, "bhct_down", "readings", key, rpm)
+    if state.get("_app_mode_key") != "phase7":
+        state.pop("_mud_rpm_owner", None)
+
+
 def _commit_rheology(slurry, dataset, field, widget_key, rpm=None):
+    if slurry == materials_db.MUD_LAB_FLUID and rpm is not None:
+        state = st.session_state
+        row = _owned_mud_rpm_row(state)
+        if row is None:
+            return
+        load_sig = state["_mud_rpm_owner"][0]
+        if widget_key != f"_rheo_displacement_fluid_bhct_down_{rpm}_{load_sig}":
+            return
+        raw = row["readings"].get(str(rpm))
+        value = state[widget_key]
+        if value == ("" if raw is None else str(raw)):
+            return
+        state["lab_qc_params"][slurry]["reviewed"] = False
+        invalidate_document(state)
+        row.setdefault("gel_10_sec", "-")
+        row.setdefault("gel_10_min", "-")
+        row["readings"][str(rpm)] = value
+        return
     qc = st.session_state["lab_qc_params"].setdefault(slurry, {})
     data = qc.setdefault("rheology", {})
     initial = new_rheology_dataset()
@@ -234,8 +290,7 @@ def _render_mud_lab(load_sig):
             if key not in st.session_state:
                 value = row["readings"].get(str(rpm), "")
                 st.session_state[key] = "" if value is None else str(value)
-            st.text_input(f"{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid", key=key,
-                          on_change=_commit_rheology, args=(name, "bhct_down", "readings", key, rpm))
+            st.text_input(f"{rpm} RPM - BHCT — Ramp-Down - Displacement Fluid", key=key)
         for column, field, label in zip(st.columns(2), ("gel_10_sec", "gel_10_min"), ("10 Sec Gel", "10 Min Gel")):
             key = prefix + field + "_" + load_sig
             if key not in st.session_state:
@@ -523,7 +578,7 @@ def _render_spacer_lab(load_sig, bhct, bhst):
         return
     qc = st.session_state["lab_qc_params"]["Spacer"]
     st.markdown("#### Blend & Additives — 600 mL Cup")
-    st.caption("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
+    st.markdown("Computed final Spacer sample. Mass is in grams for every ingredient, including liquids; only Lot No. is editable.")
     key = f"_editor_lab_tbl_spacer_{load_sig}_{st.session_state.get('_lab_grid_revision_Spacer', 0)}"
     persistent_data_editor(
         _spacer_lab_display(grid), persist_to=("lab_grid_dfs", "Spacer"), normalize=_commit_spacer_lots,
@@ -535,7 +590,7 @@ def _render_spacer_lab(load_sig, bhct, bhst):
     edited = st.session_state["lab_grid_dfs"]["Spacer"]
     from standalone_spacer import formulation_from_state, lab_sample
     sample = lab_sample(formulation_from_state(st.session_state))
-    st.caption(f"Total Mass: {sample['mass_g']:.1f} g / 600 mL")
+    st.markdown(f"Total Mass: {sample['mass_g']:.1f} g / 600 mL")
     _, issues = _render_rheology("Spacer", qc, load_sig)
     temperature_valid = lab_temperature_valid(bhct, bhst)
     try:
@@ -606,6 +661,7 @@ def render():
             st.subheader(f"{slurry} Rheology" if slurry in materials_db.RHEOLOGY_ONLY_FLUIDS else f"{slurry} Lab Data")
             
             if slurry == materials_db.MUD_LAB_FLUID:
+                st.session_state["_mud_rpm_owner"] = _mud_rpm_context(st.session_state)
                 _render_mud_lab(load_sig)
                 continue
             full_lab = slurry in materials_db.PLACEMENT_SLURRIES
@@ -831,7 +887,7 @@ def render():
                     collection_valid = True
                 except ValueError as exc:
                     collection_valid = False
-                    st.caption(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
+                    st.markdown(f"{slurry}: {exc}. Enter both Free Water measurements and Surface Sample Hours before confirming.")
             temperature_valid = lab_temperature_valid(bhct, bhst)
             review_matches = (comp_valid and temperature_valid and tt_valid and masses_valid and collection_valid and not rheology_issues
                               and qc.get("reviewed", False)

@@ -87,14 +87,14 @@ def _render_standalone_spacer(load_sig):
     st.write(f"Fresh Water: {recipe['water_base_bbl']:.2f} bbl (target batch); "
              f"{recipe['water_total_bbl']:.2f} bbl (including Dead Volume).")
     st.table(pd.DataFrame(_standalone_field_display(recipe)))
-    st.caption("Doses are per bbl fresh water, including Defoamer. "
+    st.markdown("Doses are per bbl fresh water, including Defoamer. "
                "The last column includes Dead Volume for every material.")
     if recipe["inventory"]:
         st.table(pd.DataFrame([{"Material": name, **{key: f"{round_half_up(value, 1):.1f}"
                              for key, value in values.items()}} for name, values in recipe["inventory"].items()]))
-        st.caption("Weighting solids: " + "; ".join(f"{name}: {pct:.2f}%" for name, pct in recipe["weighting_pct"].items()))
+        st.markdown("Weighting solids: " + "; ".join(f"{name}: {pct:.2f}%" for name, pct in recipe["weighting_pct"].items()))
     st.info(recipe["note"])
-    st.caption(f"Operational mixed volume: {recipe['mixed_volume_bbl']:.1f} bbl; "
+    st.markdown(f"Operational mixed volume: {recipe['mixed_volume_bbl']:.1f} bbl; "
                f"programmed pumped volume: {recipe['pumped_volume_bbl']:.1f} bbl. "
                f"Closure residuals — mass: {recipe['closure']['mass_lb']:.3g} lb; "
                f"volume: {recipe['closure']['volume_bbl']:.3g} bbl; "

@@ -77,12 +77,12 @@ class Round3WellUAT(unittest.TestCase):
         app=self.app(audit.well_profile_fixture(3500.,3000.));self.phase(app,'phase2_3')
         for raw in ('80-82','80/82'):
             app.text_input(key='_w_mud_density').set_value(raw).run()
-            text='\n'.join(c.value for c in app.caption)
+            text='\n'.join(c.value for c in app.markdown)
             self.assertIn('General effective density: **81.0 pcf** (mean of range)',text)
             self.assertIn('BHSP density basis: **82.0 pcf** (upper end of range)',text)
         for raw in ('81','-80-82','0-82','80--82'):
             app.text_input(key='_w_mud_density').set_value(raw).run()
-            self.assertFalse(any('BHSP density basis' in c.value for c in app.caption))
+            self.assertFalse(any('BHSP density basis' in c.value for c in app.markdown))
         app.text_input(key='_w_mud_density').set_value('80-82').run()
         for field,value in (('geo_md',3500.),('geo_tvd',3000.),('bhst',200)):
             self.assertEqual(app.session_state[field],value)

@@ -12,7 +12,15 @@ from project_state import (is_project_key, invalidate_document, restore_canonica
 from project_io import content_signature, decode_project, replace_project_state
 from project_filenames import cementing_program_basename
 from placement import EXCESS_FIELDS
+from phase_2_3_well_data import commit_pending_mud_inputs
+from phase_4_fluids import commit_pending_displacement_inputs
+from phase_7_lab import commit_pending_mud_rpm
+from phase_9_centralizer import commit_pending_zone_numbers
 
+commit_pending_mud_inputs()
+commit_pending_displacement_inputs()
+commit_pending_mud_rpm()
+commit_pending_zone_numbers()
 restore_canonical_fields(st.session_state)
 migrate_material_properties(st.session_state)
 
@@ -218,6 +226,10 @@ with _navigation_slot:
                             captions=[_phase_caption(key) for key in _PHASE_ORDER],
                             key="_app_mode_key")
 app_mode = _PHASE_LABELS[app_mode_key]
+
+if app_mode_key != "phase1":
+    from phase_1_doc_control import leave_document_control
+    leave_document_control()
 
 if app_mode == "Phase I: Document Control":
     import phase_1_doc_control
@@ -554,7 +566,7 @@ def _download_project(project_json, filename):
     # A download starts before a pending editor blur/rerun can finish. Prepare
     # with a regular button first; the modal prevents further source edits
     # while these exact bytes are offered, without another saved-state cache.
-    st.caption("Your current inputs are ready. Download below, or close to continue editing.")
+    st.markdown("Your current inputs are ready. Download below, or close to continue editing.")
     if st.download_button(
         label="Download Project (.json)",
         data=project_json,
@@ -644,7 +656,8 @@ if uploaded_project is not None:
             if reload_requested or not pending_changes or replace_confirmed:
                 # Compute before publication: failed baseline serialization
                 # must leave the currently open project untouched.
-                checkpoint = serialize_item(prepared)
+                checkpoint = serialize_item({key: value for key, value in prepared.items()
+                                             if is_project_key(key)})
                 # Match Phase I's first mount on the comparison copy only:
                 # explicit null is blank; a missing/legacy-empty date defaults.
                 if "report_date" not in checkpoint:

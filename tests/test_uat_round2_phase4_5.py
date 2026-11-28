@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 import unittest
+from unittest.mock import patch
 
 import materials_db
 import test_audit_regressions as audit
@@ -10,6 +11,7 @@ from project_state import refresh_fluids
 from phase_5_cement import build_cement_tables, build_components, calculate_base_results
 import pandas as pd
 import pytest
+from streamlit.runtime.state.session_state import SessionState
 from test_audit_regressions import legacy_word_fixture
 
 pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
@@ -26,6 +28,81 @@ class Round2Phase45UAT(unittest.TestCase):
     configured_app = audit.AuditRegressions.configured_app
     export = audit.AuditRegressions.export
     assert_export_blocked = audit.AuditRegressions.assert_export_blocked
+
+    def test_received_displacement_drafts_survive_interrupted_navigation(self):
+        fluid = "Displacement Fluid"
+        widget_changed = SessionState._widget_changed
+
+        def interrupted(state, widget_id):
+            return not widget_id.endswith(("vol_" + fluid, "rate_" + fluid)) and widget_changed(state, widget_id)
+
+        for active, volume, rate, duration in ((True, 54., "6", 9.), (True, 54., "4-6", 13.5),
+                                                (True, 0., "", None), (False, 70., "8", None)):
+            with self.subTest(active=active, volume=volume, rate=rate):
+                app = self.app({"mud_density": "80-82", "fluids_config": {"active": [fluid],
+                               "params": {fluid: {"volume": 50.0, "pump_rate": "5"}}}})
+                self.phase(app, "phase4")
+                app.number_input(key="vol_" + fluid).set_value(volume)
+                app.text_input(key="rate_" + fluid).set_value(rate)
+                if not active:
+                    app.checkbox(key="chk_fluid_" + fluid).uncheck()
+                with patch.object(SessionState, "_widget_changed", interrupted):
+                    self.phase(app, "phase1")
+                saved = audit.round_trip(app.session_state.to_dict())
+                if not active:
+                    self.assertNotIn(fluid, saved["fluids_config"]["active"])
+                    record = saved["fluids_config"]["params"][fluid]
+                    self.assertEqual((record["volume"], record["pump_rate"]), (50., "5"))
+                    continue
+                for record in (saved["fluids_config"]["params"][fluid], saved["fluid_data"][fluid]):
+                    self.assertEqual((record["volume"], record["pump_rate"]), (volume, rate))
+                self.assertEqual(saved["fluid_data"][fluid]["effective_density"], 81.)
+                if duration is not None:
+                    self.assertEqual(saved["fluid_data"][fluid]["duration_min"], duration)
+                    self.assertEqual(saved["total_pump_time_min"], duration)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Phase IV:"):
+                        refresh_fluids(saved)
+
+    def test_displacement_editors_keep_their_row_when_main_rate_warning_clears(self):
+        fluid = "Displacement Fluid"
+        app = self.app({"mud_density": "80-82", "fluids_config": {
+            "active": ["Main", fluid],
+            "params": {"Main": {"volume": 42., "density": "118", "pump_rate": ""},
+                       fluid: {"volume": 0., "pump_rate": ""}},
+        }})
+        self.phase(app, "phase4")
+        keys = ("vol_" + fluid, "rate_" + fluid)
+
+        def positions(block, parent=()):
+            for index, child in block.children.items():
+                path = (*parent, index)
+                if getattr(child, "key", None) in keys:
+                    yield child.key, (path, child.id)
+                if hasattr(child, "children"):
+                    yield from positions(child, path)
+
+        self.assertTrue(any(message.value.startswith("Main:") for message in app.error))
+        before = dict(positions(app._tree.main))
+        self.assertEqual(set(before), set(keys))
+        self.assertEqual(app.number_input(key=keys[0]).value, 0.)
+        app.text_input(key="rate_Main").set_value("5").run()
+        self.assertFalse(any(message.value.startswith("Main:") for message in app.error))
+        self.assertEqual(dict(positions(app._tree.main)), before)
+        app.number_input(key=keys[0]).set_value(54.25)
+        app.text_input(key=keys[1]).set_value("5-6")
+        self.phase(app, "phase1")
+        saved = audit.round_trip(app.session_state.to_dict())
+        record = saved["fluid_data"][fluid]
+        self.assertEqual((record["volume"], record["pump_rate"], record["min_rate"]), (54.25, "5-6", 5.))
+        self.assertEqual(record["duration_min"], 54.25 / 5.)
+        self.phase(app, "phase4")
+        app.number_input(key="vol_" + fluid).set_value(0.)
+        self.phase(app, "phase1")
+        saved = audit.round_trip(app.session_state.to_dict())
+        self.assertEqual(saved["fluids_config"]["params"][fluid]["volume"], 0.)
+        with self.assertRaisesRegex(ValueError, "active fluid volume must be positive"):
+            refresh_fluids(saved)
 
     def select_slurries(self, app):
         self.phase(app, 'phase4')

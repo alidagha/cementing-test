@@ -2,9 +2,13 @@
 import streamlit as st
 import materials_db
 from datetime import date, datetime
+from uuid import uuid4
 from project_state import DOC_CONTROL_DEFAULTS, DOCUMENT_DETAIL_FIELDS, request_description_for_job
 
 DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approved_date", "revision_date")
+_DESCRIPTION_FIELDS = ("request_description", "revision_description")
+_REQUEST_EDITORS = "_doc_request_description_editors"
+_OUTGOING_REQUEST_EDITOR = "_doc_outgoing_request_editor"
 
 # FIX (real bug, confirmed pre-existing — not introduced by any earlier update):
 # Streamlit deletes a widget's session_state entry whenever that widget is not
@@ -31,6 +35,7 @@ DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approv
 # (see main.py's get_serializable_state) — only the shadow keys are saved,
 # which is correct. Callbacks also commit shadows and export snapshots before
 # navigation can skip this render.
+# Description editors compare browser drafts with their own published text.
 #
 # Job Type's on_change callback additionally writes the DEPENDENT fields'
 # widget keys directly (not just their shadows), because once a widget key
@@ -42,7 +47,7 @@ DOCUMENT_DATE_FIELDS = ("request_date", "prepared_date", "checked_date", "approv
 def _doc_widget_key(field):
     key = f"_w_{field}"
     # Old browser frames must not address the new job's dependent controls.
-    if field in ("hole_size", "cementing_method", "request_description", "revision_description"):
+    if field in ("hole_size", "cementing_method"):
         key += "_" + st.session_state["job_type"]
     return key
 
@@ -59,64 +64,125 @@ def _commit_doc_widget(field, widget_key=None):
     if field == "report_date":
         value = value.isoformat() if isinstance(value, (date, datetime)) else "" if value is None else str(value)
     st.session_state.setdefault("doc_control", {})["date" if field == "report_date" else field] = value
-    if field in ("request_description", "revision_description"):
-        st.session_state[field + "_customized"] = True
-        _sync_document_descriptions()
 
 
 def _sync_document_descriptions():
-    """Update untouched descriptions in dependency order before widgets mount."""
-    for field in ("request_description", "revision_description"):
-        if not st.session_state.get(field + "_customized", False):
-            value = (request_description_for_job(st.session_state["job_type"])
-                     if field == "request_description" else st.session_state["request_description"])
-            st.session_state[field] = value
-            st.session_state[_doc_widget_key(field)] = value
-            st.session_state.setdefault("doc_control", {})[field] = value
+    """Keep the project snapshots current even when navigation skips Phase I."""
+    state = st.session_state
+    if not state.get("request_description_customized", False):
+        state["request_description"] = request_description_for_job(state["job_type"])
+    if not state.get("revision_description_customized", False):
+        state["revision_description"] = state["request_description"]
+    snapshot = state.setdefault("doc_control", {})
+    for field in _DESCRIPTION_FIELDS:
+        snapshot[field] = state[field]
+
+
+def _commit_description(field, widget_key):
+    state = st.session_state
+    editors_key = f"_doc_{field}_editors"
+    editors = state.get(editors_key, {})
+    if widget_key not in editors:
+        return
+    outgoing = state.get(_OUTGOING_REQUEST_EDITOR)
+    if widget_key == outgoing and state.get("_w_job_type") != state["job_type"]:
+        return  # The draft belongs to the previous transition, not another job change.
+    draft = state.get(widget_key)
+    if draft is None or draft == editors[widget_key]:
+        return  # An unchanged old browser snapshot does not make a description manual.
+
+    # Once an edit has arrived, an older editor cannot replace it. Newer editors
+    # can still carry a real edit that was submitted before their next render.
+    ordered_keys = list(editors)
+    current_and_later = {key: editors[key] for key in ordered_keys[ordered_keys.index(widget_key):]}
+    current_and_later[widget_key] = draft
+    state[field + "_customized"] = True
+    state[field] = draft
+    state[editors_key] = current_and_later
+    if field == "request_description" and widget_key != outgoing:
+        _retire_outgoing_request_editor()
+    _sync_document_descriptions()
+
+
+def _commit_pending_descriptions():
+    """Recover browser drafts when a rerun interrupted their callbacks."""
+    state = st.session_state
+    for field in _DESCRIPTION_FIELDS:
+        for key, shown in reversed(state.get(f"_doc_{field}_editors", {}).items()):
+            draft = state.get(key)
+            if draft is not None and draft != shown:
+                _commit_description(field, key)
+                break
+
+
+def _retire_outgoing_request_editor():
+    state = st.session_state
+    outgoing = state.pop(_OUTGOING_REQUEST_EDITOR, None)
+    if outgoing is not None:
+        state.get(_REQUEST_EDITORS, {}).pop(outgoing, None)
+
+
+def leave_document_control():
+    _commit_pending_descriptions()
+    _retire_outgoing_request_editor()
+    st.session_state["_doc_control_remount"] = True
+
+
+def _render_description(label, field):
+    state = st.session_state
+    editors_key = f"_doc_{field}_editors"
+    editors = state.get(editors_key, {})
+    widget_key = next(reversed(editors), None)
+    if (widget_key is None or widget_key == state.get(_OUTGOING_REQUEST_EDITOR)
+            or editors[widget_key] != state[field]):
+        # Streamlit sends whole widget snapshots. A new suggestion gets a new
+        # editor so an in-flight frame still refers to the text it was shown.
+        widget_key = f"_w_{field}_{uuid4().hex}"
+        state[editors_key] = {**editors, widget_key: state[field]}
+    # A new Job Type or inherited Request can replace an automatic suggestion
+    # before blur. Send edits to suggestions immediately. Manual editors keep Enter/blur.
+    live = "0ms" if not state[field + "_customized"] else False
+    st.text_input(label, value=state[field], key=widget_key,
+                  on_change=_commit_description, args=(field, widget_key), live=live)
 
 
 def on_job_type_change():
     """Callback: Synchronously updates suggested hole size and method without UI lag."""
     new_job = st.session_state.get("_w_job_type", materials_db.JOB_TYPES[0])
-    new_method = materials_db.get_cementing_method(new_job)
-    # Blur and job selection can share a browser frame. Capture real edits
-    # against the still-current job before automatic updates retire its keys.
-    # Snapshot first: syncing a request can also update the revision widget.
-    pending = [(field, _doc_widget_key(field), st.session_state[_doc_widget_key(field)])
-               for field in ("hole_size", "request_description", "revision_description")
-               if _doc_widget_key(field) in st.session_state
-               and st.session_state[_doc_widget_key(field)] != st.session_state.get(field)]
-    for field, widget_key, value in pending:
-        st.session_state[widget_key] = value
-        if field == "hole_size":
-            _mark_hole_size_customized(widget_key)
-        else:
-            _commit_doc_widget(field, widget_key)
+    # A blur and selection can share a frame. Take drafts before retiring the
+    # current job's editors, including drafts from an earlier suggestion.
+    _commit_pending_descriptions()
+    hole_widget_key = _doc_widget_key("hole_size")
+    hole_size = st.session_state["hole_size"]
+    if st.session_state.get(hole_widget_key, hole_size) != hole_size:
+        _mark_hole_size_customized(hole_widget_key)
+    if new_job == st.session_state.get("job_type"):
+        return
     # Legacy tops have no owner marker until their original job is changed.
     for params in st.session_state.get("cement_params", {}).values():
         if params.get("top_job_type") is None:
             params["top_job_type"] = st.session_state["job_type"]
 
-    if new_job != st.session_state.get("job_type"):
-        from placement import EXCESS_FIELDS
-        from project_state import invalidate_document
-        from centralizer_adapter import SHALLOW_CASING_JOBS
-        if new_job in SHALLOW_CASING_JOBS or st.session_state.get("job_type") in SHALLOW_CASING_JOBS:
-            for key in ("_centralizer_result", "_centralizer_signature", "_centralizer_error"):
+    from placement import EXCESS_FIELDS
+    from project_state import invalidate_document
+    from centralizer_adapter import SHALLOW_CASING_JOBS
+    if new_job in SHALLOW_CASING_JOBS or st.session_state.get("job_type") in SHALLOW_CASING_JOBS:
+        for key in ("_centralizer_result", "_centralizer_signature", "_centralizer_error"):
+            st.session_state.pop(key, None)
+    placement = st.session_state.get("placement_config", {})
+    for field, _, _ in EXCESS_FIELDS:
+        placement.pop(field, None)
+        for key in list(st.session_state):
+            if key.startswith(f"_placement_{field}_"):
                 st.session_state.pop(key, None)
-        placement = st.session_state.get("placement_config", {})
-        for field, _, _ in EXCESS_FIELDS:
-            placement.pop(field, None)
-            for key in list(st.session_state):
-                if key.startswith(f"_placement_{field}_"):
-                    st.session_state.pop(key, None)
-        st.session_state["_placement_excess_revision"] = st.session_state.get("_placement_excess_revision", 0) + 1
-        invalidate_document(st.session_state)
+    st.session_state["_placement_excess_revision"] = st.session_state.get("_placement_excess_revision", 0) + 1
+    invalidate_document(st.session_state)
     _commit_doc_widget("job_type")
     if new_job == materials_db.CT_JOB:
-        from project_state import reconcile_fluid_applicability, invalidate_document
+        from project_state import reconcile_fluid_applicability
         reconcile_fluid_applicability(st.session_state)
         invalidate_document(st.session_state)
+    new_method = materials_db.get_cementing_method(new_job)
     st.session_state["cementing_method"] = new_method
     st.session_state[_doc_widget_key("cementing_method")] = new_method
     _commit_doc_widget("cementing_method")
@@ -134,9 +200,15 @@ def on_job_type_change():
     st.session_state[_doc_widget_key("hole_size")] = st.session_state["hole_size"]
     _commit_doc_widget("hole_size")
     _sync_document_descriptions()
-    # A previously selected job may have left unmounted widget drafts.
-    for field in ("request_description", "revision_description"):
-        st.session_state[_doc_widget_key(field)] = st.session_state[field]
+    _retire_outgoing_request_editor()
+    editors = st.session_state.pop(_REQUEST_EDITORS, {})
+    if editors:
+        # A first Request edit can arrive from the editor still visible while
+        # the new Job Type renders. Only that last editor may finish the edit.
+        outgoing = next(reversed(editors))
+        st.session_state[_REQUEST_EDITORS] = {outgoing: editors[outgoing]}
+        st.session_state[_OUTGOING_REQUEST_EDITOR] = outgoing
+    st.session_state.pop("_doc_revision_description_editors", None)
 
 def _mark_hole_size_customized(widget_key):
     if widget_key != _doc_widget_key("hole_size"):
@@ -145,9 +217,10 @@ def _mark_hole_size_customized(widget_key):
     _commit_doc_widget("hole_size", widget_key)
 
 def _seed(widget_key, shadow_key):
-    """Seed a widget-only key from its shadow, only if the widget key is
-    currently absent (first render, or just restored after navigation)."""
-    if widget_key not in st.session_state:
+    """Restore controls whose browser state can be discarded on phase changes."""
+    # An incoming snapshot may contain the old key even when the browser is
+    # about to mount a new control with no widget state of its own.
+    if widget_key not in st.session_state or st.session_state.get("_doc_control_remount"):
         value = st.session_state[shadow_key]
         if shadow_key in DOCUMENT_DATE_FIELDS:
             if isinstance(value, datetime):
@@ -172,8 +245,9 @@ def render():
         if key not in st.session_state:
             st.session_state[key] = val
 
-    for field in ("request_description", "revision_description"):
+    for field in _DESCRIPTION_FIELDS:
         st.session_state.setdefault(field + "_customized", False)
+    _commit_pending_descriptions()
     _sync_document_descriptions()
 
     if "hole_size_customized" not in st.session_state:
@@ -201,6 +275,8 @@ def render():
         # Hole Size (Fully unconstrained free-text with helper guidance)
         hole_widget_key = _doc_widget_key("hole_size")
         _seed(hole_widget_key, "hole_size")
+        if st.session_state[hole_widget_key] != st.session_state["hole_size"]:
+            _mark_hole_size_customized(hole_widget_key)
         st.text_input(
             "Hole Size (in)", 
             key=hole_widget_key,
@@ -209,7 +285,7 @@ def render():
             help="Enter hole diameter (e.g. 26\", 12 1/4\", 8 1/2\") or injection string context for plugs (e.g. Inside 9 5/8\" CSG)."
         )
         st.session_state["hole_size"] = st.session_state[hole_widget_key]
-        st.caption(f"↳ Default for {st.session_state['job_type']}: {materials_db.DEFAULT_HOLE_SIZES.get(st.session_state['job_type'], '—')} (your own value is kept once edited)")
+        st.markdown(f"↳ Default for {st.session_state['job_type']}: {materials_db.DEFAULT_HOLE_SIZES.get(st.session_state['job_type'], '—')} (your own value is kept once edited)")
         
         # Well Location & Names
         for label, shadow_key in [("Field", "field"), ("Well Location", "well_location"),
@@ -227,7 +303,7 @@ def render():
             st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key,))
             st.session_state[shadow_key] = st.session_state[widget_key]
 
-        if "_w_report_date" not in st.session_state:
+        if "_w_report_date" not in st.session_state or st.session_state.get("_doc_control_remount"):
             value = st.session_state["report_date"]
             st.session_state["_w_report_date"] = date.fromisoformat(value) if isinstance(value, str) else value
         st.date_input("Date", key="_w_report_date", on_change=_commit_doc_widget, args=("report_date",))
@@ -275,10 +351,13 @@ def render():
         st.session_state["revision_no"] = st.session_state["_w_revision_no"]
 
     with st.expander("Request and approval details (optional)"):
-        st.caption("Leave unknown details blank. Select dates using the calendar.")
+        st.markdown("Leave unknown details blank. Select dates using the calendar.")
         detail_columns = st.columns(2)
         for index, (label, shadow_key) in enumerate(DOCUMENT_DETAIL_FIELDS):
             with detail_columns[index % 2]:
+                if shadow_key in _DESCRIPTION_FIELDS:
+                    _render_description(label, shadow_key)
+                    continue
                 widget_key = _doc_widget_key(shadow_key)
                 _seed(widget_key, shadow_key)
                 if shadow_key in DOCUMENT_DATE_FIELDS:
@@ -286,7 +365,7 @@ def render():
                     if st.session_state[widget_key] is not None:
                         st.session_state[shadow_key] = st.session_state[widget_key].isoformat()
                     elif st.session_state[shadow_key]:
-                        st.caption(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
+                        st.markdown(f"Saved {label}: {st.session_state[shadow_key]}. Select a calendar date to replace this legacy text.")
                 else:
                     st.text_input(label, key=widget_key, on_change=_commit_doc_widget, args=(shadow_key, widget_key))
                     st.session_state[shadow_key] = st.session_state[widget_key]
@@ -322,3 +401,4 @@ def render():
         f"Well: {st.session_state['well_name']} | Rig: {st.session_state['rig_name']} | "
         f"Method: **{st.session_state['cementing_method']}**"
     )
+    st.session_state.pop("_doc_control_remount", None)

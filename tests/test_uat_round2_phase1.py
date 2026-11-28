@@ -15,6 +15,7 @@ import materials_db
 import phase_10_procedure as report
 from project_state import request_description_for_job
 import pytest
+from streamlit.runtime.state.session_state import SessionState
 from test_audit_regressions import legacy_word_fixture
 
 pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
@@ -116,6 +117,171 @@ class Round2Phase1UAT(unittest.TestCase):
         next(w for w in app.text_input if w.label == 'Request Description').set_value('Changed request').run()
         self.descriptions(app, 'Changed request', 'Independent revision')
         self.assertTrue(app.session_state['revision_description_customized'])
+
+    def test_two_description_edits_in_one_navigation_update_keep_both_drafts(self):
+        for request, revision in (('Manual request', 'Manual revision'), ('', 'Manual revision'),
+                                  ('Manual request', '')):
+            with self.subTest(request=request, revision=revision):
+                app = self.app()
+                next(w for w in app.text_input if w.label == 'Request Description').set_value(request)
+                next(w for w in app.text_input if w.label == 'Revision Description').set_value(revision)
+                self.phase(app, 'phase2_3')
+                self.descriptions(app, request, revision)
+                saved = audit.round_trip(app.session_state.to_dict())
+                for field in ('request_description', 'revision_description'):
+                    self.assertTrue(saved[field + '_customized'])
+                self.phase(app, 'phase1')
+                self.descriptions(app, request, revision)
+                self.descriptions(self.app(saved), request, revision)
+
+    def test_unrelated_editor_rerun_does_not_resend_description_defaults(self):
+        app = self.app()
+        app.text_input(key='_w_prepared_by').set_value('Operator').run()
+        self.descriptions(app, '20" CSG Cementing', '20" CSG Cementing')
+        for label in ('Request Description', 'Revision Description'):
+            with self.subTest(label=label):
+                widget = next(w for w in app.text_input if w.label == label)
+                self.assertFalse(widget.proto.set_value)
+
+    def test_inherited_revision_with_a_navigation_frame_from_the_previous_editor(self):
+        original = '20" CSG Cementing'
+        for value in (original, 'Operator revision', ''):
+            with self.subTest(value=value):
+                app = self.app()
+                request = next(w for w in app.text_input if w.label == 'Request Description')
+                revision = next(w for w in app.text_input if w.label == 'Revision Description')
+                request.set_value('Operator request')
+                app.radio(key='_app_mode_key').set_value('phase2_3')
+                revision.set_value(value)
+                # The browser sent navigation before receiving the inherited text.
+                browser_frame = app._tree.get_widget_states()
+                app.radio(key='_app_mode_key').set_value('phase1')
+                revision.set_value(original)
+                app.run()
+                self.descriptions(app, 'Operator request', 'Operator request')
+
+                app._run(browser_frame)
+                expected = 'Operator request' if value == original else value
+                self.descriptions(app, 'Operator request', expected)
+                self.assertEqual(app.session_state['revision_description_customized'], value != original)
+                self.phase(app, 'phase1')
+                self.descriptions(app, 'Operator request', expected)
+
+    def test_deliberate_default_text_is_a_manual_edit_in_the_current_editor(self):
+        app = self.app()
+        next(w for w in app.text_input if w.label == 'Request Description').set_value('Operator request').run()
+        default = '20" CSG Cementing'
+        revision = next(w for w in app.text_input if w.label == 'Revision Description')
+        self.assertEqual(revision.value, 'Operator request')
+        revision.set_value(default)
+        self.phase(app, 'phase2_3')
+        self.descriptions(app, 'Operator request', default)
+        self.assertTrue(app.session_state['revision_description_customized'])
+
+    def test_navigation_keeps_draft_already_received_by_an_interrupted_callback(self):
+        app = self.app()
+        next(w for w in app.text_input if w.label == 'Request Description').set_value('Pending request')
+        widget_changed = SessionState._widget_changed
+
+        def changed_after_interruption(state, widget_id):
+            # The browser already sent this value. An interrupted rerun can
+            # compact it before the next rerun checks for changed widgets.
+            return 'request_description' not in widget_id and widget_changed(state, widget_id)
+
+        with patch.object(SessionState, '_widget_changed', changed_after_interruption):
+            self.phase(app, 'phase2_3')
+        self.descriptions(app, 'Pending request', 'Pending request')
+        self.assertTrue(app.session_state['request_description_customized'])
+        self.assertFalse(app.session_state['revision_description_customized'])
+
+    def test_return_frame_can_restore_editors_after_the_browser_discarded_their_state(self):
+        app = self.app()
+        values = {'Request Description': 'Operator request', 'Revision Description': 'Operator revision',
+                  'Hole Size (in)': 'Operator hole size', 'Prepared By': 'Operator'}
+        for label, value in values.items():
+            next(w for w in app.text_input if w.label == label).set_value(value)
+        app.run()
+        return_frame = app._tree.get_widget_states()
+        self.phase(app, 'phase2_3')
+        # An incoming return frame can still have the previous widget values
+        # even if the newly mounted browser fields can no longer recover them.
+        app._run(return_frame)
+        for label, value in values.items():
+            with self.subTest(label=label):
+                proto = next(w for w in app.text_input if w.label == label).proto
+                self.assertEqual(proto.value if proto.set_value else proto.default, value)
+        picker = app.selectbox(key='_w_job_type')
+        proto = picker.proto
+        self.assertEqual(proto.raw_value if proto.set_value else picker.options[proto.default], 'CSG 20"')
+
+    def test_an_older_editor_cannot_overwrite_a_newer_edit_or_a_reopened_job(self):
+        for transition in ('newer edit', 'return to job'):
+            with self.subTest(transition=transition):
+                app = self.app()
+                retired = next(w for w in app.text_input if w.label == 'Revision Description')
+                next(w for w in app.text_input if w.label == 'Request Description').set_value('Operator request').run()
+                if transition == 'newer edit':
+                    expected = 'Newer revision'
+                    next(w for w in app.text_input if w.label == 'Revision Description').set_value(expected).run()
+                else:
+                    expected = 'Operator request'
+                    app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+                    app.selectbox(key='_w_job_type').set_value('CSG 20"').run()
+                browser_frame = app._tree.get_widget_states()
+                browser_frame.widgets.append(retired.set_value('Late revision')._widget_state)
+                app._run(browser_frame)
+                self.descriptions(app, 'Operator request', expected)
+
+    def test_first_request_edit_from_the_outgoing_job_editor_survives_navigation(self):
+        for request, revision in (('First request for the liner', None), ('', 'Independent revision'),
+                                  ('7" LNR Cementing', None)):
+            with self.subTest(request=request, revision=revision):
+                app = self.app()
+                if revision is not None:
+                    next(w for w in app.text_input if w.label == 'Revision Description').set_value(revision).run()
+                outgoing = next(w for w in app.text_input if w.label == 'Request Description')
+                app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+                self.descriptions(app, '7" LNR Cementing', '7" LNR Cementing' if revision is None else revision)
+
+                browser_frame = app._tree.get_widget_states()
+                browser_frame.widgets.append(outgoing.set_value(request)._widget_state)
+                app._run(browser_frame)
+                self.phase(app, 'phase2_3')
+                self.descriptions(app, request, request if revision is None else revision)
+                self.assertTrue(app.session_state['request_description_customized'])
+                self.assertEqual(app.session_state['revision_description_customized'], revision is not None)
+                saved = audit.round_trip(app.session_state.to_dict())
+                self.descriptions(self.app(saved), request, request if revision is None else revision)
+
+    def test_outgoing_request_editor_expires_after_a_new_edit_job_change_or_leave(self):
+        for transition in ('new edit', 'another job', 'leave', 'finished handoff'):
+            with self.subTest(transition=transition):
+                app = self.app()
+                outgoing = next(w for w in app.text_input if w.label == 'Request Description')
+                app.selectbox(key='_w_job_type').set_value('LNR 7"').run()
+                expected = '7" LNR Cementing'
+                if transition == 'new edit':
+                    expected = 'Current liner request'
+                    next(w for w in app.text_input if w.label == 'Request Description').set_value(expected).run()
+                elif transition == 'another job':
+                    expected = '20" CSG Cementing'
+                    app.selectbox(key='_w_job_type').set_value('CSG 20"').run()
+                elif transition == 'leave':
+                    self.phase(app, 'phase2_3')
+                    self.phase(app, 'phase1')
+                else:
+                    expected = 'Accepted outgoing request'
+                    for draft in ('Accepted outgoing', expected):
+                        browser_frame = app._tree.get_widget_states()
+                        browser_frame.widgets.append(outgoing.set_value(draft)._widget_state)
+                        app._run(browser_frame)
+                    self.phase(app, 'phase2_3')
+                    self.phase(app, 'phase1')
+
+                browser_frame = app._tree.get_widget_states()
+                browser_frame.widgets.append(outgoing.set_value('Late retired request')._widget_state)
+                app._run(browser_frame)
+                self.descriptions(app, expected, expected)
 
     def test_current_json_preserves_all_customization_combinations(self):
         for request_custom in (False, True):

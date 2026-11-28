@@ -2029,7 +2029,7 @@ def _render_summary_metadata(job_type, active_fluids, hw_df, load_sig):
                          if tokens is not None else str, **args)
 
     with st.expander("Executive Summary reference details (optional)"):
-        st.caption("Report wording only. Volumes, densities, targets and slurry intervals remain engineering inputs in their existing phases.")
+        st.markdown("Report wording only. Volumes, densities, targets and slurry intervals remain engineering inputs in their existing phases.")
         widget("placement_context_rows", "Placement context rows", config, tokens=rows, multiple=True)
         if "SQUEEZE" in job_type:
             widget("squeeze_scope", "Squeeze scope", config, options=SQUEEZE_SCOPES)
@@ -2111,7 +2111,7 @@ def render():
             st.error(issue)
         _rescue_phases = sorted({_phase_for_issue(issue) for issue in issues} - {None})
         if _rescue_phases:
-            st.caption("Jump to the responsible phase to fix the problem — the controls below stay available in the meantime.")
+            st.markdown("Jump to the responsible phase to fix the problem — the controls below stay available in the meantime.")
             _rescue_cols = st.columns(len(_rescue_phases))
             for _col, _phase_key in zip(_rescue_cols, _rescue_phases):
                 with _col:
@@ -2231,7 +2231,7 @@ def render():
 
     # 4. Document Generation & In-Memory Streaming
     st.subheader("4. Document Generation (.docx)")
-    st.caption("Injects all project phases, tables, executive summary, and notes into `master_template.docx` via DocxTemplate engine.")
+    st.markdown("Injects all project phases, tables, executive summary, and notes into `master_template.docx` via DocxTemplate engine.")
     if DocxTemplate is None:
         invalidate_document(st.session_state)
         st.error("Word export requires docxtpl. Deploy requirements.txt beside main.py, then reboot the Streamlit app.")

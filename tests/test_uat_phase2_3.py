@@ -10,6 +10,7 @@ from engineering_tools import compute_phase_status
 from phase_2_3_well_data import HARDWARE_COLUMNS
 from project_io import decode_project
 import pytest
+from streamlit.runtime.state.session_state import SessionState
 from test_audit_regressions import legacy_word_fixture
 
 pytestmark = pytest.mark.usefixtures("legacy_word_fixture")
@@ -20,6 +21,51 @@ class Phase23UAT(unittest.TestCase):
     healthy = audit.AuditRegressions.healthy
     phase = audit.AuditRegressions.phase
     hardware_event = audit.AuditRegressions.hardware_event
+
+    def test_pending_mud_edits_survive_an_interrupted_callback_and_navigation(self):
+        fields = ("mud_density", "plastic_viscosity", "yield_point")
+        effective = ("effective_mud_density", "effective_pv", "effective_yp")
+        widget_changed = SessionState._widget_changed
+        widget_suffixes = tuple("_w_" + field for field in fields)
+
+        def changed_after_interruption(state, widget_id):
+            # A prior interrupted rerun already put the browser draft into
+            # Streamlit's widget state, so no change callback fires this time.
+            return not widget_id.endswith(widget_suffixes) and widget_changed(state, widget_id)
+
+        ranges = ("80-82", "45-50", "10-20")
+        blank = ("", "", "")
+        for before, values, derived in ((blank, ranges, (81., 47.5, 15.)),
+                                        (ranges, ("81", "45", "15"), (81., 45., 15.)),
+                                        (ranges, blank, (None, None, None))):
+            with self.subTest(values=values):
+                app = self.app({**audit.well_profile_fixture(3000., gradient=1.7), **dict(zip(fields, before))})
+                self.phase(app, "phase2_3")
+                for field, value in zip(fields, values):
+                    app.text_input(key="_w_" + field).set_value(value)
+                with patch.object(SessionState, "_widget_changed", changed_after_interruption):
+                    self.phase(app, "phase1")
+                saved = audit.round_trip(app.session_state.to_dict())
+                for field, value in zip(fields + effective, values + derived):
+                    self.assertEqual(app.session_state[field], value)
+                    self.assertEqual(saved[field], value)
+                    self.assertEqual(saved["well_data"][field], value)
+                self.assertTrue(app.session_state["well_auto_fields"]["bhsp"])
+                self.phase(app, "phase2_3")
+                for field, value in zip(fields, values):
+                    self.assertEqual(app.text_input(key="_w_" + field).value, value)
+
+    def test_unrelated_rerun_preserves_mud_widget_defaults_without_forcing_them(self):
+        values = {"mud_density": "80-82", "plastic_viscosity": "45-50", "yield_point": "10-20"}
+        app = self.app(values)
+        self.phase(app, "phase2_3")
+        app.number_input(key="_w_surface_temp").set_value(86.).run()
+        for field, value in values.items():
+            with self.subTest(field=field):
+                widget = app.text_input(key="_w_" + field)
+                self.assertEqual(widget.value, value)
+                self.assertFalse(widget.proto.set_value)
+                self.assertEqual(widget.proto.default, value)
 
     def test_blank_defaults_draft_restore_and_navigation(self):
         app = self.app()

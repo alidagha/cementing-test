@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
+from streamlit.runtime.state.session_state import SessionState
 
 import centralizer_adapter as adapter
 import engineering_tools as tools
@@ -357,7 +358,8 @@ def test_uat22_phase9_can_draft_and_select_products_before_chart_or_fluids(catal
         app = case.app(state)
         case.phase(app, "phase9")
         assert not app.button(key="_centralizer_auto_zones").disabled
-        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.caption)
+        assert any("Active Centralizer string: 0–1000 m MD" in cap.value for cap in app.markdown)
+        assert not any("Active Centralizer string:" in cap.value for cap in app.caption)
         assert len(app.selectbox(key="_centralizer_zone_0_0_product").options) > 1
         app.button(key="_centralizer_auto_zones").click().run()
         case.healthy(app)
@@ -540,6 +542,55 @@ def test_first_zone_edit_survives_immediate_navigation(catalog):
     assert app.session_state["centralizer_config"]["zones"][0]["top_md"] == 25.
     app.radio(key="_app_mode_key").set_value("phase9").run()
     assert app.number_input(key="_centralizer_zone_0_0_top_md").value == 25.
+
+
+def test_mounted_bottom_md_does_not_publish_stale_blank_and_can_be_cleared(catalog):
+    state = configured(catalog)
+    state["hardware_table"] = state["hardware_table"].assign(**{"Collapse (psi)": None, "Burst (psi)": None})
+    state["centralizer_config"]["zones"][0]["bottom_md"] = None
+    app = ui_app(state)
+    key = "_centralizer_zone_0_0_bottom_md"
+    top_key = "_centralizer_zone_0_0_top_md"
+    target_key = "_centralizer_zone_0_0_target_standoff_pct"
+    app.run()
+
+    # The intervening rerun must not send the old blank to the mounted browser.
+    for number_key in (key, top_key, target_key):
+        assert not app.number_input(key=number_key).proto.set_value
+    app.number_input(key=top_key).set_value(0.)
+    app.number_input(key=key).set_value(100.)
+    app.number_input(key=target_key).set_value(70.)
+    widget_changed = SessionState._widget_changed
+
+    def interrupted(state, widget_id):
+        return not widget_id.endswith((key, top_key, target_key)) and widget_changed(state, widget_id)
+
+    with patch.object(SessionState, "_widget_changed", interrupted):
+        app.radio(key="_app_mode_key").set_value("phase1").run()
+    saved = audit.round_trip(app.session_state.to_dict())
+    saved_zone = saved["centralizer_config"]["zones"][0]
+    assert (saved_zone["top_md"], saved_zone["bottom_md"], saved_zone["target_standoff_pct"]) == (0., 100., 70.)
+
+    restored = ui_app(saved)
+    assert restored.number_input(key=key).value == 100.
+    restored.number_input(key=key).set_value(None)
+    with patch.object(SessionState, "_widget_changed", interrupted):
+        restored.radio(key="_app_mode_key").set_value("phase1").run()
+    assert not restored.exception
+    cleared = audit.round_trip(restored.session_state.to_dict())
+    assert cleared["centralizer_config"]["zones"][0]["bottom_md"] is None
+    assert cleared["centralizer_config"]["zones"][0]["target_standoff_pct"] == 70.
+
+    import centralizer_report
+
+    current = ui_app(configured(catalog))
+    current.button(key="_centralizer_execute").click().run()
+    assert phase9().result_is_current(current.session_state, catalog)
+    end_md = current.number_input(key=key).value - 1.
+    current.number_input(key=key).set_value(end_md).run()
+    assert current.session_state["centralizer_config"]["zones"][0]["bottom_md"] == end_md
+    assert not phase9().result_is_current(current.session_state, catalog)
+    assert centralizer_report.prepare_report(current.session_state.to_dict())["current"] is False
 
 
 def test_fresh_phase9_defaults_and_products_are_not_auto_selected(catalog):

@@ -590,6 +590,51 @@ def test_r18c_section_identity_rejects_complete_feature_reversion():
     with pytest.raises(AssertionError):assert_authorized_radial_renderer(reference)
 
 
+
+
+# UI-03: reverse only the eight approved native caption promotions. The fixed
+# references below predate this display-only change and remain unchanged.
+UI03_DISPLAY_PINS = {'phase_5_cement.py': '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14', 'phase_6_spacer.py': '9e5b9b946c4e4687c1b9559b32dceca08004bdfaa0ac37a85d96916c282492b7'}
+UI03_DISPLAY_PAIRS = {'phase_5_cement.py': [(b'st.caption("**Mix Method Guide:** Choose **\'Dry Blend\'** for powders pre-blended dry with bulk cement (no dead volume penalty). Choose **\'In Mix Water\'** for chemicals dissolved in the mixing tank.")', b'st.markdown("**Mix Method Guide:** Choose **\'Dry Blend\'** for powders pre-blended dry with bulk cement (no dead volume penalty). Choose **\'In Mix Water\'** for chemicals dissolved in the mixing tank.")'), (b'st.caption("**NaCl / Salt:** Enter % BWOW (weight of water). Salt is always included in mix water; its totals include the selected water volume and, in the last column, dead volume.")', b'st.markdown("**NaCl / Salt:** Enter % BWOW (weight of water). Salt is always included in mix water; its totals include the selected water volume and, in the last column, dead volume.")'), (b'st.caption("**Name Guide:** Pick a listed commercial brand to auto-set its Material Type & Physical State. Pick **\'Other (Custom)\'** to enter a material not on the master list, then set Material Type/Physical State yourself.")', b'st.markdown("**Name Guide:** Pick a listed commercial brand to auto-set its Material Type & Physical State. Pick **\'Other (Custom)\'** to enter a material not on the master list, then set Material Type/Physical State yourself.")'), (b'st.caption("\xe2\x84\xb9\xef\xb8\x8f For a row with a *recognized brand* in Name, Material Type/Physical State are locked to that brand\'s correct values \xe2\x80\x94 if you edit them by hand on such a row, they\'ll snap back on the next edit. This is intentional (a known brand can\'t be miscategorized), not a bug. To set Material Type/Physical State freely, change Name to **\'Other (Custom)\'** first.")', b'st.markdown("\xe2\x84\xb9\xef\xb8\x8f For a row with a *recognized brand* in Name, Material Type/Physical State are locked to that brand\'s correct values \xe2\x80\x94 if you edit them by hand on such a row, they\'ll snap back on the next edit. This is intentional (a known brand can\'t be miscategorized), not a bug. To set Material Type/Physical State freely, change Name to **\'Other (Custom)\'** first.")'), (b'st.caption("Optional Word Top/Bottom overrides below affect presentation only. "\n                               "Engineering placement uses Phase IV volume and explicit Hardware capacity; "\n                               "it is theoretical, not measured field TOC.")', b'st.markdown("Optional Word Top/Bottom overrides below affect presentation only. "\n                               "Engineering placement uses Phase IV volume and explicit Hardware capacity; "\n                               "it is theoretical, not measured field TOC.")')], 'phase_6_spacer.py': [(b'st.caption("Doses are per bbl fresh water, including Defoamer. "\n               "The last column includes Dead Volume for every material.")', b'st.markdown("Doses are per bbl fresh water, including Defoamer. "\n               "The last column includes Dead Volume for every material.")'), (b'st.caption(f"Operational mixed volume: {recipe[\'mixed_volume_bbl\']:.1f} bbl; "\n               f"programmed pumped volume: {recipe[\'pumped_volume_bbl\']:.1f} bbl. "\n               f"Closure residuals \xe2\x80\x94 mass: {recipe[\'closure\'][\'mass_lb\']:.3g} lb; "\n               f"volume: {recipe[\'closure\'][\'volume_bbl\']:.3g} bbl; "\n               f"density: {recipe[\'closure\'][\'density_pcf\']:.3g} pcf.")', b'st.markdown(f"Operational mixed volume: {recipe[\'mixed_volume_bbl\']:.1f} bbl; "\n               f"programmed pumped volume: {recipe[\'pumped_volume_bbl\']:.1f} bbl. "\n               f"Closure residuals \xe2\x80\x94 mass: {recipe[\'closure\'][\'mass_lb\']:.3g} lb; "\n               f"volume: {recipe[\'closure\'][\'volume_bbl\']:.3g} bbl; "\n               f"density: {recipe[\'closure\'][\'density_pcf\']:.3g} pcf.")'), (b'st.caption("Weighting solids: " + "; ".join(f"{name}: {pct:.2f}%" for name, pct in recipe["weighting_pct"].items()))', b'st.markdown("Weighting solids: " + "; ".join(f"{name}: {pct:.2f}%" for name, pct in recipe["weighting_pct"].items()))')]}
+
+def ui03_original_display_source(source, filename="phase_5_cement.py"):
+    reference = UI03_DISPLAY_PINS[filename]
+    if hashlib.sha256(source).hexdigest() == reference:
+        return source
+    for old, new in UI03_DISPLAY_PAIRS[filename]:
+        assert source.count(new) == 1 and source.count(old) == 0
+        source = source.replace(new, old, 1)
+    assert hashlib.sha256(source).hexdigest() == reference
+    return source
+
+
+@pytest.mark.parametrize("filename", ["phase_5_cement.py", "phase_6_spacer.py"])
+def test_ui03_exact_display_inverse_keeps_original_source_identity(filename):
+    current = Path(filename).read_bytes()
+    baseline = subprocess.check_output(["git", "show", "84227d6da2b6e36a3ff8bbac785b127577b401e2:" + filename])
+    for old, new in UI03_DISPLAY_PAIRS[filename]:
+        assert current.count(new) == 1 and current.count(old) == 0
+    assert ui03_original_display_source(current, filename) == baseline
+    assert hashlib.sha256(baseline).hexdigest() == UI03_DISPLAY_PINS[filename]
+
+
+@pytest.mark.parametrize("filename", ["phase_5_cement.py", "phase_6_spacer.py"])
+@pytest.mark.parametrize("mutation", ["text", "missing", "duplicate", "relocated", "extra", "unapproved_call"])
+def test_ui03_inverse_rejects_nonapproved_changes(filename, mutation):
+    source = Path(filename).read_bytes()
+    old, new = UI03_DISPLAY_PAIRS[filename][0]
+    modified = {
+        "text": source.replace(new, new.replace(b" ", b"  ", 1), 1),
+        "missing": source.replace(new, b"", 1),
+        "duplicate": source + b"\n" + new,
+        "relocated": source.replace(new, old, 1) + b"\n" + new,
+        "extra": source + b"\n# unapproved insertion\n",
+        "unapproved_call": source.replace(b"st.number_input(", b"st.text_input(", 1),
+    }[mutation]
+    assert modified != source
+    with pytest.raises(AssertionError):
+        ui03_original_display_source(modified, filename)
+
 def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
     for name in ['well_schematic_engine.py','placement.py','ct_stages.py','phase_5_cement.py','standalone_spacer.py']:
         if name == 'well_schematic_engine.py':
@@ -597,7 +642,7 @@ def test_frozen_renderer_template_and_previous_ct_authorities_match_parent():
             continue
         if name == 'phase_5_cement.py':
             import hashlib
-            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14'
+            assert hashlib.sha256(ui03_original_display_source(Path(name).read_bytes(), name)).hexdigest() == '3422ef74b39d665d64dd7f5709be19e9314d75300ce55d272cdbeacda4a6dd14'
             continue
         reference='184cc888552f54df6a1d02fd0bdca16b77e358a4'
         source = Path(name).read_bytes()

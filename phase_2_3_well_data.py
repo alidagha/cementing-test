@@ -17,6 +17,9 @@ from cement_chart_model import chart_job_kind, chart_readiness, PORE_FIELD, FRAC
 
 HARDWARE_COLUMNS = ["Description", "MD (m)", "Size (in)", "ID (in)", "Joint (m)", "Weight (ppf)", "Grade", "Collapse (psi)", "Burst (psi)"]
 MUD_TYPES = ["WBM", "OBM"]
+_MUD_TEXT_INPUTS = (("mud_density", "effective_mud_density"),
+                    ("plastic_viscosity", "effective_pv"),
+                    ("yield_point", "effective_yp"))
 
 def _seed(widget_key, shadow_key):
     """Send the committed value on every mount, including correction reruns.
@@ -49,15 +52,21 @@ def _commit_well_widget(field):
     st.session_state[field] = st.session_state[f"_w_{field}"]
     if field in ("bhsp",):
         st.session_state["well_auto_fields"][field] = False
-    for source, effective, default in (("mud_density", "effective_mud_density", None),
-                                       ("plastic_viscosity", "effective_pv", None),
-                                       ("yield_point", "effective_yp", None)):
+    for source, effective in _MUD_TEXT_INPUTS:
         if field == source:
-            st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=default)
+            st.session_state[effective] = parse_effective_numeric(st.session_state[field], default=None)
     st.session_state["well_data"] = get_well_data()
     if field == "mud_type":
         reconcile_fluid_applicability(st.session_state)
     invalidate_document(st.session_state)
+
+def commit_pending_mud_inputs():
+    """Commit drafts already received before Streamlit interrupted a callback."""
+    state = st.session_state
+    for field, _ in _MUD_TEXT_INPUTS:
+        widget_key = f"_w_{field}"
+        if widget_key in state and state[widget_key] != state.get(field, WELL_DATA_DEFAULTS[field]):
+            _commit_well_widget(field)
 
 
 def _bhct_suggestion():
@@ -382,7 +391,7 @@ def render():
 
     # --- SECTION 1: TUBULAR AND CASING HARDWARE ---
     st.subheader("1. Tubular and Casing Hardware")
-    st.caption("**Guide:** Double-click any cell to edit. For **Open Hole Size**, Weight is automatically zeroed and ID serves as Bit Size.")
+    st.markdown("**Guide:** Double-click any cell to edit. For **Open Hole Size**, Weight is automatically zeroed and ID serves as Bit Size.")
     
     # Hold unfinished grid rows separately: an MD entered before Description
     # is a real operator edit, but must not become a hardware/export row yet.
@@ -670,13 +679,11 @@ def render():
         st.session_state["mud_type"] = st.session_state["_w_mud_type"]
         
     with col_m2:
-        _seed("_w_mud_density", "mud_density")
         st.text_input(
             "Mud Weight (pcf)", 
-            key="_w_mud_density", on_change=_commit_well_widget, args=("mud_density",),
+            value=st.session_state["mud_density"], key="_w_mud_density", on_change=_commit_well_widget, args=("mud_density",),
             help="Single density (e.g. 82.0) or range (e.g. 80-82)"
         )
-        st.session_state["mud_density"] = st.session_state["_w_mud_density"]
         # General density keeps its mean; only automatic BHSP uses the upper end.
         _eff_md = parse_effective_numeric(st.session_state["mud_density"], default=None)
         if _eff_md is not None:
@@ -689,31 +696,27 @@ def render():
                     pass  # Invalid ranges have no valid BHSP basis to display.
                 else:
                     density_caption += f"; ↳ BHSP density basis: **{bhsp_density:.1f} pcf** (upper end of range)"
-            st.caption(density_caption)
+            st.markdown(density_caption)
         
     with col_m3:
-        _seed("_w_plastic_viscosity", "plastic_viscosity")
         st.text_input(
             "Plastic Viscosity (cp)", 
-            key="_w_plastic_viscosity", on_change=_commit_well_widget, args=("plastic_viscosity",),
+            value=st.session_state["plastic_viscosity"], key="_w_plastic_viscosity", on_change=_commit_well_widget, args=("plastic_viscosity",),
             help="e.g. 45 or 45-50"
         )
-        st.session_state["plastic_viscosity"] = st.session_state["_w_plastic_viscosity"]
         _eff_pv = parse_effective_numeric(st.session_state["plastic_viscosity"], default=None)
         if _eff_pv is not None:
-            st.caption(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
+            st.markdown(f"↳ Used in calculations as: **{_eff_pv:.1f} cp**" + (" (mean of range)" if any(c in st.session_state["plastic_viscosity"] for c in "-/") else ""))
         
     with col_m4:
-        _seed("_w_yield_point", "yield_point")
         st.text_input(
             "Yield Point (lb/100ft²)", 
-            key="_w_yield_point", on_change=_commit_well_widget, args=("yield_point",),
+            value=st.session_state["yield_point"], key="_w_yield_point", on_change=_commit_well_widget, args=("yield_point",),
             help="e.g. 15 or 10-20"
         )
-        st.session_state["yield_point"] = st.session_state["_w_yield_point"]
         _eff_yp = parse_effective_numeric(st.session_state["yield_point"], default=None)
         if _eff_yp is not None:
-            st.caption(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
+            st.markdown(f"↳ Used in calculations as: **{_eff_yp:.1f} lb/100ft²**" + (" (mean of range)" if any(c in st.session_state["yield_point"] for c in "-/") else ""))
 
     # Clean bridge for mathematical models downstream
     st.session_state["effective_mud_density"] = parse_effective_numeric(st.session_state["mud_density"], default=None)
